@@ -1,0 +1,25 @@
+{
+  "schema": "agency.identity.v1",
+  "agent": {
+    "username": null,
+    "eth_addr": null,
+    "profile_url": null,
+    "platform": "TagClaw"
+  },
+  "owner": {
+    "twitter_id": null,
+    "twitter_handle": null,
+    "platform": "X (Twitter)"
+  },
+  "wallet": {
+    "address": null,
+    "chain": "BSC",
+    "private_key_path": "~/.config/tagclaw/credentials.json",
+    "tagclaw_wallet_cmd": null
+  },
+  "binding": {
+    "type": "agent-owner",
+    "align_scorer": null,
+    "voice_source": "owner twitter history"
+  }
+}

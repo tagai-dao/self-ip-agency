@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PLACEHOLDER_AGENT_NAME — Self-IP Agency</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <div class="header-brand">
+        <span class="brand-dot"></span>
+        <h1 class="brand-name">PLACEHOLDER_AGENT_NAME</h1>
+        <span class="brand-tag">Self-IP Agency</span>
+      </div>
+      <div class="header-meta">
+        <span class="owner-label">Owner:</span>
+        <span class="owner-handle">@PLACEHOLDER_OWNER_TWITTER</span>
+        <span class="mode-badge" id="mode-badge">—</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+
+    <!-- TAS Score Hero -->
+    <section class="tas-hero">
+      <div class="tas-primary">
+        <div class="tas-value" id="tas-total">—</div>
+        <div class="tas-label">TAS Score</div>
+      </div>
+      <div class="tas-breakdown">
+        <div class="tas-component">
+          <div class="component-value" id="tas-social">—</div>
+          <div class="component-label">Social × 0.7</div>
+        </div>
+        <div class="tas-plus">+</div>
+        <div class="tas-component">
+          <div class="component-value" id="tas-trade">—</div>
+          <div class="component-label">Trade × 0.3</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Agent Status Cards -->
+    <section class="agents">
+      <h2 class="section-title">Agents</h2>
+      <div class="agent-grid">
+
+        <!-- Main Agent -->
+        <div class="agent-card" id="card-main">
+          <div class="agent-header">
+            <div class="agent-icon main-icon">M</div>
+            <div class="agent-info">
+              <div class="agent-name">Main</div>
+              <div class="agent-role">Orchestrator</div>
+            </div>
+            <div class="agent-status-dot" id="dot-main"></div>
+          </div>
+          <div class="agent-body">
+            <div class="stat-row">
+              <span class="stat-key">Mode</span>
+              <span class="stat-val" id="main-mode">—</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-key">Last heartbeat</span>
+              <span class="stat-val" id="main-heartbeat">—</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-key">Uptime</span>
+              <span class="stat-val" id="main-uptime">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bookmarker Agent -->
+        <div class="agent-card" id="card-bookmarker">
+          <div class="agent-header">
+            <div class="agent-icon bookmarker-icon">B</div>
+            <div class="agent-info">
+              <div class="agent-name">Bookmarker</div>
+              <div class="agent-role">Social Intelligence</div>
+            </div>
+            <div class="agent-status-dot" id="dot-bookmarker"></div>
+          </div>
+          <div class="agent-body">
+            <div class="stat-row">
+              <span class="stat-key">TAS_social</span>
+              <span class="stat-val accent" id="bm-tas">—</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-key">Posts curated</span>
+              <span class="stat-val" id="bm-curated">—</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-key">VP spent</span>
+              <span class="stat-val" id="bm-vp">—</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-key">Posts created</span>
+              <span class="stat-val" id="bm-posts">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Trader Agent -->
+        <div class="agent-card" id="card-trader">
+          <div class="agent-header">
+            <div class="agent-icon trader-icon">T</div>
+            <div class="agent-info">
+              <div class="agent-name">Trader</div>
+              <div class="agent-role">On-Chain Ops</div>
+            </div>
+            <div class="agent-status-dot" id="dot-trader"></div>
+          </div>
+          <div class="agent-body">
+            <div class="stat-row">
+              <span class="stat-key">TAS_trade</span>
+              <span class="stat-val accent" id="tr-tas">—</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-key">Trades</span>
+              <span class="stat-val" id="tr-trades">—</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-key">Volume</span>
+              <span class="stat-val" id="tr-volume">—</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-key">Net P&amp;L</span>
+              <span class="stat-val" id="tr-pnl">—</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- VP Bar -->
+    <section class="vp-section">
+      <h2 class="section-title">Voting Power</h2>
+      <div class="vp-bar-container">
+        <div class="vp-bar-bg">
+          <div class="vp-bar-fill" id="vp-fill"></div>
+          <div class="vp-bar-reserve" id="vp-reserve-line"></div>
+        </div>
+        <div class="vp-labels">
+          <span id="vp-used-label">0 used</span>
+          <span id="vp-remaining-label">— remaining</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Alerts -->
+    <section class="alerts-section" id="alerts-section" style="display:none">
+      <h2 class="section-title">Alerts</h2>
+      <div id="alerts-list"></div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <span>Last updated: <span id="last-updated">—</span></span>
+    <span>Auto-refresh: 30s</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

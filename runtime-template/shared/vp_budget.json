@@ -1,0 +1,9 @@
+{
+  "daily_budget": 1000,
+  "used_today": 0,
+  "remaining": 1000,
+  "reserve_floor": 50,
+  "current_balance": 0,
+  "last_updated": null,
+  "schema": "shared.vp_budget.v1"
+}

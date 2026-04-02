@@ -1,0 +1,10 @@
+{
+  "tas_total": 0.0,
+  "tas_social": 0.0,
+  "tas_trade": 0.0,
+  "social_weight": 0.7,
+  "trade_weight": 0.3,
+  "mode": "idle",
+  "last_updated": null,
+  "schema": "shared.tas_snapshot.v1"
+}

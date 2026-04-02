@@ -1,0 +1,12 @@
+{
+  "heartbeat_id": null,
+  "timestamp": null,
+  "mode": "idle",
+  "tas_score": 0.0,
+  "tas_social": 0.0,
+  "tas_trade": 0.0,
+  "bookmarker_status": "unknown",
+  "trader_status": "unknown",
+  "alerts": [],
+  "schema": "main.heartbeat.v1"
+}

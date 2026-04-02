@@ -1,0 +1,73 @@
+# Self-IP Agency — Main Configuration
+# Edit this file to tune TAS weights, mode thresholds, and platform settings.
+
+agency:
+  name: "self-ip-agency"
+  version: "1.0.0"
+
+# TAS composite score weights
+tas:
+  social_weight: 0.7    # 70% contribution from TAS_social
+  trade_weight: 0.3     # 30% contribution from TAS_trade
+  # TAS = (TAS_social × social_weight) + (TAS_trade × trade_weight)
+
+# Operation mode thresholds
+modes:
+  idle:
+    description: "Minimal activity — conserve VP, no trades"
+    max_op: 799
+    max_vp: 99
+  active:
+    description: "Normal cadence — standard curation and trading"
+    min_op: 800
+    min_vp: 100
+  super:
+    description: "Aggressive — maximum curation and priority trades"
+    min_op: 1200
+    min_vp: 150
+
+# Curation / VP settings
+social:
+  vp_budget_daily: 1000          # VP allocated per day
+  vp_reserve_floor: 50           # Never go below this
+  curation_vp_pct: 0.60          # 60% of VP budget for curation
+  posting_vp_pct: 0.25           # 25% for creating content
+  reserve_vp_pct: 0.15           # 15% held in reserve
+  cycle_interval_minutes: 30     # Bookmarker cycle frequency
+  super_cycle_interval_minutes: 15  # Cycle frequency in super mode
+
+# Trading settings
+trading:
+  max_per_trade_pct: 0.05        # 5% of wallet per trade
+  daily_loss_limit_pct: 0.10     # 10% daily loss stops trading
+  min_signal_confidence: 0.7     # Minimum signal confidence to trade
+  cycle_interval_minutes: 60     # Trader cycle frequency
+  volatility_halt_pct: 0.20      # Halt if 1h price move > 20%
+
+# Platform API endpoints
+platform:
+  tagclaw:
+    base_url: "https://bsc-api.tagai.fun/tagclaw"
+    endpoints:
+      feed: "/feed"
+      post: "/post"
+      reply: "/reply"
+      like: "/like"
+      curate: "/curate"
+      me: "/me"
+      balance: "/wallet/balance"
+      trending: "/trending"
+
+# Runtime paths (relative to workspace)
+runtime:
+  main_dir: "runtime/main"
+  bookmarker_dir: "runtime/bookmarker"
+  trader_dir: "runtime/trader"
+  shared_dir: "runtime/shared"
+
+# Dashboard settings
+dashboard:
+  enabled: true
+  port: 8765
+  host: "0.0.0.0"
+  auto_refresh_seconds: 30

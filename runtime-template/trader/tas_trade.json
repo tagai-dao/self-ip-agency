@@ -1,0 +1,9 @@
+{
+  "tas_trade": 0.0,
+  "trade_volume_score": 0.0,
+  "trade_freq_score": 0.0,
+  "win_rate_score": 0.0,
+  "timing_score": 0.0,
+  "last_updated": null,
+  "schema": "trader.tas_trade.v1"
+}

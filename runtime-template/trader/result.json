@@ -1,0 +1,12 @@
+{
+  "cycle_id": null,
+  "trades_executed": 0,
+  "trades_rejected": 0,
+  "total_volume_usd": 0.0,
+  "net_pnl_usd": 0.0,
+  "win_rate": 0.0,
+  "tas_trade_delta": 0.0,
+  "tas_trade_total": 0.0,
+  "wallet_balance_usd": 0.0,
+  "schema": "trader.result.v1"
+}
