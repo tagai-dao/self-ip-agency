@@ -144,6 +144,29 @@ has_tagclaw_credentials() {
   [ -n "$api_key" ]
 }
 
+resolve_tagclaw_skill_env_field() {
+  local field="$1"
+  local workspace="${2:-$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")}"
+  python3 - <<'PY' "$workspace" "$field"
+import pathlib, sys
+workspace = pathlib.Path(sys.argv[1])
+field = sys.argv[2]
+path = workspace / 'skills' / 'tagclaw' / '.env'
+data = {}
+if path.exists():
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or '=' not in s:
+            continue
+        k, v = s.split('=', 1)
+        k = k.strip(); v = v.strip()
+        if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+            v = v[1:-1]
+        data[k] = v
+print(data.get(field, ''))
+PY
+}
+
 run_auto_tagclaw_onboarding() {
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
@@ -698,6 +721,11 @@ main() {
     # ── Build ordered next-steps list ───────────────────────────────────────
     local -a NEXT_STEPS=()
     local step_num=0
+    local TAGCLAW_STATUS TAGCLAW_AGENT_USERNAME TAGCLAW_VERIFICATION_CODE TAGCLAW_PROFILE_URL
+    TAGCLAW_STATUS="$(resolve_tagclaw_skill_env_field "TAGCLAW_STATUS" "$workspace")"
+    TAGCLAW_AGENT_USERNAME="$(resolve_tagclaw_skill_env_field "TAGCLAW_AGENT_USERNAME" "$workspace")"
+    TAGCLAW_VERIFICATION_CODE="$(resolve_tagclaw_skill_env_field "TAGCLAW_VERIFICATION_CODE" "$workspace")"
+    TAGCLAW_PROFILE_URL="$(resolve_tagclaw_skill_env_field "TAGCLAW_PROFILE_URL" "$workspace")"
 
     if [ "$CREDENTIALS_EXIST" != "true" ]; then
       # Step 1: rerun installer with integrated TagClaw onboarding args, or call the helper directly.
@@ -708,9 +736,19 @@ main() {
       NEXT_STEPS+=("Or run helper directly: bash $workspace/scripts/tagclaw-onboard.sh full --workspace $workspace --name <9-char-agent-name> --description <short-agent-description>")
     fi
 
-    # After registration, post the verification tweet and poll until active.
-    step_num=$((step_num + 1))
-    NEXT_STEPS+=("After posting the verification tweet, run: bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace")
+    if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
+      step_num=$((step_num + 1))
+      NEXT_STEPS+=("Post this exact verification tweet:")
+      step_num=$((step_num + 1))
+      NEXT_STEPS+=("I'm claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw")
+      step_num=$((step_num + 1))
+      NEXT_STEPS+=("Verification: \"$TAGCLAW_VERIFICATION_CODE\"")
+      step_num=$((step_num + 1))
+      NEXT_STEPS+=("After the tweet is live, run: bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace")
+    elif [ "$TAGCLAW_STATUS" != "active" ]; then
+      step_num=$((step_num + 1))
+      NEXT_STEPS+=("After posting the verification tweet, run: bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace")
+    fi
 
     if [ "$CREDENTIALS_EXIST" = "true" ]; then
       step_num=$((step_num + 1))
@@ -757,6 +795,17 @@ d = {
     'install_status': '$INSTALL_STATUS',
     'summary': '$INSTALL_SUMMARY',
     'next_steps': [{'order': i+1, 'action': s} for i, s in enumerate(steps)],
+    'tagclaw': {
+        'onboard_status': '$TAGCLAW_ONBOARD_STATUS',
+        'status': '$TAGCLAW_STATUS',
+        'agent_username': '$TAGCLAW_AGENT_USERNAME',
+        'verification_code': '$TAGCLAW_VERIFICATION_CODE',
+        'profile_url': '$TAGCLAW_PROFILE_URL',
+        'verification_tweet': [
+            'I\'m claiming my AI agent "$TAGCLAW_AGENT_USERNAME" on @TagClaw',
+            'Verification: "$TAGCLAW_VERIFICATION_CODE"'
+        ] if '$TAGCLAW_STATUS' == 'pending_verification' and '$TAGCLAW_AGENT_USERNAME' and '$TAGCLAW_VERIFICATION_CODE' else []
+    },
     'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'version': '$AGENCY_VERSION'
 }
@@ -779,6 +828,15 @@ print(json.dumps(d, indent=2))
         echo "${md_i}. ${step}"
       done
       echo ""
+      if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
+        echo "## Verification tweet"
+        echo ""
+        echo '```text'
+        echo "I'm claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw"
+        echo "Verification: \"$TAGCLAW_VERIFICATION_CODE\""
+        echo '```'
+        echo ""
+      fi
       echo "## Component status"
       echo ""
       echo "| Component | Status |"
@@ -825,6 +883,21 @@ print(json.dumps(d, indent=2))
     esac
 
     echo "  ║"
+    if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
+      echo "  ║  Verification tweet (post this exact text):"
+      echo "  ║    I'm claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw"
+      echo "  ║    Verification: \"$TAGCLAW_VERIFICATION_CODE\""
+      if [ -n "$TAGCLAW_PROFILE_URL" ]; then
+        echo "  ║    Profile: $TAGCLAW_PROFILE_URL"
+      fi
+      echo "  ║"
+    elif [ "$TAGCLAW_STATUS" = "active" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ]; then
+      echo "  ║  TagClaw account active: $TAGCLAW_AGENT_USERNAME"
+      if [ -n "$TAGCLAW_PROFILE_URL" ]; then
+        echo "  ║    Profile: $TAGCLAW_PROFILE_URL"
+      fi
+      echo "  ║"
+    fi
     echo "  ║  Manual steps required:"
     local box_i=0
     for step in "${NEXT_STEPS[@]}"; do
@@ -859,13 +932,24 @@ print(json.dumps(d, indent=2))
     echo "TRADER_CYCLE_ENTRYPOINT=\"$workspace/scripts/trader-cycle.sh\""
     echo "HEARTBEAT_CONTRACT_PATH=\"$workspace/HEARTBEAT.md\""
     local marker_i=0
+    local step_escaped
     for step in "${NEXT_STEPS[@]}"; do
       marker_i=$((marker_i + 1))
-      echo "NEXT_STEP_${marker_i}=\"${step}\""
+      step_escaped="${step//\\/\\\\}"
+      step_escaped="${step_escaped//\"/\\\"}"
+      echo "NEXT_STEP_${marker_i}=\"${step_escaped}\""
     done
     echo "IDENTITY_RESOLVED=\"${IDENTITY_RESOLVED}\""
     echo "CREDENTIALS_EXIST=\"${CREDENTIALS_EXIST}\""
     echo "TAGCLAW_ONBOARD_STATUS=\"${TAGCLAW_ONBOARD_STATUS}\""
+    echo "TAGCLAW_STATUS=\"${TAGCLAW_STATUS}\""
+    echo "TAGCLAW_AGENT_USERNAME=\"${TAGCLAW_AGENT_USERNAME}\""
+    echo "TAGCLAW_VERIFICATION_CODE=\"${TAGCLAW_VERIFICATION_CODE}\""
+    echo "TAGCLAW_PROFILE_URL=\"${TAGCLAW_PROFILE_URL}\""
+    if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
+      echo "VERIFICATION_TWEET_LINE_1=\"I\'m claiming my AI agent \\\"${TAGCLAW_AGENT_USERNAME}\\\" on @TagClaw\""
+      echo "VERIFICATION_TWEET_LINE_2=\"Verification: \\\"${TAGCLAW_VERIFICATION_CODE}\\\"\""
+    fi
     echo "DASHBOARD_STATUS=\"${DASHBOARD_STATUS}\""
     echo "CRONS_REGISTERED=\"false\""
     echo "INSTALL_SUMMARY=\"${INSTALL_SUMMARY}\""
