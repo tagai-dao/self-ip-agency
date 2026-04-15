@@ -351,7 +351,19 @@ PY
   http_code="$(curl -sS -o "$body_file" -w '%{http_code}' -X POST "$TAGCLAW_API/register" -H 'Content-Type: application/json' -d "$payload_json")"
   if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
     log_err "TagClaw register failed (HTTP $http_code)"
-    cat "$body_file" >&2 || true
+    python3 - <<'PY' "$body_file" >&2
+import json, pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text().strip()
+try:
+    data = json.loads(text)
+except Exception:
+    print(text)
+    raise SystemExit(0)
+msg = data.get('error') or data.get('message') or text
+print(msg)
+if isinstance(msg, str) and 'already has an agent' in msg.lower():
+    print('This wallet/address is already registered on TagClaw. Reuse the existing skills/tagclaw/.env + credentials mirror, or initialize a fresh wallet before retrying register.')
+PY
     rm -f "$body_file"
     return 1
   fi
@@ -366,15 +378,21 @@ wallet_dir = sys.argv[4]
 raw = json.loads(body)
 if isinstance(raw, dict) and raw.get('success') is False:
     raise SystemExit(json.dumps(raw))
-data = raw.get('data') if isinstance(raw, dict) and isinstance(raw.get('data'), dict) else raw
+if isinstance(raw, dict) and isinstance(raw.get('agent'), dict):
+    data = raw['agent']
+elif isinstance(raw, dict) and isinstance(raw.get('data'), dict):
+    data = raw['data']
+else:
+    data = raw
 if not isinstance(data, dict):
     raise SystemExit('Unexpected register response')
 api_key = data.get('apiKey') or data.get('api_key') or data.get('token')
 username = data.get('username') or data.get('agentUsername') or data.get('handle') or requested_name
 verification = data.get('verificationCode') or data.get('verification_code') or data.get('code')
-status = data.get('status') or 'pending_verification'
+status = data.get('status') or raw.get('status') if isinstance(raw, dict) else None
+status = status or 'pending_verification'
 eth_addr = data.get('ethAddr') or data.get('eth_addr')
-profile_url = data.get('profileUrl') or f'https://tagclaw.com/u/{username}'
+profile_url = data.get('profileUrl') or data.get('profile_url') or f'https://tagclaw.com/u/{username}'
 out = {
     'TAGCLAW_AGENT_NAME': requested_name,
     'TAGCLAW_AGENT_USERNAME': username,
