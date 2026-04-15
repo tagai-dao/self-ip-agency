@@ -222,6 +222,8 @@ After a fresh install, the dashboard will show a **blue bootstrap banner** and a
 - The `doctor.sh` script will report bootstrap artifacts as warnings (not failures) if cycles haven't run yet.
 - Genuinely broken or stale states remain clearly marked as degraded/critical after the first cycle has run.
 
+Release note: `docs/release-note-2026-04-15-bootstrap-dashboard.md`
+
 ## Verification
 
 After deployment, verify everything works:

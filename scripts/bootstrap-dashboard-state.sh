@@ -232,6 +232,15 @@ write_if_missing "$RUNTIME/trader/risk-status.json" '{
   "status": "bootstrap"
 }'
 
+write_if_missing "$RUNTIME/trader/tas-trade.json" '{
+  "schema": "trader.tas-trade.v1",
+  "bootstrap": true,
+  "tas_trade": null,
+  "updated_at": null,
+  "risk_flags": [],
+  "autonomy_mode": "bootstrap"
+}'
+
 write_if_missing "$RUNTIME/trader/onchain-positions.json" '{
   "schema": "trader.onchain-positions.v1",
   "bootstrap": true,

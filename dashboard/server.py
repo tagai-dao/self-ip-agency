@@ -1456,6 +1456,16 @@ def _build_dev_dispatch(dev_status: dict, dev_result: dict, dev_task: dict,
     }
 
 
+@app.get("/api/health")
+def api_health():
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return JSONResponse({
+        "status": "ok",
+        "fetched_at": now_utc,
+        "workspace": str(WORKSPACE),
+    })
+
+
 @app.get("/api/status")
 def api_status():
     """Aggregate snapshot of all three agents."""
