@@ -1,0 +1,10 @@
+{
+  "generated_at": null,
+  "health_score": 100.0,
+  "broken_links_count": 0,
+  "stale_count": 0,
+  "orphan_count": 0,
+  "empty_count": 0,
+  "needs_attention": false,
+  "schema": "wiki-lint-status.v1"
+}

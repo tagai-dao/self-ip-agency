@@ -1,0 +1,8 @@
+{
+  "ticks": {},
+  "source_health": {
+    "status": "uninitialized",
+    "last_refresh": null
+  },
+  "schema": "community-heat.v1"
+}

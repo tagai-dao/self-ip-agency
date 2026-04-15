@@ -7,8 +7,10 @@
 #   2. detect_identity       — pull agent identity from TagClaw API
 #   3. configure_from_identity — inject identity into templates
 #   4. install_runtime       — create runtime directory skeleton
-#   5. register_crons        — output openclaw cron commands
-#   6. install_dashboard     — deploy dashboard to workspace
+#   5. install_wiki          — set up wiki template + schema + scripts
+#   6. install_autoresearch  — set up strategy experiment framework
+#   7. register_crons        — output openclaw cron commands
+#   8. install_dashboard     — deploy dashboard to workspace
 
 set -euo pipefail
 
@@ -265,7 +267,103 @@ install_runtime() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 5. register_crons
+# 5. install_wiki
+# ──────────────────────────────────────────────────────────────────────────────
+
+install_wiki() {
+  log_info "Step 5: Installing wiki system..."
+
+  local workspace
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+  local wiki_root="$workspace/wiki"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    log_info "[DRY RUN] Would create wiki dirs under: $wiki_root"
+    return 0
+  fi
+
+  # Copy wiki template structure
+  if [ -d "$AGENCY_DIR/wiki-template" ]; then
+    if [ ! -d "$wiki_root" ]; then
+      cp -r "$AGENCY_DIR/wiki-template" "$wiki_root"
+      log_ok "Wiki template installed at: $wiki_root"
+    else
+      log_info "Wiki directory already exists — skipping template copy"
+      # Ensure subdirs exist
+      for subdir in concepts identity synthesis queries execution lint onchain-ticks; do
+        mkdir -p "$wiki_root/$subdir"
+      done
+      log_ok "Wiki subdirectories verified"
+    fi
+  fi
+
+  # Copy schema files
+  local schema_dst="$workspace/schema"
+  if [ -d "$AGENCY_DIR/schema" ]; then
+    mkdir -p "$schema_dst"
+    cp -n "$AGENCY_DIR/schema/"*.md "$schema_dst/" 2>/dev/null || true
+    cp -n "$AGENCY_DIR/schema/"*.yaml "$schema_dst/" 2>/dev/null || true
+    log_ok "Schema files installed at: $schema_dst"
+  fi
+
+  # Copy wiki config
+  if [ -f "$AGENCY_DIR/config/wiki_topic_registry.json" ]; then
+    local config_dst="$workspace/config"
+    mkdir -p "$config_dst"
+    cp -n "$AGENCY_DIR/config/wiki_topic_registry.json" "$config_dst/" 2>/dev/null || true
+    log_ok "Wiki topic registry installed"
+  fi
+
+  # Copy wiki scripts
+  for script in wiki_lint.py wiki_utils.py wiki_registry.py wiki_search.py verify_wiki_contract.py; do
+    if [ -f "$AGENCY_DIR/scripts/$script" ]; then
+      local scripts_dst="$workspace/scripts"
+      mkdir -p "$scripts_dst"
+      cp -n "$AGENCY_DIR/scripts/$script" "$scripts_dst/" 2>/dev/null || true
+    fi
+  done
+  log_ok "Wiki scripts installed"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6. install_autoresearch
+# ──────────────────────────────────────────────────────────────────────────────
+
+install_autoresearch() {
+  log_info "Step 6: Installing AutoResearch framework..."
+
+  local workspace
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    log_info "[DRY RUN] Would install AutoResearch scripts"
+    return 0
+  fi
+
+  # Copy autoresearch scripts
+  local scripts_dst="$workspace/scripts"
+  mkdir -p "$scripts_dst"
+
+  for script in select_strategy.py strategy_experiment.py record_strategy_cycle.py; do
+    if [ -f "$AGENCY_DIR/scripts/$script" ]; then
+      cp -n "$AGENCY_DIR/scripts/$script" "$scripts_dst/" 2>/dev/null || true
+    fi
+  done
+  log_ok "AutoResearch scripts installed"
+
+  # Initialize strategy log if missing
+  local memory_dir="$workspace/memory"
+  mkdir -p "$memory_dir"
+  if [ ! -f "$memory_dir/main-strategy-log.jsonl" ]; then
+    touch "$memory_dir/main-strategy-log.jsonl"
+    log_ok "Strategy log initialized"
+  fi
+
+  log_ok "AutoResearch framework installed"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 7. register_crons
 # ──────────────────────────────────────────────────────────────────────────────
 
 register_crons() {
@@ -303,7 +401,7 @@ for cmd in data.get('openclaw_cron_commands', []):
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6. install_dashboard
+# 8. install_dashboard
 # ──────────────────────────────────────────────────────────────────────────────
 
 install_dashboard() {
@@ -331,7 +429,7 @@ install_dashboard() {
     if python3 -c "import fastapi" 2>/dev/null; then
       log_info "Starting dashboard server on port 8765..."
       nohup python3 "$dashboard_dst/server.py" \
-        --runtime-root "$workspace/runtime" \
+        --workspace "$workspace" \
         --port 8765 \
         > "$workspace/logs/dashboard.log" 2>&1 &
       local dashboard_pid=$!
@@ -364,6 +462,8 @@ main() {
   detect_identity
   configure_from_identity
   install_runtime
+  install_wiki
+  install_autoresearch
   register_crons
   install_dashboard
 
@@ -384,9 +484,14 @@ print(json.dumps(d, indent=2))
     log_ok "Installation complete! Version $AGENCY_VERSION"
     echo ""
     echo "  Next steps:"
-    echo "    1. Run the cron registration commands above"
-    echo "    2. Visit http://localhost:8765 for the dashboard"
-    echo "    3. Review agents/main.md for orchestrator rules"
+    echo "    1. Set up credentials: cp config/credentials.example.json ~/.config/tagclaw/credentials.json"
+    echo "    2. Edit credentials.json with your API key and private key"
+    echo "    3. Run the cron registration commands above"
+    echo "    4. Visit http://localhost:8765 for the dashboard"
+    echo "    5. Review agents/main.md for orchestrator rules"
+    echo "    6. See docs/wiki-guide.md for LLM Wiki setup"
+    echo "    7. See docs/autoresearch-guide.md for strategy optimization"
+    echo "    8. See docs/obsidian-setup.md to connect wiki to Obsidian"
     echo ""
   fi
 }

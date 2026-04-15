@@ -1,0 +1,81 @@
+version: self-ip-resolver-v1
+
+protected_paths:
+  - wiki/identity/persona.md
+  - wiki/identity/key-positions.md
+  - wiki/identity/README.md
+
+tasks:
+  ingest-source:
+    load:
+      - schema/ingest-rules.md
+      - wiki/INDEX.md
+      - wiki/log.md
+      - wiki/concepts/
+      - raw/x-tweets/
+      - raw/x-bookmarks/
+      - raw/x-interactions/
+      - raw/tagclaw-posts/
+    protected_writes:
+      - wiki/identity/
+
+  answer-query:
+    load:
+      - schema/query-rules.md
+      - wiki/INDEX.md
+      - wiki/concepts/
+      - wiki/synthesis/
+      - wiki/queries/
+      - runtime/shared/resolver-pack.json
+    protected_writes:
+      - wiki/identity/
+
+  draft-content:
+    load:
+      - schema/publish-rules.md
+      - wiki/identity/persona.md
+      - wiki/identity/key-positions.md
+      - wiki/concepts/
+      - wiki/queries/
+      - runtime/shared/feedback-summary.json
+      - runtime/shared/identity-strategy.json
+    protected_writes:
+      - wiki/identity/
+
+  lint-wiki:
+    load:
+      - schema/lint-rules.md
+      - wiki/
+      - runtime/shared/wiki-lint-status.json
+    protected_writes:
+      - wiki/identity/
+
+  update-thesis:
+    load:
+      - schema/thesis-rules.md
+      - wiki/concepts/
+      - wiki/identity/key-positions.md
+      - runtime/shared/claim-index.json
+      - runtime/shared/thesis-index.json
+    protected_writes:
+      - wiki/identity/
+
+  process-feedback:
+    load:
+      - schema/feedback-rules.md
+      - schema/identity-safety.md
+      - runtime/shared/feedback-summary.json
+      - runtime/shared/identity-strategy.json
+    protected_writes:
+      - wiki/identity/
+
+  prepare-briefing:
+    load:
+      - wiki/identity/persona.md
+      - wiki/identity/key-positions.md
+      - wiki/concepts/
+      - runtime/shared/wiki-execution-brief.json
+      - runtime/shared/community-heat.json
+      - runtime/shared/feedback-summary.json
+    protected_writes:
+      - wiki/identity/

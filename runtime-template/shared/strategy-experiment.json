@@ -1,0 +1,16 @@
+{
+  "schema": "strategy-experiment-v1",
+  "track_a": {
+    "description": "Curator/VP strategy",
+    "arms": [],
+    "best_arm": null,
+    "epsilon": 0.1
+  },
+  "track_b": {
+    "description": "Social posting strategy",
+    "arms": [],
+    "best_arm": null,
+    "epsilon": 0.2
+  },
+  "last_updated": null
+}

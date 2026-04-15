@@ -1,164 +1,159 @@
 /**
- * Self-IP Agency Dashboard — Frontend
- * Fetches /api/data every 30s and renders TAS scores + agent status cards.
+ * Self-IP Agency Dashboard v2 — Frontend
+ * Fetches /api/status, /api/strategy every 30s and renders all sections.
  */
 
 const REFRESH_MS = 30_000;
 let refreshTimer = null;
 
-// ── Data fetching ──────────────────────────────────────────────────────────
+// ── Helpers ──
 
-async function fetchData() {
+function fmt(v, fallback) { return v != null ? v : (fallback || '—'); }
+function fmtPct(v) { return v != null ? (v * 100).toFixed(0) + '%' : '—'; }
+function fmtUsd(v) { return v != null ? '$' + Number(v).toFixed(2) : '—'; }
+
+function ageStr(isoStr) {
+  if (!isoStr) return '—';
   try {
-    const res = await fetch("/api/data");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } catch (err) {
-    console.error("Failed to fetch dashboard data:", err);
-    return null;
-  }
+    const dt = new Date(isoStr);
+    const diff = (Date.now() - dt.getTime()) / 1000;
+    if (diff < 60) return Math.round(diff) + 's ago';
+    if (diff < 3600) return Math.round(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.round(diff / 3600) + 'h ago';
+    return Math.round(diff / 86400) + 'd ago';
+  } catch { return '—'; }
 }
 
-// ── Rendering helpers ──────────────────────────────────────────────────────
+function statusIcon(s) {
+  const map = { ok: '✅', active: '✅', running: '🔄', idle: '💤', stale: '⏰', missing: '❓', degraded: '⚠️', unknown: '❓' };
+  return (map[s] || '❓') + ' ' + (s || 'unknown');
+}
 
-function setText(id, value) {
+function setPill(id, status) {
   const el = document.getElementById(id);
-  if (el) el.textContent = value ?? "—";
-}
-
-function setClass(el, ...classes) {
   if (!el) return;
-  el.className = el.className.replace(/\b(idle|active|super)\b/g, "");
-  el.classList.add(...classes.filter(Boolean));
+  el.className = 'pill pill-' + (status || 'unknown');
 }
 
-function formatNum(n, decimals = 0) {
-  if (n == null || isNaN(n)) return "—";
-  return Number(n).toFixed(decimals);
-}
+// ── Data fetching ──
 
-function formatUSD(n) {
-  if (n == null || isNaN(n)) return "—";
-  const abs = Math.abs(n);
-  const sign = n < 0 ? "-" : n > 0 ? "+" : "";
-  return `${sign}$${abs.toFixed(2)}`;
-}
-
-function formatRelativeTime(isoStr) {
-  if (!isoStr) return "—";
+async function fetchStatus() {
   try {
-    const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
-    if (diff < 60) return `${diff}s ago`;
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    return `${Math.floor(diff / 3600)}h ago`;
-  } catch {
-    return "—";
+    const resp = await fetch('/api/status');
+    if (!resp.ok) return;
+    const d = await resp.json();
+    renderStatus(d);
+  } catch (e) {
+    console.error('fetchStatus failed:', e);
   }
 }
 
-// ── Main render ────────────────────────────────────────────────────────────
+async function fetchStrategy() {
+  try {
+    const resp = await fetch('/api/strategy');
+    if (!resp.ok) return;
+    const d = await resp.json();
+    renderStrategy(d);
+  } catch (e) {
+    console.error('fetchStrategy failed:', e);
+  }
+}
 
-function render(data) {
-  if (!data) return;
+function fetchAll() {
+  fetchStatus();
+  fetchStrategy();
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+}
 
-  const { tas, agents, vp, alerts } = data;
+// ── Renderers ──
 
-  // TAS hero
-  setText("tas-total", formatNum(tas?.total, 1));
-  setText("tas-social", formatNum(tas?.social, 1));
-  setText("tas-trade", formatNum(tas?.trade, 1));
+function renderStatus(d) {
+  // TAS
+  document.getElementById('tas-total').textContent = fmt(d.tas?.total);
+  document.getElementById('tas-social').textContent = fmt(d.tas?.social);
+  document.getElementById('tas-trade').textContent = fmt(d.tas?.trade);
+  const modeEl = document.getElementById('tas-mode');
+  modeEl.textContent = fmt(d.tas?.mode, 'idle');
+  modeEl.className = 'mode-badge mode-' + (d.tas?.mode || 'idle');
 
-  // Mode badge
-  const modeBadge = document.getElementById("mode-badge");
-  const mode = tas?.mode || "idle";
-  if (modeBadge) {
-    modeBadge.textContent = mode.toUpperCase();
-    modeBadge.className = `mode-badge ${mode}`;
+  // Live OP/VP
+  document.getElementById('live-op').textContent = fmt(d.live_op_vp?.op);
+  document.getElementById('live-vp').textContent = fmt(d.live_op_vp?.vp);
+
+  // Agent pills
+  const agents = d.agents || {};
+  for (const name of ['main', 'bookmarker', 'trader']) {
+    const a = agents[name] || {};
+    const ageStatus = a.age_status || a.status || 'unknown';
+    setPill('pill-' + name, ageStatus === 'ok' ? 'ok' : (ageStatus === 'stale' ? 'stale' : a.status));
   }
 
   // Main agent
-  const mainA = agents?.main || {};
-  const mainDot = document.getElementById("dot-main");
-  setClass(mainDot, mainA.status === "active" ? "active" : "idle");
-  setText("main-mode", mainA.mode || "—");
-  setText("main-heartbeat", formatRelativeTime(mainA.last_heartbeat));
-  setText("main-uptime", mainA.uptime_hours != null ? `${mainA.uptime_hours}h` : "—");
+  const main = agents.main || {};
+  document.getElementById('main-status').textContent = statusIcon(main.status);
+  document.getElementById('main-heartbeat').textContent = ageStr(main.last_heartbeat);
+  document.getElementById('main-freshness').textContent = statusIcon(main.age_status);
 
-  // Bookmarker agent
-  const bmA = agents?.bookmarker || {};
-  const bmDot = document.getElementById("dot-bookmarker");
-  setClass(bmDot, bmA.status === "active" ? "active" : "idle");
-  setText("bm-tas", formatNum(bmA.tas_social, 1));
-  setText("bm-curated", bmA.posts_curated ?? "—");
-  setText("bm-vp", bmA.vp_spent != null ? `${bmA.vp_spent} VP` : "—");
-  setText("bm-posts", bmA.posts_created ?? "—");
+  // Bookmarker
+  const bk = agents.bookmarker || {};
+  document.getElementById('bk-status').textContent = statusIcon(bk.status);
+  document.getElementById('bk-tas').textContent = fmt(bk.tas_social);
+  const topics = bk.topic_brief || [];
+  document.getElementById('bk-topics').textContent = topics.length ? topics.map(t => typeof t === 'string' ? t : (t.name || t.topic || '')).join(', ') : '—';
 
-  const bmCard = document.getElementById("card-bookmarker");
-  if (bmCard) setClass(bmCard, "agent-card", bmA.status === "active" ? "active" : "");
+  // Trader
+  const tr = agents.trader || {};
+  document.getElementById('tr-status').textContent = statusIcon(tr.status);
+  document.getElementById('tr-tas').textContent = fmt(tr.tas_trade);
+  document.getElementById('tr-wallet').textContent = fmtUsd(tr.wallet?.total_usd);
 
-  // Trader agent
-  const trA = agents?.trader || {};
-  const trDot = document.getElementById("dot-trader");
-  setClass(trDot, trA.status === "active" ? "active" : "idle");
-  setText("tr-tas", formatNum(trA.tas_trade, 1));
-  setText("tr-trades", trA.trades_executed ?? "—");
-  setText("tr-volume", trA.total_volume_usd != null ? `$${trA.total_volume_usd.toFixed(0)}` : "—");
-  const pnlEl = document.getElementById("tr-pnl");
-  if (pnlEl) {
-    pnlEl.textContent = formatUSD(trA.net_pnl_usd);
-    pnlEl.style.color = (trA.net_pnl_usd ?? 0) >= 0
-      ? "var(--accent-green)"
-      : "var(--accent-red)";
-  }
+  // Wiki
+  const wiki = d.wiki || {};
+  document.getElementById('wiki-health').textContent = wiki.health_score != null ? wiki.health_score.toFixed(1) : '—';
+  document.getElementById('wiki-contract').textContent = statusIcon(wiki.contract_status) + ` (${fmt(wiki.contract_pass, 0)}/${fmt(wiki.contract_pass + wiki.contract_fail, 0)})`;
+  document.getElementById('wiki-attention').textContent = wiki.needs_attention ? '⚠️ Yes' : '✅ No';
 
-  const trCard = document.getElementById("card-trader");
-  if (trCard) setClass(trCard, "agent-card", trA.status === "active" ? "active" : "");
+  // Strategy summary
+  const strat = d.strategy || {};
+  document.getElementById('strat-bk-mode').textContent = fmt(strat.bk_mode);
+  document.getElementById('strat-bk-wr').textContent = fmtPct(strat.bk_win_rate);
+  document.getElementById('strat-tr-mode').textContent = fmt(strat.tr_mode);
+  document.getElementById('strat-tr-wr').textContent = fmtPct(strat.tr_win_rate);
+  document.getElementById('strat-cycles').textContent = fmt(strat.experiment_cycle);
 
-  // VP bar
-  if (vp) {
-    const budget = vp.daily_budget || 1000;
-    const used = vp.used_today || 0;
-    const pct = Math.min((used / budget) * 100, 100);
-    const reservePct = Math.min(((budget - vp.reserve_floor) / budget) * 100, 100);
-
-    const fill = document.getElementById("vp-fill");
-    const reserveLine = document.getElementById("vp-reserve-line");
-    if (fill) fill.style.width = `${pct}%`;
-    if (reserveLine) reserveLine.style.left = `${reservePct}%`;
-
-    setText("vp-used-label", `${used} used / ${budget} daily`);
-    setText("vp-remaining-label", `${vp.remaining ?? "—"} remaining`);
-  }
-
-  // Alerts
-  const alertsList = document.getElementById("alerts-list");
-  const alertsSection = document.getElementById("alerts-section");
-  if (alertsList && alertsSection) {
-    const alertArr = Array.isArray(alerts) ? alerts : [];
-    alertsSection.style.display = alertArr.length > 0 ? "block" : "none";
-    alertsList.innerHTML = alertArr
-      .slice(0, 10)
-      .map(a => `<div class="alert-item">${String(a).replace(/</g, "&lt;")}</div>`)
-      .join("");
-  }
-
-  // Timestamp
-  setText("last-updated", data.generated_at
-    ? new Date(data.generated_at).toLocaleTimeString()
-    : "—"
-  );
+  // Community heat
+  const heat = d.community_heat || {};
+  const ticks = heat.top_ticks || [];
+  document.getElementById('community-ticks').textContent = ticks.length ? ticks.join(' · ') : '—';
 }
 
-// ── Init ───────────────────────────────────────────────────────────────────
-
-async function refresh() {
-  const data = await fetchData();
-  render(data);
+function renderStrategy(d) {
+  const container = document.getElementById('recent-cycles');
+  if (!container) return;
+  const cycles = d.recent_cycles || [];
+  if (!cycles.length) {
+    container.textContent = 'No strategy cycles yet';
+    return;
+  }
+  let html = '<table class="cycle-table"><tr><th>Cycle</th><th>Outcome</th><th>Delta</th><th>Mode</th></tr>';
+  for (const c of cycles.slice(-5).reverse()) {
+    const delta = c.delta?.total != null ? (c.delta.total > 0 ? '+' : '') + c.delta.total.toFixed(4) : '—';
+    const icon = c.kept ? '✅' : '❌';
+    html += `<tr><td>${(c.cycle_id || '').slice(0, 19)}</td><td>${icon} ${c.outcome || '—'}</td><td>${delta}</td><td>${c.experiment_mode || '—'}</td></tr>`;
+  }
+  html += '</table>';
+  container.innerHTML = html;
 }
 
-async function init() {
-  await refresh();
-  refreshTimer = setInterval(refresh, REFRESH_MS);
+// ── Clock + auto-refresh ──
+
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString();
 }
 
-document.addEventListener("DOMContentLoaded", init);
+setInterval(updateClock, 1000);
+updateClock();
+
+// Initial fetch
+fetchAll();
+refreshTimer = setInterval(fetchAll, REFRESH_MS);

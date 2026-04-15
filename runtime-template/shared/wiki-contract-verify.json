@@ -1,0 +1,8 @@
+{
+  "verified_at": null,
+  "schema": "wiki-runtime-contract-v1",
+  "pass": 0,
+  "fail": 0,
+  "status": "uninitialized",
+  "checks": []
+}

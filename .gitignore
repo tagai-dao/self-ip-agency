@@ -1,0 +1,36 @@
+# Secrets — NEVER commit these
+config/credentials.json
+*.key
+*.pem
+.env
+.env.*
+
+# Runtime state (generated at deploy time)
+runtime/
+.installed
+.cache/
+
+# Generated agent configs (contain identity)
+agents/main.md
+agents/bookmarker.md
+agents/trader.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log

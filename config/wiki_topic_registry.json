@@ -1,0 +1,50 @@
+{
+  "schema": "wiki-topic-registry-v1",
+  "description": "Canonical topic/tick/concept registry for self-IP LLM Wiki. Single source of truth for naming, aliases, and relationships. Scripts should import wiki_registry.py resolver instead of maintaining local alias maps.",
+  "updated_at": "{{INSTALL_DATE}}",
+
+  "concepts": {
+    "TagClaw": {
+      "canonical_name": "TagClaw",
+      "display_name": "TagClaw",
+      "aliases": ["tagclaw", "TagClawX"],
+      "category": "core",
+      "wiki_file": "wiki/concepts/TagClaw.md"
+    },
+    "DeSoc": {
+      "canonical_name": "DeSoc",
+      "display_name": "DeSoc",
+      "aliases": ["desoc-agent", "decentralized-social"],
+      "category": "social",
+      "wiki_file": "wiki/concepts/DeSoc.md"
+    },
+    "SocialFi": {
+      "canonical_name": "SocialFi",
+      "display_name": "SocialFi",
+      "aliases": ["social-fi"],
+      "category": "social",
+      "wiki_file": "wiki/concepts/SocialFi.md"
+    }
+  },
+
+  "ticks": {
+    "TagClaw": {
+      "canonical_name": "TagClaw",
+      "display_name": "TagClaw",
+      "tracked": true,
+      "wiki_file": "wiki/onchain-ticks/TagClaw.md"
+    },
+    "BUIDL": {
+      "canonical_name": "BUIDL",
+      "display_name": "BUIDL",
+      "tracked": true,
+      "wiki_file": "wiki/onchain-ticks/BUIDL.md"
+    },
+    "TTAI": {
+      "canonical_name": "TTAI",
+      "display_name": "TTAI",
+      "tracked": true,
+      "wiki_file": "wiki/onchain-ticks/TTAI.md"
+    }
+  }
+}

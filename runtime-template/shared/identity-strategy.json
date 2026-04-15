@@ -1,0 +1,15 @@
+{
+  "schema": "identity-strategy.v1",
+  "topic_weights": {},
+  "format_preferences": {},
+  "platform_heuristics": {},
+  "source_priority": {},
+  "protected_identity_fields": [
+    "persona",
+    "key_positions",
+    "worldview_constraints",
+    "forbidden_framings",
+    "protected_vocabulary"
+  ],
+  "last_updated": null
+}
