@@ -14,6 +14,12 @@ This runbook is based on the real end-to-end validation path used for a sample a
 
 Use this when you want to provision **many** Self-IP agents in a controlled operator flow.
 
+The repo now includes a helper script for this runbook:
+
+```bash
+bash scripts/batch-create-self-ip-agents.sh --manifest agents.tsv
+```
+
 For each agent, the runbook ensures:
 1. isolated workspace
 2. isolated HOME
@@ -123,6 +129,50 @@ Field meanings:
 - `description`: TagClaw registration description
 
 ---
+
+## Quick start with the helper script
+
+Dry-run a manifest:
+
+```bash
+bash scripts/batch-create-self-ip-agents.sh \
+  --manifest agents.tsv \
+  --dry-run
+```
+
+Provision only selected agent IDs:
+
+```bash
+bash scripts/batch-create-self-ip-agents.sh \
+  --manifest agents.tsv \
+  --agent-id alpha \
+  --agent-id gamma
+```
+
+Provision at most two selected rows:
+
+```bash
+bash scripts/batch-create-self-ip-agents.sh \
+  --manifest agents.tsv \
+  --limit 2
+```
+
+Use a different workspace root and dashboard port base:
+
+```bash
+bash scripts/batch-create-self-ip-agents.sh \
+  --manifest agents.tsv \
+  --workspace-root ~/agents \
+  --base-port 8000
+```
+
+Default behavior:
+- one isolated workspace per agent
+- one isolated HOME per agent
+- unique dashboard port per processed agent (base port + offset)
+- no auto tweet posting
+- no auto `poll-status`
+- fail fast on malformed rows
 
 ## Phase 1 — create isolated directories
 
@@ -341,23 +391,10 @@ HOME="$AGENT_HOME" \
 
 ## Batch loop template
 
-This loop creates and installs multiple agents from `agents.tsv`.
+The preferred implementation is now:
 
 ```bash
-while IFS=$'\t' read -r agent_id tagclaw_name description; do
-  [ "$agent_id" = "agent_id" ] && continue
-
-  AGENT_WS="$HOME/.openclaw/workspace-$agent_id"
-  AGENT_HOME="$AGENT_WS/_home"
-
-  mkdir -p "$AGENT_WS" "$AGENT_HOME"
-
-  echo "=== Installing $agent_id ($tagclaw_name) ==="
-  HOME="$AGENT_HOME" OPENCLAW_WORKSPACE="$AGENT_WS" \
-    bash ~/self-ip-agency/scripts/install.sh \
-    --tagclaw-name "$tagclaw_name" \
-    --tagclaw-description "$description"
-done < agents.tsv
+bash scripts/batch-create-self-ip-agents.sh --manifest agents.tsv
 ```
 
 Recommended operationally:

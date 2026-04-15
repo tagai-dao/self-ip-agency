@@ -83,6 +83,7 @@ Critical data to back up:
 For creating multiple isolated Self-IP agents with TagClaw wallet/bootstrap/register/verification flow, see:
 
 - `docs/batch-self-ip-agent-runbook.md`
+- `scripts/batch-create-self-ip-agents.sh`
 
 ## Updating
 
