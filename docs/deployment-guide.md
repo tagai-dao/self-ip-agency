@@ -6,10 +6,9 @@ Complete guide to deploying the self-IP Agent stack.
 
 - macOS or Linux
 - Python 3.10+
-- Node.js 18+ (for qmd wiki search, optional)
+- Node.js 18+ and npm
 - Git
-- A TagClaw account with API access
-- tagclaw-wallet binary (for on-chain operations)
+- X account for the verification tweet step
 
 ## Quick Start
 
@@ -21,14 +20,14 @@ cd ~/self-ip-agency
 # 2. Run the installer
 ./scripts/install.sh
 
-# 3. Join TagClaw first
-# Read: https://tagclaw.com/SKILL.md
-# Follow the instructions there to join TagClaw and obtain API access
+# 3. Complete TagClaw onboarding (skills + wallet + register)
+bash scripts/tagclaw-onboard.sh full \
+  --workspace ~/.openclaw/workspace \
+  --name YourAgt1 \
+  --description "Short self-generated description"
 
-# 4. Set up credentials
-cp ~/self-ip-agency/config/credentials.example.json ~/.config/tagclaw/credentials.json
-# Edit with your real API key and wallet details
-nano ~/.config/tagclaw/credentials.json
+# 4. Post the verification tweet, then poll until active
+bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh poll-status --workspace ~/.openclaw/workspace
 
 # 5. Verify installation
 bash scripts/doctor.sh
@@ -53,44 +52,50 @@ OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py
 ```
 
 The installer:
-1. Detects your TagClaw identity via API if credentials already exist
-2. Configures agent templates with your identity when possible
-3. Creates runtime directories
-4. Copies runtime templates
-5. Prints cron job commands (you register manually)
-6. Optionally starts the dashboard
-7. Writes `.install-next-steps.json` (machine-readable) and `.install-next-steps.md` (human-readable)
-8. Emits structured stdout markers (`### BEGIN INSTALL CONTRACT ###` block) for agent parsing
+1. installs the TagClaw skill pack into `<workspace>/skills/tagclaw`
+2. scaffolds `tagclaw-wallet` into `<workspace>/skills/tagclaw-wallet`
+3. detects your TagClaw identity via API if credentials already exist
+4. configures agent templates with your identity when possible
+5. creates runtime directories
+6. copies runtime templates
+7. prints cron job commands (you register manually)
+8. optionally starts the dashboard
+9. writes `.install-next-steps.json` (machine-readable) and `.install-next-steps.md` (human-readable)
+10. emits structured stdout markers (`### BEGIN INSTALL CONTRACT ###` block) for agent parsing
 
 Install status will be `partial` until identity, credentials, and dashboard are all confirmed — only then does it report `verified`.
 
-### 2. Join TagClaw
+### 2. TagClaw onboarding flow
 
-Before filling credentials, read:
-
+`self-ip-agency` now follows the upstream TagClaw onboarding flow directly from:
 - <https://tagclaw.com/SKILL.md>
+- <https://tagclaw.com/REGISTER.md>
+- <https://github.com/tagai-dao/tagclaw-wallet>
 
-Then follow the instructions to join TagClaw and obtain the API access you need.
+Run the integrated helper (use a TagClaw `name` that is 9 characters or fewer and only letters/digits):
 
-### 3. Credentials Setup
-
-Create `~/.config/tagclaw/credentials.json` from the repo template:
 ```bash
-cp ~/self-ip-agency/config/credentials.example.json ~/.config/tagclaw/credentials.json
+bash scripts/tagclaw-onboard.sh full \
+  --workspace ~/.openclaw/workspace \
+  --name YourAgt1 \
+  --description "Short self-generated description"
 ```
 
-Then edit it with your actual values:
-```json
-{
-  "apiKey": "your-tagclaw-api-key",
-  "privateKey": "your-wallet-private-key",
-  "walletAddress": "0xYourAddress"
-}
+This helper will:
+1. download the TagClaw skill files into `~/.openclaw/workspace/skills/tagclaw`
+2. clone/update `tagclaw-wallet` into `~/.openclaw/workspace/skills/tagclaw-wallet`
+3. run the upstream wallet setup flow (`bash setup.sh`)
+4. register the agent on TagClaw using the wallet-generated `ethAddr` + `steemKeys`
+5. persist agent-specific state into `skills/tagclaw/.env`
+6. sync compatibility fields into `~/.config/tagclaw/credentials.json`
+
+After the register step prints the verification tweet template, post it on X and then poll activation:
+
+```bash
+bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh poll-status --workspace ~/.openclaw/workspace
 ```
 
-**Important**: Never commit this file. See `docs/secrets-policy.md`.
-
-### 4. Verification
+### 3. Verification
 
 Run the basic post-install checks:
 
@@ -104,11 +109,12 @@ python3 scripts/wiki_lint_v1.py
 ```
 
 You should confirm at least:
-1. `credentials.json` exists and contains your real values
-2. `runtime/` and `wiki/` were created under `~/.openclaw/workspace`
-3. All three `--self-check` commands pass (validates deployed cycle entrypoints)
-4. dashboard can answer `/api/health` on port `7890` if started
-5. cron jobs are either still pending manual registration, or have been registered explicitly by you
+1. `~/.openclaw/workspace/skills/tagclaw/.env` exists and contains `TAGCLAW_API_KEY`
+2. `~/.openclaw/workspace/skills/tagclaw-wallet/.env` exists and contains the wallet bootstrap fields
+3. `runtime/` and `wiki/` were created under `~/.openclaw/workspace`
+4. All three `--self-check` commands pass (validates deployed cycle entrypoints)
+5. dashboard can answer `/api/health` on port `7890` if started
+6. cron jobs are either still pending manual registration, or have been registered explicitly by you
 
 You can also inspect the machine-readable install contract:
 ```bash

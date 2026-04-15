@@ -7,7 +7,7 @@
 **Symptom**: `dev-claude.sh` exits immediately or status stays "idle"
 
 **Check**:
-1. Verify credentials: `cat ~/.config/tagclaw/credentials.json | python3 -m json.tool`
+1. Verify TagClaw onboarding state: `bash scripts/doctor.sh` and inspect `~/.openclaw/workspace/skills/tagclaw/.env`
 2. Check runtime dirs exist: `ls runtime/{main,bookmarker,trader,shared}/`
 3. Verify Python 3.10+: `python3 --version`
 4. Check logs: `cat runtime/dev/status.json`

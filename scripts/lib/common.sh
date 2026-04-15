@@ -80,17 +80,32 @@ except Exception as e:
 # ── Path detection ────────────────────────────────────────────────────────────
 
 detect_tagclaw_wallet() {
-  # Try common installation paths
+  # Try workspace-local repo first, then common binary locations.
+  local workspace="${OPENCLAW_WORKSPACE:-}"
+  if [ -z "$workspace" ] || [ ! -d "$workspace" ]; then
+    workspace="$HOME/.openclaw/workspace"
+  fi
   for candidate in \
+    "$workspace/skills/tagclaw-wallet/bin/wallet.js" \
     "$(which tagclaw-wallet 2>/dev/null)" \
     "$HOME/.local/bin/tagclaw-wallet" \
     "$HOME/tagclaw-wallet/tagclaw-wallet" \
     "/usr/local/bin/tagclaw-wallet" \
     "$HOME/tagclaw-wallet/dist/tagclaw-wallet"
   do
-    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-      echo "$candidate"
-      return 0
+    if [ -n "$candidate" ] && [ -e "$candidate" ]; then
+      case "$candidate" in
+        *.js)
+          echo "node $candidate"
+          return 0
+          ;;
+        *)
+          if [ -x "$candidate" ]; then
+            echo "$candidate"
+            return 0
+          fi
+          ;;
+      esac
     fi
   done
   echo ""

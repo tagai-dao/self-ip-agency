@@ -83,30 +83,81 @@ check_dir "$WORKSPACE/scripts" "scripts/ directory"
 
 echo ""
 
-# ── 3. Credentials ──────────────────────────────────────────────────────────
-echo "3. Credentials"
+# ── 3. Credentials + TagClaw onboarding ────────────────────────────────────
+echo "3. Credentials + TagClaw onboarding"
 CREDS_FILE="$HOME/.config/tagclaw/credentials.json"
-if [ -f "$CREDS_FILE" ]; then
-  # Check that it has required keys but don't print values
+SKILL_ENV="$WORKSPACE/skills/tagclaw/.env"
+WALLET_DIR="$WORKSPACE/skills/tagclaw-wallet"
+WALLET_ENV="$WALLET_DIR/.env"
+
+if [ -f "$WORKSPACE/scripts/tagclaw-onboard.sh" ] || [ -f "$AGENCY_DIR/scripts/tagclaw-onboard.sh" ]; then
+  ok "tagclaw-onboard.sh available"
+else
+  warn "tagclaw-onboard.sh missing"
+fi
+
+if [ -f "$SKILL_ENV" ]; then
   if python3 -c "
-import json, sys
-d = json.load(open('$CREDS_FILE'))
-missing = [k for k in ('api_key', 'apiKey', 'privateKey', 'private_key') if d.get(k) is None]
-keys = list(d.keys())
-print('Keys: ' + ', '.join(keys))
-has_api = bool(d.get('api_key') or d.get('apiKey'))
-has_pk = bool(d.get('privateKey') or d.get('private_key'))
-if not has_api:
-    print('MISSING_API_KEY')
-if not has_pk:
-    print('MISSING_PRIVATE_KEY')
-" 2>/dev/null | grep -q "MISSING_API_KEY"; then
-    warn "credentials.json found but missing api_key"
-  elif python3 -c "import json; d = json.load(open('$CREDS_FILE')); print('ok')" 2>/dev/null | grep -q "ok"; then
-    ok "credentials.json exists and is valid JSON"
+import pathlib
+path = pathlib.Path('$SKILL_ENV')
+data = {}
+for line in path.read_text().splitlines():
+    s = line.strip()
+    if not s or s.startswith('#') or '=' not in s:
+        continue
+    k, v = s.split('=', 1)
+    data[k.strip()] = v.strip().strip('\"').strip(\"'\")
+print('ok' if data.get('TAGCLAW_API_KEY') else 'missing')
+" 2>/dev/null | grep -q "ok"; then
+    ok "skills/tagclaw/.env exists and contains TAGCLAW_API_KEY"
+  else
+    warn "skills/tagclaw/.env exists but TAGCLAW_API_KEY is missing"
   fi
 else
-  fail "credentials.json not found — first read https://tagclaw.com/SKILL.md and join TagClaw, then run: cp $AGENCY_DIR/config/credentials.example.json $CREDS_FILE && edit it"
+  warn "skills/tagclaw/.env missing — run: bash $WORKSPACE/scripts/tagclaw-onboard.sh full --workspace $WORKSPACE --name <9-char-agent-name> --description \"Short agent description\""
+fi
+
+if [ -d "$WALLET_DIR/.git" ]; then
+  ok "skills/tagclaw-wallet repo exists"
+else
+  warn "skills/tagclaw-wallet repo missing — run: bash $WORKSPACE/scripts/tagclaw-onboard.sh wallet-install --workspace $WORKSPACE"
+fi
+
+if [ -f "$WALLET_ENV" ]; then
+  if python3 -c "
+import pathlib
+path = pathlib.Path('$WALLET_ENV')
+required = ['TAGCLAW_ETH_ADDR','TAGCLAW_STEEM_POSTING_PUB','TAGCLAW_STEEM_POSTING_PRI','TAGCLAW_STEEM_OWNER','TAGCLAW_STEEM_ACTIVE','TAGCLAW_STEEM_MEMO']
+data = {}
+for line in path.read_text().splitlines():
+    s = line.strip()
+    if not s or s.startswith('#') or '=' not in s:
+        continue
+    k, v = s.split('=', 1)
+    data[k.strip()] = v.strip().strip('\"').strip(\"'\")
+missing = [k for k in required if not data.get(k)]
+print('ok' if not missing else 'missing')
+" 2>/dev/null | grep -q "ok"; then
+    ok "skills/tagclaw-wallet/.env exists and wallet prerequisites are initialized"
+  else
+    warn "skills/tagclaw-wallet/.env exists but wallet initialization is incomplete"
+  fi
+else
+  warn "skills/tagclaw-wallet/.env missing — run: bash $WORKSPACE/scripts/tagclaw-onboard.sh wallet-init --workspace $WORKSPACE"
+fi
+
+if [ -f "$CREDS_FILE" ]; then
+  if python3 -c "
+import json
+creds = json.load(open('$CREDS_FILE'))
+print('ok' if (creds.get('api_key') or creds.get('apiKey')) else 'missing')
+" 2>/dev/null | grep -q "ok"; then
+    ok "legacy credentials.json exists and contains API key"
+  else
+    warn "legacy credentials.json exists but API key is missing"
+  fi
+else
+  warn "legacy credentials.json missing — it will be auto-synced after TagClaw registration"
 fi
 
 echo ""

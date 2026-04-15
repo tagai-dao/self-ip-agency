@@ -2,7 +2,7 @@
 adapters/tagclaw.py — TagClaw platform adapter.
 
 Implements AbstractPlatformAdapter for the TagClaw API.
-All endpoints come from https://tagclaw.com/SKILLS.md
+All endpoints come from https://tagclaw.com/SKILL.md
 
 Dependencies: stdlib only (urllib, json, pathlib, subprocess).
 No third-party packages required.
@@ -26,10 +26,10 @@ class TagClawAdapter(AbstractPlatformAdapter):
     """
     TagClaw API adapter.
 
-    Authentication uses the API key stored in agency-identity.json
-    (which points to ~/.config/tagclaw/credentials.json).
-    The credentials file is read at construction time but its path
-    is never logged or stored in any output.
+    Authentication prefers the workspace-local skills/tagclaw/.env API key and
+    falls back to ~/.config/tagclaw/credentials.json for legacy compatibility.
+    The credential paths are read at construction time but never logged or stored
+    in any output.
     """
 
     def __init__(
@@ -46,8 +46,24 @@ class TagClawAdapter(AbstractPlatformAdapter):
         self._load_credentials(identity_path)
 
     def _load_credentials(self, identity_path: Path) -> None:
-        """Load API key from credentials file referenced in identity.json."""
+        """Load API key from workspace skills env first, then legacy credentials.json."""
         try:
+            skill_env = identity_path.parent.parent / "skills" / "tagclaw" / ".env"
+            if skill_env.exists():
+                data: dict[str, str] = {}
+                for line in skill_env.read_text().splitlines():
+                    s = line.strip()
+                    if not s or s.startswith("#") or "=" not in s:
+                        continue
+                    k, v = s.split("=", 1)
+                    v = v.strip()
+                    if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+                        v = v[1:-1]
+                    data[k.strip()] = v
+                self._api_key = data.get("TAGCLAW_API_KEY")
+                if self._api_key:
+                    return
+
             if not identity_path.exists():
                 return
             identity = json.loads(identity_path.read_text())

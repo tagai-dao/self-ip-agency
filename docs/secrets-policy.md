@@ -9,19 +9,29 @@ and referenced via paths or environment variables.
 
 | Credential | Storage | Reference |
 |-----------|---------|-----------|
-| TagClaw API key | `~/.config/tagclaw/credentials.json` | `adapters/tagclaw.py` |
-| Wallet private key | `~/.config/tagclaw/credentials.json` | `tagclaw-wallet` binary |
+| TagClaw API key (canonical) | `<workspace>/skills/tagclaw/.env` | `scripts/tagclaw-onboard.sh`, `adapters/tagclaw.py` |
+| TagClaw API key (legacy compatibility mirror) | `~/.config/tagclaw/credentials.json` | older scripts still reading JSON |
+| Wallet bootstrap fields | `<workspace>/skills/tagclaw-wallet/.env` | `scripts/tagclaw-onboard.sh` |
 | X API keys | `~/.config/tagclaw/x-credentials.json` | Custom X adapter |
 | GitHub token | `~/.config/tagclaw/github-token` | CI/CD scripts |
 
 ## Templates
 
-Before creating credentials, first read <https://tagclaw.com/SKILL.md> and join TagClaw so you have the correct API access.
+The recommended path is now the integrated onboarding helper:
 
-The repo includes credential templates with placeholder values:
-- `~/self-ip-agency/config/credentials.example.json` — Copy to `~/.config/tagclaw/credentials.json`
+```bash
+bash scripts/tagclaw-onboard.sh full \
+  --workspace ~/.openclaw/workspace \
+  --name YourAgt1 \
+  --description "Short self-generated description"
+```
 
-After running `install.sh`, check `.install-next-steps.json` for the machine-readable ordered steps — the TagClaw join step is always first, before credential configuration.
+This writes the canonical agent-specific values to `skills/tagclaw/.env` and syncs a compatibility mirror to `~/.config/tagclaw/credentials.json`.
+
+The repo still includes a legacy JSON template when you need to inspect or backfill the compatibility file manually:
+- `~/self-ip-agency/config/credentials.example.json` — compatibility template for `~/.config/tagclaw/credentials.json`
+
+After running `install.sh`, check `.install-next-steps.json` for the machine-readable ordered steps.
 
 ## .gitignore Rules
 

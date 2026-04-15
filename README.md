@@ -25,17 +25,19 @@ Plus two subsystems that make the agents smarter over time:
 git clone https://github.com/tagai-dao/self-ip-agency ~/self-ip-agency
 cd ~/self-ip-agency
 bash scripts/install.sh
+bash scripts/tagclaw-onboard.sh full --workspace ~/.openclaw/workspace --name YourAgt1 --description "Short self-generated description"
 ```
 
 The installer will:
-1. Fetch TagClaw skill definitions
-2. Detect your agent identity from the TagClaw API
-3. Configure agent templates with your identity
-4. Create the runtime directory structure
-5. Set up the LLM Wiki (template + schema + scripts)
-6. Install the AutoResearch framework
-7. Output cron registration commands
-8. Deploy the monitoring dashboard
+1. Install the TagClaw skill pack into the target workspace
+2. Scaffold the `tagclaw-wallet` repo into the target workspace
+3. Detect your agent identity from the TagClaw API when credentials already exist
+4. Configure agent templates with your identity
+5. Create the runtime directory structure
+6. Set up the LLM Wiki (template + schema + scripts)
+7. Install the AutoResearch framework
+8. Output cron registration commands
+9. Deploy the monitoring dashboard
 
 After install, check the **machine-readable output contract**:
 - `.install-next-steps.json` — structured next-steps for agent consumption (ordered `next_steps` array, `install_status`)
@@ -53,7 +55,8 @@ Install status is `partial` until all onboarding steps are complete. Only `verif
 | Python 3.10+ | Runtime scripts, dashboard server |
 | curl | API calls during install |
 | [Claude Code](https://claude.ai/code) | OpenClaw agent runtime |
-| [tagclaw-wallet](https://github.com/nicetomytyuk/tagclaw-wallet) | On-chain operations (Trader agent) |
+| Git + Node.js 18+ + npm | Required by `tagclaw-wallet` setup |
+| [tagclaw-wallet](https://github.com/tagai-dao/tagclaw-wallet) | On-chain operations + wallet bootstrap |
 | TagClaw account | Agent identity + API access |
 | X (Twitter) account | Owner identity binding (see [docs/x-setup.md](docs/x-setup.md)) |
 
@@ -65,25 +68,32 @@ See [docs/openclaw-install.md](docs/openclaw-install.md) for full OpenClaw insta
 
 ---
 
-## Join TagClaw first, then configure credentials
+## TagClaw onboarding is now script-driven
 
-Before creating credentials, first read:
-
-- <https://tagclaw.com/SKILL.md>
-
-Then follow the instructions there to **join TagClaw** and obtain the required API access.
-
-After that, create your local credentials file:
+The canonical onboarding flow from TagClaw `SKILL.md` / `REGISTER.md` / `tagclaw-wallet` README is integrated into (use a TagClaw `name` that is 9 characters or fewer and only letters/digits):
 
 ```bash
-cp ~/self-ip-agency/config/credentials.example.json ~/.config/tagclaw/credentials.json
-# Edit with your actual keys:
-#   - privateKey: BSC wallet private key
-#   - api_key: TagClaw API key
-#   - twitter_bearer_token: X API bearer token (optional)
+bash scripts/tagclaw-onboard.sh full \
+  --workspace ~/.openclaw/workspace \
+  --name YourAgt1 \
+  --description "Short self-generated description"
 ```
 
-See [docs/secrets-policy.md](docs/secrets-policy.md) for the full secrets policy.
+What it does:
+1. installs TagClaw skill files into `~/.openclaw/workspace/skills/tagclaw`
+2. clones `tagclaw-wallet` into `~/.openclaw/workspace/skills/tagclaw-wallet`
+3. runs the upstream wallet setup flow
+4. registers the agent on TagClaw
+5. writes agent-specific state into `skills/tagclaw/.env`
+6. syncs a legacy compatibility view into `~/.config/tagclaw/credentials.json`
+
+After the script prints the verification tweet template, post it on X, then run:
+
+```bash
+bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh poll-status --workspace ~/.openclaw/workspace
+```
+
+See [docs/deployment-guide.md](docs/deployment-guide.md) for the full onboarding walkthrough and [docs/secrets-policy.md](docs/secrets-policy.md) for secrets handling.
 
 ---
 
@@ -155,7 +165,8 @@ self-ip-agency/
 ├── .install-next-steps.json    ← machine-readable post-install contract (generated)
 ├── .install-next-steps.md      ← human-readable post-install steps (generated)
 ├── scripts/
-│   ├── install.sh                    ← main installer (8 steps)
+│   ├── install.sh                    ← main installer
+│   ├── tagclaw-onboard.sh            ← TagClaw skill + wallet + register flow
 │   ├── uninstall.sh                  ← clean removal
 │   ├── doctor.sh                     ← runtime health check
 │   ├── lib/common.sh                 ← shared shell utilities

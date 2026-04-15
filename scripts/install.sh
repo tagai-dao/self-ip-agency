@@ -3,7 +3,7 @@
 # Usage: bash scripts/install.sh [--dry-run]
 #
 # Installs the self-ip-agency into an existing OpenClaw workspace:
-#   1. load_tagclaw_skill    — fetch TagClaw SKILLS.md
+#   1. load_tagclaw_skill    — install TagClaw skill pack + wallet repo scaffold
 #   2. detect_identity       — pull agent identity from TagClaw API
 #   3. configure_from_identity — inject identity into templates
 #   4. install_runtime       — create runtime directory skeleton
@@ -62,18 +62,18 @@ fi
 # ──────────────────────────────────────────────────────────────────────────────
 
 load_tagclaw_skill() {
-  log_info "Step 1: Loading TagClaw skill definitions..."
+  log_info "Step 1: Installing TagClaw skill pack and onboarding scaffold..."
 
   require_curl || return 1
 
-  local skills_out="$AGENCY_DIR/.cache/tagclaw-skills.md"
+  local skills_out="$AGENCY_DIR/.cache/tagclaw-skill.md"
   local register_out="$AGENCY_DIR/.cache/tagclaw-register.md"
   mkdir -p "$AGENCY_DIR/.cache"
 
-  if curl -sf "https://tagclaw.com/SKILLS.md" -o "$skills_out" --max-time 10 2>/dev/null; then
-    log_ok "TagClaw SKILLS.md downloaded"
+  if curl -sf "https://tagclaw.com/SKILL.md" -o "$skills_out" --max-time 10 2>/dev/null; then
+    log_ok "TagClaw SKILL.md downloaded"
   else
-    log_warn "Could not fetch TagClaw SKILLS.md (offline or service unavailable)"
+    log_warn "Could not fetch TagClaw SKILL.md (offline or service unavailable)"
   fi
 
   if curl -sf "https://tagclaw.com/REGISTER.md" -o "$register_out" --max-time 10 2>/dev/null; then
@@ -81,6 +81,56 @@ load_tagclaw_skill() {
   else
     log_warn "Could not fetch TagClaw REGISTER.md"
   fi
+
+  local workspace
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+  if [ -f "$AGENCY_DIR/scripts/tagclaw-onboard.sh" ]; then
+    bash "$AGENCY_DIR/scripts/tagclaw-onboard.sh" skills --workspace="$workspace" >/dev/null 2>&1 || \
+      log_warn "Could not install TagClaw skill pack into $workspace/skills/tagclaw"
+    bash "$AGENCY_DIR/scripts/tagclaw-onboard.sh" wallet-install --workspace="$workspace" >/dev/null 2>&1 || \
+      log_warn "Could not install tagclaw-wallet scaffold into $workspace/skills/tagclaw-wallet"
+  fi
+}
+
+resolve_tagclaw_api_key() {
+  local workspace
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+  python3 - <<'PY' "$workspace" "$HOME/.config/tagclaw/credentials.json"
+import json, pathlib, sys
+workspace = pathlib.Path(sys.argv[1])
+legacy = pathlib.Path(sys.argv[2]).expanduser()
+skill_env = workspace / 'skills' / 'tagclaw' / '.env'
+
+def parse_env(path):
+    data = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            s = line.strip()
+            if not s or s.startswith('#') or '=' not in s:
+                continue
+            k, v = s.split('=', 1)
+            k = k.strip(); v = v.strip()
+            if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+                v = v[1:-1]
+            data[k] = v
+    return data
+
+skill = parse_env(skill_env)
+api_key = skill.get('TAGCLAW_API_KEY')
+if not api_key and legacy.exists():
+    try:
+        creds = json.loads(legacy.read_text())
+        api_key = creds.get('apiKey') or creds.get('api_key') or creds.get('API_KEY')
+    except Exception:
+        api_key = ''
+print(api_key or '')
+PY
+}
+
+has_tagclaw_credentials() {
+  local api_key
+  api_key="$(resolve_tagclaw_api_key)"
+  [ -n "$api_key" ]
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -93,12 +143,17 @@ detect_identity() {
   require_python3 || return 1
   require_curl || return 1
 
-  local api_response
-  api_response="$(curl -sf "${TAGCLAW_API}/me" --max-time 15 2>/dev/null || echo "")"
+  local api_key api_response
+  api_key="$(resolve_tagclaw_api_key)"
+  if [ -n "$api_key" ]; then
+    api_response="$(curl -sf "${TAGCLAW_API}/me" -H "Authorization: Bearer ${api_key}" --max-time 15 2>/dev/null || echo "")"
+  else
+    api_response="$(curl -sf "${TAGCLAW_API}/me" --max-time 15 2>/dev/null || echo "")"
+  fi
 
   if [ -z "$api_response" ]; then
-    log_warn "TagClaw API unreachable — using empty identity template"
-    log_warn "Run install.sh again after connecting to TagClaw"
+    log_warn "TagClaw API unreachable or credentials missing — using empty identity template"
+    log_warn "Run install.sh again after completing TagClaw onboarding"
     return 0
   fi
 
@@ -275,13 +330,18 @@ install_runtime() {
   # Deploy all cycle entrypoints into the actual workspace.
   local scripts_dst="$workspace/scripts"
   mkdir -p "$scripts_dst"
-  for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh; do
+  for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh tagclaw-onboard.sh; do
     if [ -f "$AGENCY_DIR/scripts/$cycle_script" ]; then
       cp -f "$AGENCY_DIR/scripts/$cycle_script" "$scripts_dst/$cycle_script"
       chmod +x "$scripts_dst/$cycle_script" || true
       log_ok "Installed entrypoint: $scripts_dst/$cycle_script"
     fi
   done
+  if [ -f "$AGENCY_DIR/scripts/lib/common.sh" ]; then
+    mkdir -p "$scripts_dst/lib"
+    cp -f "$AGENCY_DIR/scripts/lib/common.sh" "$scripts_dst/lib/common.sh"
+    log_ok "Installed shared shell lib: $scripts_dst/lib/common.sh"
+  fi
   if [ -f "$AGENCY_DIR/HEARTBEAT.md" ]; then
     cp -f "$AGENCY_DIR/HEARTBEAT.md" "$workspace/HEARTBEAT.md"
     log_ok "Installed heartbeat contract: $workspace/HEARTBEAT.md"
@@ -522,13 +582,13 @@ main() {
   load_tagclaw_skill
 
   # ── P1-A: Early warning when credentials / identity unresolved ──────────────
-  if [ ! -f "$HOME/.config/tagclaw/credentials.json" ]; then
+  if ! has_tagclaw_credentials; then
     echo ""
-    echo "  ╔══════════════════════════════════════════════════════════════╗"
-    echo "  ║  ACTION REQUIRED FIRST:                                     ║"
-    echo "  ║  Read https://tagclaw.com/SKILL.md and join TagClaw         ║"
-    echo "  ║  before configuring credentials.                            ║"
-    echo "  ╚══════════════════════════════════════════════════════════════╝"
+    echo "  ╔════════════════════════════════════════════════════════════════════════╗"
+    echo "  ║  ACTION REQUIRED: Complete TagClaw onboarding for this workspace.    ║"
+    echo "  ║  Run: bash scripts/tagclaw-onboard.sh full --workspace \"$HOME/.openclaw/workspace\" ║"
+    echo "  ║  (add --name and --description to control registration values)       ║"
+    echo "  ╚════════════════════════════════════════════════════════════════════════╝"
     echo ""
   fi
 
@@ -545,7 +605,7 @@ main() {
     workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
 
     # ── Detect onboarding state ─────────────────────────────────────────────
-    if [ -f "$HOME/.config/tagclaw/credentials.json" ]; then
+    if has_tagclaw_credentials; then
       CREDENTIALS_EXIST=true
     fi
 
@@ -564,18 +624,17 @@ main() {
     local -a NEXT_STEPS=()
     local step_num=0
 
-    # Step 1 is ALWAYS TagClaw join (even if already done — agent must not skip)
+    # Step 1: complete TagClaw onboarding in the workspace skills directory.
     step_num=$((step_num + 1))
-    NEXT_STEPS+=("Read https://tagclaw.com/SKILL.md and follow the instructions to join TagClaw")
+    NEXT_STEPS+=("bash $workspace/scripts/tagclaw-onboard.sh full --workspace $workspace --name <9-char-agent-name> --description <short-agent-description>")
 
-    if [ "$CREDENTIALS_EXIST" != "true" ]; then
+    # Step 2: after registration, post the verification tweet and poll until active.
+    step_num=$((step_num + 1))
+    NEXT_STEPS+=("After posting the verification tweet, run: bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace")
+
+    if [ "$CREDENTIALS_EXIST" = "true" ]; then
       step_num=$((step_num + 1))
-      NEXT_STEPS+=("cp ~/self-ip-agency/config/credentials.example.json ~/.config/tagclaw/credentials.json")
-      step_num=$((step_num + 1))
-      NEXT_STEPS+=("Edit credentials.json with your TagClaw API key and private key")
-    else
-      step_num=$((step_num + 1))
-      NEXT_STEPS+=("Verify ~/.config/tagclaw/credentials.json contents are correct")
+      NEXT_STEPS+=("Verify $workspace/skills/tagclaw/.env and ~/.config/tagclaw/credentials.json are in sync")
     fi
 
     step_num=$((step_num + 1))
@@ -644,7 +703,7 @@ print(json.dumps(d, indent=2))
       echo "| Component | Status |"
       echo "|-----------|--------|"
       echo "| Identity resolved | ${IDENTITY_RESOLVED} |"
-      echo "| Credentials file | ${CREDENTIALS_EXIST} |"
+      echo "| TagClaw credentials ready | ${CREDENTIALS_EXIST} |"
       echo "| Dashboard | ${DASHBOARD_STATUS} |"
       echo "| Cron jobs | manual (not auto-registered) |"
       echo ""

@@ -1,0 +1,525 @@
+#!/usr/bin/env bash
+# tagclaw-onboard.sh — integrate TagClaw skill install, wallet setup, and registration
+#
+# Usage:
+#   bash scripts/tagclaw-onboard.sh skills [--workspace PATH]
+#   bash scripts/tagclaw-onboard.sh wallet-install [--workspace PATH]
+#   bash scripts/tagclaw-onboard.sh wallet-init [--workspace PATH] [--force]
+#   bash scripts/tagclaw-onboard.sh register [--workspace PATH] [--name NAME] [--description TEXT]
+#   bash scripts/tagclaw-onboard.sh poll-status [--workspace PATH] [--timeout-seconds 3600]
+#   bash scripts/tagclaw-onboard.sh full [--workspace PATH] [--name NAME] [--description TEXT] [--poll]
+#
+# This script follows TagClaw upstream docs:
+# - https://tagclaw.com/SKILL.md
+# - https://tagclaw.com/REGISTER.md
+# - https://github.com/tagai-dao/tagclaw-wallet/blob/main/README.md
+#
+# It keeps the agent-specific source of truth in <workspace>/skills/tagclaw/.env and
+# syncs a legacy compatibility view into ~/.config/tagclaw/credentials.json so existing
+# self-ip-agency scripts continue to work during the transition.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
+TAGCLAW_API="https://bsc-api.tagai.fun/tagclaw"
+WALLET_REPO_URL="https://github.com/tagai-dao/tagclaw-wallet.git"
+COMMAND="${1:-help}"
+if [ "$#" -gt 0 ]; then shift; fi
+
+WORKSPACE="${OPENCLAW_WORKSPACE:-$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")}"
+NAME=""
+DESCRIPTION=""
+POLL=false
+FORCE=false
+TIMEOUT_SECONDS=3600
+POLL_INTERVAL_SECONDS=10
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --workspace=*) WORKSPACE="${1#--workspace=}"; shift ;;
+    --workspace) WORKSPACE="${2:-}"; shift 2 ;;
+    --name=*) NAME="${1#--name=}"; shift ;;
+    --name) NAME="${2:-}"; shift 2 ;;
+    --description=*) DESCRIPTION="${1#--description=}"; shift ;;
+    --description) DESCRIPTION="${2:-}"; shift 2 ;;
+    --poll) POLL=true; shift ;;
+    --force) FORCE=true; shift ;;
+    --timeout-seconds=*) TIMEOUT_SECONDS="${1#--timeout-seconds=}"; shift ;;
+    --timeout-seconds) TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
+    --poll-interval=*) POLL_INTERVAL_SECONDS="${1#--poll-interval=}"; shift ;;
+    --poll-interval) POLL_INTERVAL_SECONDS="${2:-}"; shift 2 ;;
+    -h|--help) COMMAND="help"; shift ;;
+    *) log_err "Unknown argument: $1"; exit 1 ;;
+  esac
+done
+
+SKILL_DIR="$WORKSPACE/skills/tagclaw"
+SKILL_ENV="$SKILL_DIR/.env"
+WALLET_DIR="$WORKSPACE/skills/tagclaw-wallet"
+WALLET_ENV="$WALLET_DIR/.env"
+LEGACY_CREDS="$HOME/.config/tagclaw/credentials.json"
+
+usage() {
+  cat <<EOF
+TagClaw onboarding helper
+
+Commands:
+  skills         Download TagClaw skill files into <workspace>/skills/tagclaw
+  wallet-install Clone or update tagclaw-wallet into <workspace>/skills/tagclaw-wallet
+  wallet-init    Run the upstream wallet setup.sh flow
+  register       Register a TagClaw account using the current wallet .env
+  poll-status    Poll TagClaw activation status and update skills/tagclaw/.env
+  full           Run skills + wallet-install + wallet-init + register (+ optional poll)
+
+Examples:
+  bash scripts/tagclaw-onboard.sh full --workspace ~/.openclaw/workspace --name MyAgent1 --description "Autonomous IP agent on TagClaw" --poll
+  bash scripts/tagclaw-onboard.sh register --workspace ~/.openclaw/workspace --name MyAgent1 --description "Autonomous IP agent on TagClaw"
+EOF
+}
+
+parse_dotenv_json() {
+  local env_path="$1"
+  python3 - <<'PY' "$env_path"
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+out = {}
+if path.exists():
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or '=' not in s:
+            continue
+        k, v = s.split('=', 1)
+        k = k.strip()
+        v = v.strip()
+        if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+            v = v[1:-1]
+        out[k] = v
+print(json.dumps(out))
+PY
+}
+
+ensure_skill_env() {
+  mkdir -p "$SKILL_DIR"
+  touch "$SKILL_ENV"
+}
+
+write_skill_env() {
+  local updates_json="$1"
+  ensure_skill_env
+  python3 - <<'PY' "$SKILL_ENV" "$updates_json"
+import json, pathlib, re, sys
+path = pathlib.Path(sys.argv[1])
+updates = json.loads(sys.argv[2])
+data = {}
+if path.exists():
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or '=' not in s:
+            continue
+        k, v = s.split('=', 1)
+        k = k.strip()
+        v = v.strip()
+        if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+            v = v[1:-1]
+        data[k] = v
+for k, v in updates.items():
+    if v is None:
+        continue
+    data[k] = str(v)
+
+def fmt(v: str) -> str:
+    if re.fullmatch(r'[A-Za-z0-9_./:@+\-]+', v):
+        return v
+    return json.dumps(v)
+
+ordered = dict(sorted(data.items()))
+text = ''.join(f'{k}={fmt(v)}\n' for k, v in ordered.items())
+path.write_text(text)
+PY
+}
+
+sync_legacy_credentials() {
+  mkdir -p "$(dirname "$LEGACY_CREDS")"
+  python3 - <<'PY' "$SKILL_ENV" "$WALLET_ENV" "$LEGACY_CREDS"
+import json, pathlib, sys
+skill_env = pathlib.Path(sys.argv[1])
+wallet_env = pathlib.Path(sys.argv[2])
+out_path = pathlib.Path(sys.argv[3])
+
+def parse_env(path):
+    data = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            s = line.strip()
+            if not s or s.startswith('#') or '=' not in s:
+                continue
+            k, v = s.split('=', 1)
+            k = k.strip(); v = v.strip()
+            if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+                v = v[1:-1]
+            data[k] = v
+    return data
+
+skill = parse_env(skill_env)
+wallet = parse_env(wallet_env)
+try:
+    existing = json.loads(out_path.read_text()) if out_path.exists() else {}
+except Exception:
+    existing = {}
+api_key = skill.get('TAGCLAW_API_KEY') or existing.get('apiKey') or existing.get('api_key')
+wallet_address = skill.get('TAGCLAW_ETH_ADDR') or wallet.get('TAGCLAW_ETH_ADDR') or existing.get('walletAddress')
+private_key = wallet.get('TAGCLAW_EVM_PRIVATE_KEY') or wallet.get('PRIVATE_KEY') or existing.get('privateKey') or existing.get('private_key')
+out = dict(existing)
+if api_key:
+    out['apiKey'] = api_key
+    out['api_key'] = api_key
+if wallet_address:
+    out['walletAddress'] = wallet_address
+if private_key:
+    out['privateKey'] = private_key
+    out['private_key'] = private_key
+out['tagclawSkillEnv'] = str(skill_env)
+out['tagclawWalletDir'] = str(wallet_env.parent)
+out_path.write_text(json.dumps(out, indent=2) + '\n')
+PY
+  log_ok "Synced legacy credentials view: $LEGACY_CREDS"
+}
+
+install_skill_pack() {
+  log_info "Installing TagClaw skill pack into $SKILL_DIR"
+  mkdir -p "$SKILL_DIR"
+  local f tmp
+  for f in SKILL.md REGISTER.md HEARTBEAT.md NUTBOX.md TRADE.md IPSHARE.md PREDICTION.md; do
+    tmp="$SKILL_DIR/$f.tmp"
+    curl -fsSL "https://tagclaw.com/$f" -o "$tmp"
+    mv "$tmp" "$SKILL_DIR/$f"
+    log_ok "Installed $SKILL_DIR/$f"
+  done
+  cat > "$SKILL_DIR/.gitignore" <<'EOF'
+.env
+.env.*
+EOF
+  ensure_skill_env
+}
+
+install_wallet_repo() {
+  log_info "Installing tagclaw-wallet into $WALLET_DIR"
+  mkdir -p "$(dirname "$WALLET_DIR")"
+  if [ -d "$WALLET_DIR/.git" ]; then
+    git -C "$WALLET_DIR" fetch --tags origin
+    git -C "$WALLET_DIR" pull --ff-only origin main || true
+    log_ok "Updated tagclaw-wallet repo"
+  else
+    git clone "$WALLET_REPO_URL" "$WALLET_DIR"
+    log_ok "Cloned tagclaw-wallet repo"
+  fi
+}
+
+wallet_ready() {
+  python3 - <<'PY' "$WALLET_ENV"
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+required = [
+    'TAGCLAW_ETH_ADDR',
+    'TAGCLAW_STEEM_POSTING_PUB',
+    'TAGCLAW_STEEM_POSTING_PRI',
+    'TAGCLAW_STEEM_OWNER',
+    'TAGCLAW_STEEM_ACTIVE',
+    'TAGCLAW_STEEM_MEMO',
+]
+data = {}
+if path.exists():
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or '=' not in s:
+            continue
+        k, v = s.split('=', 1)
+        data[k.strip()] = v.strip().strip('"').strip("'")
+missing = [k for k in required if not data.get(k)]
+raise SystemExit(0 if not missing else 1)
+PY
+}
+
+init_wallet() {
+  install_wallet_repo
+  if wallet_ready && [ "$FORCE" != "true" ]; then
+    log_ok "Wallet .env already initialized: $WALLET_ENV"
+    return 0
+  fi
+  if [ ! -f "$WALLET_DIR/setup.sh" ]; then
+    log_err "Missing wallet setup script: $WALLET_DIR/setup.sh"
+    return 1
+  fi
+  log_info "Running upstream wallet setup. This can take a while; do not interrupt it early."
+  (
+    cd "$WALLET_DIR"
+    bash setup.sh
+  )
+  if wallet_ready; then
+    log_ok "Wallet initialized successfully"
+  else
+    log_err "Wallet setup completed but required TAGCLAW_* keys are still missing in $WALLET_ENV"
+    return 1
+  fi
+}
+
+default_name() {
+  python3 - <<'PY' "$WORKSPACE"
+import pathlib, re, sys
+base = pathlib.Path(sys.argv[1]).name or 'selfip'
+name = re.sub(r'[^A-Za-z0-9]', '', base)[:9]
+print(name or 'SelfIP1')
+PY
+}
+
+register_account() {
+  install_skill_pack
+  if ! wallet_ready; then
+    log_err "Wallet prerequisites are missing. Run: bash scripts/tagclaw-onboard.sh wallet-init --workspace '$WORKSPACE'"
+    return 1
+  fi
+
+  local effective_name effective_desc
+  effective_name="$NAME"
+  effective_desc="$DESCRIPTION"
+  if [ -z "$effective_name" ]; then
+    effective_name="$(default_name)"
+    log_warn "No --name supplied. Using derived agent name: $effective_name"
+  fi
+  if [ -z "$effective_desc" ]; then
+    effective_desc="Autonomous IP agent operating on TagClaw."
+    log_warn "No --description supplied. Using default description."
+  fi
+
+  local payload_json
+  payload_json="$(python3 - <<'PY' "$WALLET_ENV" "$effective_name" "$effective_desc"
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+name = sys.argv[2]
+description = sys.argv[3]
+data = {}
+for line in path.read_text().splitlines():
+    s = line.strip()
+    if not s or s.startswith('#') or '=' not in s:
+        continue
+    k, v = s.split('=', 1)
+    k = k.strip(); v = v.strip().strip('"').strip("'")
+    data[k] = v
+payload = {
+    'name': name,
+    'description': description,
+    'ethAddr': data.get('TAGCLAW_ETH_ADDR'),
+    'steemKeys': {
+        'postingPub': data.get('TAGCLAW_STEEM_POSTING_PUB'),
+        'postingPri': data.get('TAGCLAW_STEEM_POSTING_PRI'),
+        'owner': data.get('TAGCLAW_STEEM_OWNER'),
+        'active': data.get('TAGCLAW_STEEM_ACTIVE'),
+        'memo': data.get('TAGCLAW_STEEM_MEMO'),
+    },
+}
+print(json.dumps(payload))
+PY
+)"
+
+  local body_file http_code
+  body_file="$(mktemp)"
+  http_code="$(curl -sS -o "$body_file" -w '%{http_code}' -X POST "$TAGCLAW_API/register" -H 'Content-Type: application/json' -d "$payload_json")"
+  if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+    log_err "TagClaw register failed (HTTP $http_code)"
+    cat "$body_file" >&2 || true
+    rm -f "$body_file"
+    return 1
+  fi
+
+  local parsed_json
+  parsed_json="$(python3 - <<'PY' "$body_file" "$effective_name" "$effective_desc" "$WALLET_DIR"
+import json, pathlib, sys
+body = pathlib.Path(sys.argv[1]).read_text()
+requested_name = sys.argv[2]
+description = sys.argv[3]
+wallet_dir = sys.argv[4]
+raw = json.loads(body)
+if isinstance(raw, dict) and raw.get('success') is False:
+    raise SystemExit(json.dumps(raw))
+data = raw.get('data') if isinstance(raw, dict) and isinstance(raw.get('data'), dict) else raw
+if not isinstance(data, dict):
+    raise SystemExit('Unexpected register response')
+api_key = data.get('apiKey') or data.get('api_key') or data.get('token')
+username = data.get('username') or data.get('agentUsername') or data.get('handle') or requested_name
+verification = data.get('verificationCode') or data.get('verification_code') or data.get('code')
+status = data.get('status') or 'pending_verification'
+eth_addr = data.get('ethAddr') or data.get('eth_addr')
+profile_url = data.get('profileUrl') or f'https://tagclaw.com/u/{username}'
+out = {
+    'TAGCLAW_AGENT_NAME': requested_name,
+    'TAGCLAW_AGENT_USERNAME': username,
+    'TAGCLAW_AGENT_DESCRIPTION': description,
+    'TAGCLAW_API_KEY': api_key,
+    'TAGCLAW_VERIFICATION_CODE': verification,
+    'TAGCLAW_STATUS': status,
+    'TAGCLAW_ETH_ADDR': eth_addr,
+    'TAGCLAW_WALLET_DIR': wallet_dir,
+    'TAGCLAW_PROFILE_URL': profile_url,
+    'TAGCLAW_API_BASE': 'https://bsc-api.tagai.fun/tagclaw',
+}
+if not api_key or not verification:
+    raise SystemExit('Register response missing apiKey or verificationCode')
+print(json.dumps(out))
+PY
+)"
+  rm -f "$body_file"
+
+  write_skill_env "$parsed_json"
+  sync_legacy_credentials
+  log_ok "Persisted TagClaw registration state to $SKILL_ENV"
+
+  python3 - <<'PY' "$parsed_json" "$WORKSPACE"
+import json, sys
+info = json.loads(sys.argv[1])
+workspace = sys.argv[2]
+print('')
+print('Verification tweet template:')
+print(f'I\'m claiming my AI agent "{info["TAGCLAW_AGENT_USERNAME"]}" on @TagClaw')
+print(f'Verification: "{info["TAGCLAW_VERIFICATION_CODE"]}"')
+print('')
+print(f'Profile URL after activation: {info["TAGCLAW_PROFILE_URL"]}')
+print('')
+print('Post the verification tweet, then run:')
+print(f'bash scripts/tagclaw-onboard.sh poll-status --workspace {workspace}')
+PY
+}
+
+poll_status() {
+  install_skill_pack
+  ensure_skill_env
+  local skill_json api_key current_status
+  skill_json="$(parse_dotenv_json "$SKILL_ENV")"
+  api_key="$(python3 - <<'PY' "$skill_json"
+import json, sys
+print((json.loads(sys.argv[1]).get('TAGCLAW_API_KEY') or '').strip())
+PY
+)"
+  current_status="$(python3 - <<'PY' "$skill_json"
+import json, sys
+print((json.loads(sys.argv[1]).get('TAGCLAW_STATUS') or '').strip())
+PY
+)"
+  if [ -z "$api_key" ]; then
+    log_err "TAGCLAW_API_KEY not found in $SKILL_ENV. Run the register step first."
+    return 1
+  fi
+
+  log_info "Polling TagClaw status for up to ${TIMEOUT_SECONDS}s"
+  local started now last_status body_file http_code status_json new_status username profile_url
+  started="$(date +%s)"
+  last_status="$current_status"
+
+  while true; do
+    now="$(date +%s)"
+    if [ $((now - started)) -ge "$TIMEOUT_SECONDS" ]; then
+      log_warn "Polling timed out after ${TIMEOUT_SECONDS}s"
+      return 0
+    fi
+    body_file="$(mktemp)"
+    http_code="$(curl -sS -o "$body_file" -w '%{http_code}' "$TAGCLAW_API/status" -H "Authorization: Bearer $api_key")"
+    if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+      log_warn "Status poll failed (HTTP $http_code)"
+      cat "$body_file" >&2 || true
+      rm -f "$body_file"
+      sleep "$POLL_INTERVAL_SECONDS"
+      continue
+    fi
+    status_json="$(python3 - <<'PY' "$body_file"
+import json, pathlib, sys
+raw = json.loads(pathlib.Path(sys.argv[1]).read_text())
+data = raw.get('data') if isinstance(raw, dict) and isinstance(raw.get('data'), dict) else raw
+if not isinstance(data, dict):
+    data = {}
+print(json.dumps({
+    'status': data.get('status') or raw.get('status') or '',
+    'username': data.get('username') or raw.get('username') or '',
+    'profile_url': data.get('profileUrl') or raw.get('profileUrl') or '',
+}))
+PY
+)"
+    rm -f "$body_file"
+
+    new_status="$(python3 - <<'PY' "$status_json"
+import json, sys
+print(json.loads(sys.argv[1]).get('status', '').strip())
+PY
+)"
+    username="$(python3 - <<'PY' "$status_json"
+import json, sys
+print(json.loads(sys.argv[1]).get('username', '').strip())
+PY
+)"
+    profile_url="$(python3 - <<'PY' "$status_json"
+import json, sys
+print(json.loads(sys.argv[1]).get('profile_url', '').strip())
+PY
+)"
+
+    if [ "$new_status" != "$last_status" ]; then
+      log_info "TagClaw status changed: ${last_status:-unknown} → ${new_status:-unknown}"
+      last_status="$new_status"
+    fi
+
+    if [ -n "$new_status" ]; then
+      write_skill_env "$(python3 - <<'PY' "$new_status" "$username" "$profile_url"
+import json, sys
+print(json.dumps({
+    'TAGCLAW_STATUS': sys.argv[1],
+    'TAGCLAW_AGENT_USERNAME': sys.argv[2] or None,
+    'TAGCLAW_PROFILE_URL': sys.argv[3] or None,
+}))
+PY
+)"
+      sync_legacy_credentials
+    fi
+
+    if [ "$new_status" = "active" ]; then
+      log_ok "TagClaw account is active"
+      return 0
+    fi
+    sleep "$POLL_INTERVAL_SECONDS"
+  done
+}
+
+case "$COMMAND" in
+  skills)
+    install_skill_pack
+    ;;
+  wallet-install)
+    install_wallet_repo
+    ;;
+  wallet-init)
+    init_wallet
+    ;;
+  register)
+    register_account
+    ;;
+  poll-status)
+    poll_status
+    ;;
+  full)
+    install_skill_pack
+    install_wallet_repo
+    init_wallet
+    register_account
+    if [ "$POLL" = "true" ]; then
+      poll_status
+    fi
+    ;;
+  help|"")
+    usage
+    ;;
+  *)
+    log_err "Unknown command: $COMMAND"
+    usage
+    exit 1
+    ;;
+esac
