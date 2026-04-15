@@ -259,8 +259,77 @@ check_file_warn "$WORKSPACE/HEARTBEAT.md" "workspace HEARTBEAT.md (deployed cont
 
 echo ""
 
-# ── 8. Deployment contract consistency ───────────────────────────────────────
-echo "8. Deployment contract consistency"
+# ── 8. Execution backend availability ────────────────────────────────────────
+echo "8. Execution backend availability"
+
+# Main heartbeat uses Python scripts directly — always available if python3 is present
+if command -v python3 &>/dev/null; then
+  ok "main-heartbeat: Python runtime available"
+else
+  fail "main-heartbeat: Python 3 not found — heartbeat cannot run"
+fi
+
+# Bookmarker execution backend
+BOOKMARKER_BACKEND="none"
+if [ -f "$WORKSPACE/scripts/run_bookmarker_runtime_v1.py" ]; then
+  ok "bookmarker: native runtime (run_bookmarker_runtime_v1.py)"
+  BOOKMARKER_BACKEND="native"
+elif [ -f "$AGENCY_DIR/scripts/run_bookmarker_runtime_v1.py" ]; then
+  ok "bookmarker: native runtime in repo (run install.sh to deploy)"
+  BOOKMARKER_BACKEND="native-repo"
+elif [ -f "$WORKSPACE/scripts/dev-claude.sh" ]; then
+  ok "bookmarker: dev-claude.sh (LLM execution path)"
+  BOOKMARKER_BACKEND="dev-claude"
+elif command -v claude &>/dev/null; then
+  ok "bookmarker: claude CLI (LLM execution path)"
+  BOOKMARKER_BACKEND="claude-cli"
+else
+  fail "bookmarker: NO execution backend — bookmarker-cycle.sh will fail"
+fi
+
+# Trader execution backend
+TRADER_BACKEND="none"
+if [ -f "$WORKSPACE/scripts/run_trader_runtime_v1.py" ]; then
+  ok "trader: native runtime (run_trader_runtime_v1.py)"
+  TRADER_BACKEND="native"
+elif [ -f "$AGENCY_DIR/scripts/run_trader_runtime_v1.py" ]; then
+  ok "trader: native runtime in repo (run install.sh to deploy)"
+  TRADER_BACKEND="native-repo"
+elif [ -f "$WORKSPACE/scripts/dev-claude.sh" ]; then
+  ok "trader: dev-claude.sh (LLM execution path)"
+  TRADER_BACKEND="dev-claude"
+elif command -v claude &>/dev/null; then
+  ok "trader: claude CLI (LLM execution path)"
+  TRADER_BACKEND="claude-cli"
+else
+  fail "trader: NO execution backend — trader-cycle.sh will fail"
+fi
+
+# Workspace-local assets check (deployed scripts need these)
+if [ -f "$WORKSPACE/.agency-meta.json" ]; then
+  ok "workspace .agency-meta.json present"
+else
+  warn "workspace .agency-meta.json missing — run install.sh to deploy"
+fi
+
+if [ -f "$WORKSPACE/.agency-installed" ]; then
+  ok "workspace .agency-installed marker present"
+else
+  warn "workspace .agency-installed marker missing — deployed scripts may fail install check"
+fi
+
+for agent_file in main bookmarker trader; do
+  if [ -f "$WORKSPACE/agents/${agent_file}.md" ]; then
+    ok "workspace agents/${agent_file}.md deployed"
+  else
+    warn "workspace agents/${agent_file}.md missing — run install.sh"
+  fi
+done
+
+echo ""
+
+# ── 9. Deployment contract consistency ───────────────────────────────────────
+echo "9. Deployment contract consistency"
 
 # Check for stale task.json references in cron-jobs.json
 if [ -f "$AGENCY_DIR/config/cron-jobs.json" ]; then
@@ -293,11 +362,12 @@ fi
 
 echo ""
 
-# ── 9. Key scripts ──────────────────────────────────────────────────────────
-echo "9. Key scripts"
+# ── 10. Key scripts ─────────────────────────────────────────────────────────
+echo "10. Key scripts"
 for s in run_main_runtime_v2.py wiki_lint_v1.py select_strategy_v1.py \
           compute_tas_social_v2.py build_main_input_packet_v2.py \
-          build_wiki_query_index_v1.py runtime_utils_v2.py; do
+          build_wiki_query_index_v1.py runtime_utils_v2.py \
+          run_bookmarker_runtime_v1.py run_trader_runtime_v1.py; do
   check_file "$AGENCY_DIR/scripts/$s" "$s"
 done
 

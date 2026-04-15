@@ -20,12 +20,20 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENCY_DIR="$(dirname "$SCRIPT_DIR")"
-AGENCY_VERSION="$(cat "$AGENCY_DIR/VERSION" 2>/dev/null || echo "unknown")"
-WORKSPACE="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
+
+# Source shared library (works from both repo and deployed workspace)
+if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
+  source "$SCRIPT_DIR/lib/common.sh"
+else
+  echo "[FATAL] lib/common.sh not found at $SCRIPT_DIR/lib/" >&2
+  exit 1
+fi
+
+# Resolve REPO_DIR, WORKSPACE, AGENCY_VERSION from context
+resolve_agency_paths "$SCRIPT_DIR"
 RUNTIME_BOOKMARKER="$WORKSPACE/runtime/bookmarker"
 
-# ── Color helpers ────────────────────────────────────────────────────────────
+# ── Color helpers (override common.sh log format for cycle output) ───────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RESET='\033[0m'
 log_ok()   { echo -e "${GREEN}[OK]${RESET} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${RESET} $1"; }
@@ -51,8 +59,8 @@ validate_environment() {
 
   log_info "Validating bookmarker-cycle environment (v$AGENCY_VERSION)..."
 
-  # 1. Check .installed marker
-  if [ -f "$AGENCY_DIR/.installed" ]; then
+  # 1. Check .installed marker (workspace or repo)
+  if check_agency_installed; then
     log_ok "Agency installed"
   else
     log_fail "Agency not installed — run: bash scripts/install.sh"
@@ -67,19 +75,25 @@ validate_environment() {
     errors=$((errors + 1))
   fi
 
-  # 3. Check dev-claude.sh availability
-  if [ -f "$WORKSPACE/scripts/dev-claude.sh" ]; then
-    log_ok "dev-claude.sh available in workspace"
+  # 3. Check execution backend (native runtime preferred, claude optional)
+  if [ -f "$SCRIPT_DIR/run_bookmarker_runtime_v1.py" ]; then
+    log_ok "Native bookmarker runtime available"
+  elif [ -f "$WORKSPACE/scripts/run_bookmarker_runtime_v1.py" ]; then
+    log_ok "Native bookmarker runtime available (workspace)"
+  elif [ -f "$WORKSPACE/scripts/dev-claude.sh" ]; then
+    log_ok "dev-claude.sh available (LLM execution path)"
   elif command -v claude &>/dev/null; then
-    log_ok "Claude CLI available (will use directly)"
+    log_ok "Claude CLI available (LLM execution path)"
   else
-    log_fail "Neither dev-claude.sh nor claude CLI found — cannot run bookmarker cycle"
+    log_fail "No execution backend found — need run_bookmarker_runtime_v1.py, dev-claude.sh, or claude CLI"
     errors=$((errors + 1))
   fi
 
-  # 4. Check behavior file
-  if [ -f "$AGENCY_DIR/agents/bookmarker.md" ] || [ -f "$AGENCY_DIR/agents/bookmarker.md.tmpl" ]; then
-    log_ok "Bookmarker behavior file exists"
+  # 4. Check behavior file (workspace or repo)
+  local behavior_file
+  behavior_file="$(resolve_agent_file "bookmarker" 2>/dev/null || echo "")"
+  if [ -n "$behavior_file" ]; then
+    log_ok "Bookmarker behavior file: $behavior_file"
   else
     log_warn "Bookmarker behavior file not found"
   fi
@@ -92,27 +106,47 @@ validate_environment() {
 run_bookmarker_cycle() {
   log_info "Running bookmarker social curation cycle..."
 
-  local prompt="Execute social curation cycle for the bookmarker agent. Read agents/bookmarker.md for behavior rules. Write results to runtime/bookmarker/result.json and update runtime/bookmarker/latest.json."
-
   if [ "$DRY_RUN" = "true" ]; then
-    log_info "[DRY RUN] Would run bookmarker cycle with prompt:"
-    log_info "  $prompt"
+    log_info "[DRY RUN] Would run bookmarker cycle"
     return 0
   fi
 
-  # Prefer dev-claude.sh if available, fall back to claude CLI
+  # Priority 1: Native Python runtime (no LLM dependency)
+  local native_runtime=""
+  if [ -f "$SCRIPT_DIR/run_bookmarker_runtime_v1.py" ]; then
+    native_runtime="$SCRIPT_DIR/run_bookmarker_runtime_v1.py"
+  elif [ -f "$WORKSPACE/scripts/run_bookmarker_runtime_v1.py" ]; then
+    native_runtime="$WORKSPACE/scripts/run_bookmarker_runtime_v1.py"
+  elif [ -n "${REPO_DIR:-}" ] && [ -f "$REPO_DIR/scripts/run_bookmarker_runtime_v1.py" ]; then
+    native_runtime="$REPO_DIR/scripts/run_bookmarker_runtime_v1.py"
+  fi
+
+  if [ -n "$native_runtime" ]; then
+    log_info "Using native runtime: $native_runtime"
+    cd "$WORKSPACE" && python3 "$native_runtime" 2>&1 || {
+      log_fail "Bookmarker cycle failed via native runtime"
+      return 1
+    }
+    return 0
+  fi
+
+  # Priority 2: LLM execution (dev-claude.sh or claude CLI)
+  local prompt="Execute social curation cycle for the bookmarker agent. Read agents/bookmarker.md for behavior rules. Write results to runtime/bookmarker/result.json and update runtime/bookmarker/latest.json."
+
   if [ -f "$WORKSPACE/scripts/dev-claude.sh" ]; then
+    log_info "Using dev-claude.sh execution path"
     cd "$WORKSPACE" && ./scripts/dev-claude.sh "$prompt" 2>&1 || {
       log_fail "Bookmarker cycle failed via dev-claude.sh"
       return 1
     }
   elif command -v claude &>/dev/null; then
+    log_info "Using claude CLI execution path"
     cd "$WORKSPACE" && claude --print "$prompt" 2>&1 || {
       log_fail "Bookmarker cycle failed via claude CLI"
       return 1
     }
   else
-    log_fail "No execution method available for bookmarker cycle"
+    log_fail "No execution backend available — install run_bookmarker_runtime_v1.py or ensure claude CLI is available"
     return 1
   fi
 }

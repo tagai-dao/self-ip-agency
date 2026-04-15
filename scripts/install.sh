@@ -421,6 +421,23 @@ install_runtime() {
       log_ok "Installed entrypoint: $scripts_dst/$cycle_script"
     fi
   done
+
+  # Deploy native runtime scripts (Phase 2: bookmarker/trader no longer require claude CLI)
+  for runtime_script in run_bookmarker_runtime_v1.py run_trader_runtime_v1.py runtime_utils_v2.py; do
+    if [ -f "$AGENCY_DIR/scripts/$runtime_script" ]; then
+      cp -f "$AGENCY_DIR/scripts/$runtime_script" "$scripts_dst/$runtime_script"
+      log_ok "Installed native runtime: $scripts_dst/$runtime_script"
+    fi
+  done
+
+  # Deploy Python scripts needed by main-heartbeat
+  for py_script in build_main_input_packet_v2.py run_main_runtime_v2.py compute_tas_social_v2.py select_strategy_v1.py; do
+    if [ -f "$AGENCY_DIR/scripts/$py_script" ]; then
+      cp -f "$AGENCY_DIR/scripts/$py_script" "$scripts_dst/$py_script"
+    fi
+  done
+  log_ok "Installed Python runtime scripts"
+
   if [ -f "$AGENCY_DIR/scripts/lib/common.sh" ]; then
     mkdir -p "$scripts_dst/lib"
     cp -f "$AGENCY_DIR/scripts/lib/common.sh" "$scripts_dst/lib/common.sh"
@@ -430,6 +447,46 @@ install_runtime() {
     cp -f "$AGENCY_DIR/HEARTBEAT.md" "$workspace/HEARTBEAT.md"
     log_ok "Installed heartbeat contract: $workspace/HEARTBEAT.md"
   fi
+
+  # Deploy agent behavior files to workspace (so deployed scripts don't need repo)
+  local agents_dst="$workspace/agents"
+  mkdir -p "$agents_dst"
+  for agent in main bookmarker trader; do
+    if [ -f "$AGENCY_DIR/agents/${agent}.md" ]; then
+      cp -f "$AGENCY_DIR/agents/${agent}.md" "$agents_dst/${agent}.md"
+      log_ok "Installed behavior file: $agents_dst/${agent}.md"
+    elif [ -f "$AGENCY_DIR/agents/${agent}.md.tmpl" ]; then
+      cp -f "$AGENCY_DIR/agents/${agent}.md.tmpl" "$agents_dst/${agent}.md.tmpl"
+      log_ok "Installed behavior template: $agents_dst/${agent}.md.tmpl"
+    fi
+  done
+
+  # Deploy config to workspace (identity, agency config)
+  local config_dst="$workspace/config"
+  mkdir -p "$config_dst"
+  if [ -f "$AGENCY_DIR/config/agency-identity.json" ]; then
+    cp -f "$AGENCY_DIR/config/agency-identity.json" "$config_dst/agency-identity.json"
+    log_ok "Installed identity config to workspace"
+  fi
+  if [ -f "$AGENCY_DIR/config/agency.config.yaml" ]; then
+    cp -f "$AGENCY_DIR/config/agency.config.yaml" "$config_dst/agency.config.yaml"
+  fi
+
+  # Write .agency-meta.json — allows deployed scripts to find repo and version
+  local meta_json
+  meta_json="$(python3 -c "
+import json
+from datetime import datetime, timezone
+d = {
+    'schema': 'agency-meta.v1',
+    'repo_dir': '$AGENCY_DIR',
+    'version': '$AGENCY_VERSION',
+    'installed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+}
+print(json.dumps(d, indent=2))
+")"
+  atomic_write_json "$workspace/.agency-meta.json" "$meta_json"
+  log_ok "Wrote workspace meta: $workspace/.agency-meta.json"
 
   log_ok "Runtime installed at: $runtime_root"
 
@@ -549,27 +606,21 @@ register_crons() {
   echo "  ══════════════════════════════════════════════════════════"
   echo "  ACTION REQUIRED: Run these commands to register cron jobs."
   echo "  The installer does NOT register them automatically."
+  echo "  NOTE: Only register crons for agents that pass --self-check."
   echo "  ══════════════════════════════════════════════════════════"
   echo ""
 
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
 
-  # Extract and display cron commands from config
-  if command -v python3 &>/dev/null && [ -f "$AGENCY_DIR/config/cron-jobs.json" ]; then
-    python3 -c "
-import json
-data = json.load(open('$AGENCY_DIR/config/cron-jobs.json'))
-for cmd in data.get('openclaw_cron_commands', []):
-    print('  ' + cmd)
-    print()
-"
-  else
-    echo "  openclaw cron add main-heartbeat '*/10 * * * *' 'bash $workspace/scripts/main-heartbeat.sh'"
-    echo "  openclaw cron add bookmarker-cycle '*/30 * * * *' 'bash $workspace/scripts/bookmarker-cycle.sh'"
-    echo "  openclaw cron add trader-cycle '0 * * * *' 'bash $workspace/scripts/trader-cycle.sh'"
-  fi
+  echo "  # Always safe to register (native Python runtime):"
+  echo "  openclaw cron add main-heartbeat '*/10 * * * *' 'bash $workspace/scripts/main-heartbeat.sh'"
+  echo ""
+  echo "  # Register only after --self-check passes:"
+  echo "  openclaw cron add bookmarker-cycle '*/30 * * * *' 'bash $workspace/scripts/bookmarker-cycle.sh'"
+  echo "  openclaw cron add trader-cycle '0 * * * *' 'bash $workspace/scripts/trader-cycle.sh'"
 
+  echo ""
   echo "  ══════════════════════════════════════════════════════════"
   echo ""
 
@@ -763,7 +814,32 @@ main() {
       NEXT_STEPS+=("Install dashboard deps: pip3 install -r dashboard/requirements.txt")
     fi
 
-    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Crons: manual."
+    # ── Post-install self-checks: run each cycle's --self-check ─────────
+    local MAIN_READY=false BOOKMARKER_READY=false TRADER_READY=false
+    log_info "Running post-install self-checks..."
+
+    if bash "$workspace/scripts/main-heartbeat.sh" --self-check >/dev/null 2>&1; then
+      MAIN_READY=true
+      log_ok "main-heartbeat --self-check PASSED"
+    else
+      log_warn "main-heartbeat --self-check FAILED"
+    fi
+
+    if bash "$workspace/scripts/bookmarker-cycle.sh" --self-check >/dev/null 2>&1; then
+      BOOKMARKER_READY=true
+      log_ok "bookmarker-cycle --self-check PASSED"
+    else
+      log_warn "bookmarker-cycle --self-check FAILED — bookmarker not yet runnable"
+    fi
+
+    if bash "$workspace/scripts/trader-cycle.sh" --self-check >/dev/null 2>&1; then
+      TRADER_READY=true
+      log_ok "trader-cycle --self-check PASSED"
+    else
+      log_warn "trader-cycle --self-check FAILED — trader not yet runnable"
+    fi
+
+    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Crons: manual. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}."
 
     # ── Write .installed marker atomically ──────────────────────────────────
     local installed_json
@@ -783,6 +859,9 @@ d = {
 print(json.dumps(d, indent=2))
 ")"
     atomic_write_json "$INSTALLED_FILE" "$installed_json"
+
+    # Also write workspace-local installed marker (deployed scripts check this)
+    atomic_write_json "$workspace/.agency-installed" "$installed_json"
 
     # ── P0-A: Write .install-next-steps.json ────────────────────────────────
     local next_steps_json
@@ -905,10 +984,22 @@ print(json.dumps(d, indent=2))
       echo "  ║    ${box_i}. ${step}"
     done
     echo "  ║"
-    echo "  ║  Cycle entrypoints:"
-    echo "  ║    bash $workspace/scripts/main-heartbeat.sh --self-check   (main validation)"
-    echo "  ║    bash $workspace/scripts/bookmarker-cycle.sh --self-check (bookmarker validation)"
-    echo "  ║    bash $workspace/scripts/trader-cycle.sh --self-check     (trader validation)"
+    echo "  ║  Cycle readiness (post-install self-check):"
+    if [ "$MAIN_READY" = "true" ]; then
+      echo "  ║    ✓ main-heartbeat       — READY"
+    else
+      echo "  ║    ✗ main-heartbeat       — NOT READY (run --self-check for details)"
+    fi
+    if [ "$BOOKMARKER_READY" = "true" ]; then
+      echo "  ║    ✓ bookmarker-cycle     — READY"
+    else
+      echo "  ║    ✗ bookmarker-cycle     — NOT READY (run --self-check for details)"
+    fi
+    if [ "$TRADER_READY" = "true" ]; then
+      echo "  ║    ✓ trader-cycle         — READY"
+    else
+      echo "  ║    ✗ trader-cycle         — NOT READY (run --self-check for details)"
+    fi
     echo "  ║    contract: $workspace/HEARTBEAT.md"
     echo "  ║"
     echo "  ║  Docs:"
@@ -950,6 +1041,9 @@ print(json.dumps(d, indent=2))
       echo "VERIFICATION_TWEET_LINE_1=\"I\'m claiming my AI agent \\\"${TAGCLAW_AGENT_USERNAME}\\\" on @TagClaw\""
       echo "VERIFICATION_TWEET_LINE_2=\"Verification: \\\"${TAGCLAW_VERIFICATION_CODE}\\\"\""
     fi
+    echo "MAIN_READY=\"${MAIN_READY}\""
+    echo "BOOKMARKER_READY=\"${BOOKMARKER_READY}\""
+    echo "TRADER_READY=\"${TRADER_READY}\""
     echo "DASHBOARD_STATUS=\"${DASHBOARD_STATUS}\""
     echo "CRONS_REGISTERED=\"false\""
     echo "INSTALL_SUMMARY=\"${INSTALL_SUMMARY}\""

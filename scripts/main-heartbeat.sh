@@ -22,12 +22,20 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENCY_DIR="$(dirname "$SCRIPT_DIR")"
-AGENCY_VERSION="$(cat "$AGENCY_DIR/VERSION" 2>/dev/null || echo "unknown")"
-WORKSPACE="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
+
+# Source shared library (works from both repo and deployed workspace)
+if [ -f "$SCRIPT_DIR/lib/common.sh" ]; then
+  source "$SCRIPT_DIR/lib/common.sh"
+else
+  echo "[FATAL] lib/common.sh not found at $SCRIPT_DIR/lib/" >&2
+  exit 1
+fi
+
+# Resolve REPO_DIR, WORKSPACE, AGENCY_VERSION from context
+resolve_agency_paths "$SCRIPT_DIR"
 RUNTIME_MAIN="$WORKSPACE/runtime/main"
 
-# ── Color helpers ────────────────────────────────────────────────────────────
+# ── Color helpers (override common.sh log format for cycle output) ───────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RESET='\033[0m'
 log_ok()   { echo -e "${GREEN}[OK]${RESET} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${RESET} $1"; }
@@ -53,8 +61,8 @@ validate_environment() {
 
   log_info "Validating main-heartbeat environment (v$AGENCY_VERSION)..."
 
-  # 1. Check .installed marker
-  if [ -f "$AGENCY_DIR/.installed" ]; then
+  # 1. Check .installed marker (workspace or repo)
+  if check_agency_installed; then
     log_ok "Agency installed"
   else
     log_fail "Agency not installed — run: bash scripts/install.sh"
@@ -69,9 +77,14 @@ validate_environment() {
     errors=$((errors + 1))
   fi
 
-  # 3. Check identity
-  local identity_file="$AGENCY_DIR/config/agency-identity.json"
-  if [ -f "$identity_file" ]; then
+  # 3. Check identity (workspace or repo)
+  local identity_file=""
+  if [ -f "$WORKSPACE/config/agency-identity.json" ]; then
+    identity_file="$WORKSPACE/config/agency-identity.json"
+  elif [ -n "${REPO_DIR:-}" ] && [ -f "$REPO_DIR/config/agency-identity.json" ]; then
+    identity_file="$REPO_DIR/config/agency-identity.json"
+  fi
+  if [ -n "$identity_file" ] && [ -f "$identity_file" ]; then
     local username
     username="$(python3 -c "import json; d=json.load(open('$identity_file')); print(d.get('agent',{}).get('username',''))" 2>/dev/null || echo "")"
     if [ -n "$username" ]; then
@@ -81,6 +94,7 @@ validate_environment() {
     fi
   else
     log_warn "Identity file not found — run install.sh with TagClaw API access"
+    identity_file=""
   fi
 
   # 4. Check credentials
@@ -105,11 +119,23 @@ validate_environment() {
 build_input_packet() {
   log_info "Building main input packet..."
 
-  if [ -f "$AGENCY_DIR/scripts/build_main_input_packet_v2.py" ]; then
+  # Find the script in SCRIPT_DIR (co-located), workspace, or repo
+  local script=""
+  for candidate in \
+    "$SCRIPT_DIR/build_main_input_packet_v2.py" \
+    "$WORKSPACE/scripts/build_main_input_packet_v2.py" \
+    "${REPO_DIR:+$REPO_DIR/scripts/build_main_input_packet_v2.py}"; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      script="$candidate"
+      break
+    fi
+  done
+
+  if [ -n "$script" ]; then
     if [ "$DRY_RUN" = "true" ]; then
-      log_info "[DRY RUN] Would run: python3 scripts/build_main_input_packet_v2.py"
+      log_info "[DRY RUN] Would run: python3 $script"
     else
-      python3 "$AGENCY_DIR/scripts/build_main_input_packet_v2.py" 2>&1 || {
+      python3 "$script" 2>&1 || {
         log_warn "Input packet build failed — continuing with stale data"
       }
     fi
@@ -123,11 +149,22 @@ build_input_packet() {
 run_main_runtime() {
   log_info "Running main runtime orchestrator..."
 
-  if [ -f "$AGENCY_DIR/scripts/run_main_runtime_v2.py" ]; then
+  local script=""
+  for candidate in \
+    "$SCRIPT_DIR/run_main_runtime_v2.py" \
+    "$WORKSPACE/scripts/run_main_runtime_v2.py" \
+    "${REPO_DIR:+$REPO_DIR/scripts/run_main_runtime_v2.py}"; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      script="$candidate"
+      break
+    fi
+  done
+
+  if [ -n "$script" ]; then
     if [ "$DRY_RUN" = "true" ]; then
-      log_info "[DRY RUN] Would run: python3 scripts/run_main_runtime_v2.py"
+      log_info "[DRY RUN] Would run: python3 $script"
     else
-      python3 "$AGENCY_DIR/scripts/run_main_runtime_v2.py" 2>&1 || {
+      python3 "$script" 2>&1 || {
         log_fail "Main runtime failed"
         return 1
       }

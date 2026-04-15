@@ -22,6 +22,86 @@ log_warn() {
   echo "[WARN]  $(date '+%H:%M:%S') $*" >&2
 }
 
+# ── Path resolution ──────────────────────────────────────────────────────────
+# Deployed scripts run from WORKSPACE/scripts/ but repo assets live at REPO_DIR.
+# resolve_agency_paths SCRIPT_DIR sets: REPO_DIR, WORKSPACE, AGENCY_VERSION
+#
+# Detection: if dirname(SCRIPT_DIR) has VERSION + runtime-template/, we're in the
+# repo. Otherwise we're in a deployed workspace and read .agency-meta.json.
+
+resolve_agency_paths() {
+  local script_dir="${1:?resolve_agency_paths requires SCRIPT_DIR}"
+  local parent_dir
+  parent_dir="$(dirname "$script_dir")"
+
+  # Default workspace from env or standard path
+  WORKSPACE="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
+
+  if [ -f "$parent_dir/VERSION" ] && [ -d "$parent_dir/runtime-template" ]; then
+    # Running from repo checkout
+    REPO_DIR="$parent_dir"
+  else
+    # Running from deployed workspace — parent_dir IS the workspace
+    WORKSPACE="$parent_dir"
+    REPO_DIR=""
+    # Try to read repo pointer from meta file
+    if [ -f "$WORKSPACE/.agency-meta.json" ]; then
+      local meta_repo
+      meta_repo="$(python3 -c "import json; print(json.load(open('$WORKSPACE/.agency-meta.json')).get('repo_dir',''))" 2>/dev/null || echo "")"
+      if [ -n "$meta_repo" ] && [ -d "$meta_repo" ] && [ -f "$meta_repo/VERSION" ]; then
+        REPO_DIR="$meta_repo"
+      fi
+    fi
+  fi
+
+  # Resolve version: repo > workspace meta > unknown
+  if [ -n "$REPO_DIR" ] && [ -f "$REPO_DIR/VERSION" ]; then
+    AGENCY_VERSION="$(cat "$REPO_DIR/VERSION" 2>/dev/null || echo "unknown")"
+  elif [ -f "$WORKSPACE/.agency-meta.json" ]; then
+    AGENCY_VERSION="$(python3 -c "import json; print(json.load(open('$WORKSPACE/.agency-meta.json')).get('version','unknown'))" 2>/dev/null || echo "unknown")"
+  else
+    AGENCY_VERSION="unknown"
+  fi
+
+  export REPO_DIR WORKSPACE AGENCY_VERSION
+}
+
+# Check if agency is installed (works from both repo and deployed workspace)
+check_agency_installed() {
+  # Check workspace marker first (deployed path)
+  if [ -f "$WORKSPACE/.agency-installed" ]; then
+    return 0
+  fi
+  # Fallback: check repo marker
+  if [ -n "${REPO_DIR:-}" ] && [ -f "$REPO_DIR/.installed" ]; then
+    return 0
+  fi
+  return 1
+}
+
+# Resolve path to an agent behavior file (agents/NAME.md)
+resolve_agent_file() {
+  local agent_name="${1:?agent name required}"
+  # Workspace-deployed copy takes priority
+  if [ -f "$WORKSPACE/agents/${agent_name}.md" ]; then
+    echo "$WORKSPACE/agents/${agent_name}.md"
+    return 0
+  fi
+  # Fallback to repo
+  if [ -n "${REPO_DIR:-}" ]; then
+    if [ -f "$REPO_DIR/agents/${agent_name}.md" ]; then
+      echo "$REPO_DIR/agents/${agent_name}.md"
+      return 0
+    fi
+    if [ -f "$REPO_DIR/agents/${agent_name}.md.tmpl" ]; then
+      echo "$REPO_DIR/agents/${agent_name}.md.tmpl"
+      return 0
+    fi
+  fi
+  echo ""
+  return 1
+}
+
 # ── Atomic JSON write ─────────────────────────────────────────────────────────
 # Usage: atomic_write_json "/path/to/file.json" '{"key":"value"}'
 # Writes JSON content to file atomically using tmp + mv pattern.
