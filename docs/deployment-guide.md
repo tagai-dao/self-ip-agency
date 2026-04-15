@@ -100,6 +100,9 @@ After the register step prints the verification tweet template, post it on X and
 bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh poll-status --workspace ~/.openclaw/workspace
 ```
 
+See also:
+- `docs/batch-self-ip-agent-runbook.md` — operator runbook for provisioning many agents with isolated workspace/HOME and per-agent TagClaw verification flow
+
 ### 3. Verification
 
 Run the basic post-install checks:

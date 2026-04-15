@@ -78,6 +78,12 @@ Critical data to back up:
 - `<workspace>/skills/tagclaw-wallet/.env` — wallet bootstrap fields
 - `~/.config/tagclaw/credentials.json` — legacy compatibility mirror (separately, encrypted)
 
+## Batch Provisioning Runbook
+
+For creating multiple isolated Self-IP agents with TagClaw wallet/bootstrap/register/verification flow, see:
+
+- `docs/batch-self-ip-agent-runbook.md`
+
 ## Updating
 
 ```bash
