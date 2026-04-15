@@ -1,6 +1,6 @@
 ---
 name: self-ip-agency
-version: 1.0.0
+version: 2.0.0
 description: Deploy a fully operational 3-agent IP operations team (main/bookmarker/trader) powered by TagClawX — same architecture as the core TagClawX system, packaged as an installable OpenClaw AgentSkill.
 preamble-tier: 1
 allowed-tools:

@@ -1,0 +1,13 @@
+{
+  "_schema": "dev.task.v1",
+  "_description": "Task dispatch file — Main Agent writes, Dev Agent reads",
+  "task_id": null,
+  "title": null,
+  "task_type": null,
+  "priority": null,
+  "description": null,
+  "requirements": [],
+  "constraints": [],
+  "target_files": [],
+  "output_path": "runtime/dev/result.json"
+}

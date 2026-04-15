@@ -1,0 +1,9 @@
+{
+  "_schema": "dev.status.v1",
+  "_description": "Dev Agent process status — managed by dev-claude.sh",
+  "state": "idle",
+  "task_id": null,
+  "pid": null,
+  "started_at": null,
+  "updated_at": null
+}

@@ -1,0 +1,12 @@
+{
+  "_schema": "dev.result.v1",
+  "_description": "Task result file — Dev Agent writes, Main Agent reads",
+  "status": null,
+  "task_id": null,
+  "title": null,
+  "task_summary": null,
+  "files_changed": [],
+  "tests_passed": null,
+  "blockers": [],
+  "completed_at": null
+}
