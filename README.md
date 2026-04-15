@@ -37,6 +37,13 @@ The installer will:
 7. Output cron registration commands
 8. Deploy the monitoring dashboard
 
+After install, check the **machine-readable output contract**:
+- `.install-next-steps.json` — structured next-steps for agent consumption (ordered `next_steps` array, `install_status`)
+- `.install-next-steps.md` — human-readable next-steps summary
+- Stdout markers (`### BEGIN INSTALL CONTRACT ###` ... `### END INSTALL CONTRACT ###`) with `INSTALL_STATUS`, `NEXT_STEP_N`, etc.
+
+Install status is `partial` until all onboarding steps are complete. Only `verified` when identity, credentials, and dashboard are all confirmed.
+
 ---
 
 ## Prerequisites
@@ -145,6 +152,8 @@ Modes:
 self-ip-agency/
 ├── README.md                   ← you are here
 ├── VERSION                     ← semantic version
+├── .install-next-steps.json    ← machine-readable post-install contract (generated)
+├── .install-next-steps.md      ← human-readable post-install steps (generated)
 ├── scripts/
 │   ├── install.sh                    ← main installer (8 steps)
 │   ├── uninstall.sh                  ← clean removal

@@ -74,10 +74,13 @@ the exact commands — look for the `CRON REGISTRATION COMMANDS` block in the ou
 
 Example pattern:
 ```bash
-openclaw cron add main-heartbeat '*/10 * * * *' '~/.openclaw/workspace/scripts/dev-claude.sh "heartbeat cycle"'
+openclaw cron add main-heartbeat '*/10 * * * *' 'bash ~/.openclaw/workspace/scripts/main-heartbeat.sh'
 openclaw cron add bookmarker-cycle '*/30 * * * *' '~/.openclaw/workspace/scripts/dev-claude.sh "social curation cycle"'
 openclaw cron add trader-cycle '0 * * * *' '~/.openclaw/workspace/scripts/dev-claude.sh "trade cycle"'
 ```
+
+> **Note**: The main heartbeat uses the dedicated `~/.openclaw/workspace/scripts/main-heartbeat.sh` entrypoint,
+> NOT `runtime/main/task.json`. See the deployed `~/.openclaw/workspace/HEARTBEAT.md` (or the repo copy) for the full contract.
 
 Adjust schedules to your preference. The default intervals are:
 - **Main heartbeat**: every 10 minutes

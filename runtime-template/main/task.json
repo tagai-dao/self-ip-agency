@@ -1,0 +1,12 @@
+{
+  "_compatibility_notice": "This file is a COMPATIBILITY PLACEHOLDER. It is NOT the primary task queue for the main heartbeat.",
+  "_primary_entrypoint": "scripts/main-heartbeat.sh",
+  "_contract_doc": "docs/main-heartbeat-contract.md",
+  "_instructions": "Do NOT use this file as the heartbeat trigger. Run scripts/main-heartbeat.sh instead.",
+  "schema": "main.task.placeholder.v1",
+  "redirect": {
+    "command": "bash scripts/main-heartbeat.sh",
+    "self_check": "bash scripts/main-heartbeat.sh --self-check",
+    "documentation": "HEARTBEAT.md"
+  }
+}

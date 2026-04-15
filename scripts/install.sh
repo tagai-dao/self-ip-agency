@@ -26,6 +26,12 @@ DASHBOARD_PORT="${VIZ_PORT:-7890}"
 DRY_RUN=false
 DASHBOARD_STATUS="not_attempted"
 
+# ── Install state tracking (for machine-readable output contract) ─────────────
+TAGCLAW_JOINED=false
+CREDENTIALS_EXIST=false
+IDENTITY_RESOLVED=false
+CRONS_REGISTERED=false  # always false — installer never auto-registers
+
 # ── Parse args ────────────────────────────────────────────────────────────────
 
 for arg in "$@"; do
@@ -109,6 +115,7 @@ detect_identity() {
   fi
 
   log_ok "Detected agent: $username (wallet: $eth_addr)"
+  IDENTITY_RESOLVED=true
 
   # Detect tagclaw-wallet path
   local wallet_cmd
@@ -265,6 +272,19 @@ install_runtime() {
     log_ok "Runtime template files copied"
   fi
 
+  # Deploy main-heartbeat executable and contract into the actual workspace.
+  local scripts_dst="$workspace/scripts"
+  mkdir -p "$scripts_dst"
+  if [ -f "$AGENCY_DIR/scripts/main-heartbeat.sh" ]; then
+    cp -f "$AGENCY_DIR/scripts/main-heartbeat.sh" "$scripts_dst/main-heartbeat.sh"
+    chmod +x "$scripts_dst/main-heartbeat.sh" || true
+    log_ok "Installed main-heartbeat entrypoint: $scripts_dst/main-heartbeat.sh"
+  fi
+  if [ -f "$AGENCY_DIR/HEARTBEAT.md" ]; then
+    cp -f "$AGENCY_DIR/HEARTBEAT.md" "$workspace/HEARTBEAT.md"
+    log_ok "Installed heartbeat contract: $workspace/HEARTBEAT.md"
+  fi
+
   log_ok "Runtime installed at: $runtime_root"
 }
 
@@ -391,7 +411,7 @@ for cmd in data.get('openclaw_cron_commands', []):
     print()
 "
   else
-    echo "  openclaw cron add main-heartbeat '*/10 * * * *' '$workspace/scripts/dev-claude.sh \"heartbeat cycle\"'"
+    echo "  openclaw cron add main-heartbeat '*/10 * * * *' 'bash $workspace/scripts/main-heartbeat.sh'"
     echo "  openclaw cron add bookmarker-cycle '*/30 * * * *' '$workspace/scripts/dev-claude.sh \"social curation cycle\"'"
     echo "  openclaw cron add trader-cycle '0 * * * *' '$workspace/scripts/dev-claude.sh \"trade cycle\"'"
   fi
@@ -490,6 +510,18 @@ main() {
   echo ""
 
   load_tagclaw_skill
+
+  # ── P1-A: Early warning when credentials / identity unresolved ──────────────
+  if [ ! -f "$HOME/.config/tagclaw/credentials.json" ]; then
+    echo ""
+    echo "  ╔══════════════════════════════════════════════════════════════╗"
+    echo "  ║  ACTION REQUIRED FIRST:                                     ║"
+    echo "  ║  Read https://tagclaw.com/SKILL.md and join TagClaw         ║"
+    echo "  ║  before configuring credentials.                            ║"
+    echo "  ╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+  fi
+
   detect_identity
   configure_from_identity
   install_runtime
@@ -499,7 +531,51 @@ main() {
   install_dashboard
 
   if [ "$DRY_RUN" = "false" ]; then
-    # Write .installed marker atomically
+    # ── Detect onboarding state ─────────────────────────────────────────────
+    if [ -f "$HOME/.config/tagclaw/credentials.json" ]; then
+      CREDENTIALS_EXIST=true
+    fi
+
+    # ── P0-C: Compute truthful install status ───────────────────────────────
+    # "verified" requires: identity resolved + credentials exist + dashboard running
+    # "partial"  is anything less
+    # "failed"   only if core install steps (runtime/wiki/autoresearch) failed
+    local INSTALL_STATUS="partial"
+    if [ "$IDENTITY_RESOLVED" = "true" ] && \
+       [ "$CREDENTIALS_EXIST" = "true" ] && \
+       [ "$DASHBOARD_STATUS" = "running" ]; then
+      INSTALL_STATUS="verified"
+    fi
+
+    # ── Build ordered next-steps list ───────────────────────────────────────
+    local -a NEXT_STEPS=()
+    local step_num=0
+
+    # Step 1 is ALWAYS TagClaw join (even if already done — agent must not skip)
+    step_num=$((step_num + 1))
+    NEXT_STEPS+=("Read https://tagclaw.com/SKILL.md and follow the instructions to join TagClaw")
+
+    if [ "$CREDENTIALS_EXIST" != "true" ]; then
+      step_num=$((step_num + 1))
+      NEXT_STEPS+=("cp ~/self-ip-agency/config/credentials.example.json ~/.config/tagclaw/credentials.json")
+      step_num=$((step_num + 1))
+      NEXT_STEPS+=("Edit credentials.json with your TagClaw API key and private key")
+    else
+      step_num=$((step_num + 1))
+      NEXT_STEPS+=("Verify ~/.config/tagclaw/credentials.json contents are correct")
+    fi
+
+    step_num=$((step_num + 1))
+    NEXT_STEPS+=("Register cron jobs (see commands printed in Step 7 above)")
+
+    if [ "$DASHBOARD_STATUS" = "deps_missing" ]; then
+      step_num=$((step_num + 1))
+      NEXT_STEPS+=("Install dashboard deps: pip3 install -r dashboard/requirements.txt")
+    fi
+
+    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Crons: manual."
+
+    # ── Write .installed marker atomically ──────────────────────────────────
     local installed_json
     installed_json="$(python3 -c "
 import json
@@ -507,13 +583,64 @@ from datetime import datetime, timezone
 d = {
     'version': '$AGENCY_VERSION',
     'installed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'install_status': '$INSTALL_STATUS',
     'dashboard_status': '$DASHBOARD_STATUS',
-    'schema': 'installed.v1'
+    'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
+    'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
+    'schema': 'installed.v2'
 }
 print(json.dumps(d, indent=2))
 ")"
     atomic_write_json "$INSTALLED_FILE" "$installed_json"
 
+    # ── P0-A: Write .install-next-steps.json ────────────────────────────────
+    local next_steps_json
+    next_steps_json="$(python3 -c "
+import json
+from datetime import datetime, timezone
+steps = $(printf '%s\n' "${NEXT_STEPS[@]}" | python3 -c "import sys,json; print(json.dumps([l.rstrip() for l in sys.stdin]))")
+d = {
+    'schema': 'install-next-steps.v1',
+    'install_status': '$INSTALL_STATUS',
+    'summary': '$INSTALL_SUMMARY',
+    'next_steps': [{'order': i+1, 'action': s} for i, s in enumerate(steps)],
+    'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'version': '$AGENCY_VERSION'
+}
+print(json.dumps(d, indent=2))
+")"
+    atomic_write_json "$AGENCY_DIR/.install-next-steps.json" "$next_steps_json"
+
+    # ── P1-B: Write .install-next-steps.md ──────────────────────────────────
+    {
+      echo "# Install Next Steps"
+      echo ""
+      echo "**Status:** ${INSTALL_STATUS}"
+      echo "**Version:** ${AGENCY_VERSION}"
+      echo ""
+      echo "## Required actions (in order)"
+      echo ""
+      local md_i=0
+      for step in "${NEXT_STEPS[@]}"; do
+        md_i=$((md_i + 1))
+        echo "${md_i}. ${step}"
+      done
+      echo ""
+      echo "## Component status"
+      echo ""
+      echo "| Component | Status |"
+      echo "|-----------|--------|"
+      echo "| Identity resolved | ${IDENTITY_RESOLVED} |"
+      echo "| Credentials file | ${CREDENTIALS_EXIST} |"
+      echo "| Dashboard | ${DASHBOARD_STATUS} |"
+      echo "| Cron jobs | manual (not auto-registered) |"
+      echo ""
+      echo "---"
+      echo "_Generated by install.sh v${AGENCY_VERSION}_"
+    } > "$AGENCY_DIR/.install-next-steps.md"
+    log_ok "Wrote $AGENCY_DIR/.install-next-steps.md"
+
+    # ── Human-readable summary box ──────────────────────────────────────────
     echo ""
     echo "  ╔══════════════════════════════════════════════════════╗"
     echo "  ║  Installation Summary — v$AGENCY_VERSION"
@@ -545,20 +672,19 @@ print(json.dumps(d, indent=2))
 
     echo "  ║"
     echo "  ║  Manual steps required:"
-    echo "  ║    1. Read https://tagclaw.com/SKILL.md and follow the instructions to join TagClaw"
-    if [ ! -f "$HOME/.config/tagclaw/credentials.json" ]; then
-      echo "  ║    2. cp $AGENCY_DIR/config/credentials.example.json ~/.config/tagclaw/credentials.json"
-      echo "  ║    3. Edit credentials.json with your TagClaw API key and private key"
-    else
-      echo "  ║    2. Credentials file exists (verify contents are correct after joining TagClaw)"
-    fi
-    echo "  ║    4. Register cron jobs (see commands printed in Step 7 above)"
-    if [ "$DASHBOARD_STATUS" = "deps_missing" ]; then
-      echo "  ║    - Install dashboard deps: pip3 install -r dashboard/requirements.txt"
-      echo "  ║    - Start dashboard: OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py"
-    fi
+    local box_i=0
+    for step in "${NEXT_STEPS[@]}"; do
+      box_i=$((box_i + 1))
+      echo "  ║    ${box_i}. ${step}"
+    done
+    echo "  ║"
+    echo "  ║  Main heartbeat:"
+    echo "  ║    bash $workspace/scripts/main-heartbeat.sh --self-check   (first-run validation)"
+    echo "  ║    bash $workspace/scripts/main-heartbeat.sh                (run heartbeat cycle)"
+    echo "  ║    contract: $workspace/HEARTBEAT.md"
     echo "  ║"
     echo "  ║  Docs:"
+    echo "  ║    - HEARTBEAT.md                 — main heartbeat contract"
     echo "  ║    - agents/main.md              — orchestrator rules"
     echo "  ║    - docs/wiki-guide.md           — LLM Wiki setup"
     echo "  ║    - docs/autoresearch-guide.md   — strategy optimization"
@@ -568,10 +694,31 @@ print(json.dumps(d, indent=2))
     echo "  ╚══════════════════════════════════════════════════════╝"
     echo ""
 
-    if [ "$DASHBOARD_STATUS" = "running" ] && [ -f "$HOME/.config/tagclaw/credentials.json" ]; then
+    # ── P0-B: Machine-friendly stdout markers ───────────────────────────────
+    # Deterministic key=value lines for external agent parsing
+    echo ""
+    echo "### BEGIN INSTALL CONTRACT ###"
+    echo "INSTALL_STATUS=\"${INSTALL_STATUS}\""
+    echo "MAIN_HEARTBEAT_ENTRYPOINT=\"$workspace/scripts/main-heartbeat.sh\""
+    echo "HEARTBEAT_CONTRACT_PATH=\"$workspace/HEARTBEAT.md\""
+    local marker_i=0
+    for step in "${NEXT_STEPS[@]}"; do
+      marker_i=$((marker_i + 1))
+      echo "NEXT_STEP_${marker_i}=\"${step}\""
+    done
+    echo "IDENTITY_RESOLVED=\"${IDENTITY_RESOLVED}\""
+    echo "CREDENTIALS_EXIST=\"${CREDENTIALS_EXIST}\""
+    echo "DASHBOARD_STATUS=\"${DASHBOARD_STATUS}\""
+    echo "CRONS_REGISTERED=\"false\""
+    echo "INSTALL_SUMMARY=\"${INSTALL_SUMMARY}\""
+    echo "### END INSTALL CONTRACT ###"
+    echo ""
+
+    # ── P0-C: Truthful final message ────────────────────────────────────────
+    if [ "$INSTALL_STATUS" = "verified" ]; then
       log_ok "Installation complete — all verified!"
     else
-      log_ok "Installation complete — see manual steps above"
+      log_warn "Installation PARTIAL — onboarding steps remain (see above or .install-next-steps.json)"
     fi
   fi
 }

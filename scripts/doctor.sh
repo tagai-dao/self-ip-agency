@@ -139,8 +139,28 @@ check_file "$AGENCY_DIR/config/wiki_topic_registry.json" "wiki_topic_registry.js
 
 echo ""
 
-# ── 7. Scripts present ──────────────────────────────────────────────────────
-echo "7. Key scripts"
+# ── 7. Main heartbeat entrypoint ──────────────────────────────────────────────
+echo "7. Main heartbeat"
+check_file "$AGENCY_DIR/scripts/main-heartbeat.sh" "repo scripts/main-heartbeat.sh (source entrypoint)"
+check_file "$AGENCY_DIR/HEARTBEAT.md" "repo HEARTBEAT.md (source contract)"
+check_file "$AGENCY_DIR/docs/main-heartbeat-contract.md" "docs/main-heartbeat-contract.md"
+check_file "$WORKSPACE/scripts/main-heartbeat.sh" "workspace/scripts/main-heartbeat.sh (deployed entrypoint)"
+check_file "$WORKSPACE/HEARTBEAT.md" "workspace/HEARTBEAT.md (deployed contract)"
+if [ -x "$AGENCY_DIR/scripts/main-heartbeat.sh" ]; then
+  ok "repo main-heartbeat.sh is executable"
+else
+  warn "repo main-heartbeat.sh is not executable — run: chmod +x scripts/main-heartbeat.sh"
+fi
+if [ -x "$WORKSPACE/scripts/main-heartbeat.sh" ]; then
+  ok "deployed main-heartbeat.sh is executable"
+else
+  warn "deployed main-heartbeat.sh is not executable — rerun install or chmod +x $WORKSPACE/scripts/main-heartbeat.sh"
+fi
+
+echo ""
+
+# ── 8. Key scripts ──────────────────────────────────────────────────────────
+echo "8. Key scripts"
 for s in run_main_runtime_v2.py wiki_lint_v1.py select_strategy_v1.py \
           compute_tas_social_v2.py build_main_input_packet_v2.py \
           build_wiki_query_index_v1.py runtime_utils_v2.py; do
@@ -156,9 +176,16 @@ echo ""
 
 if [ "$FAIL" -gt 0 ]; then
   echo "  Action required: fix the items above marked ✗ before running agents."
+  if [ -f "$AGENCY_DIR/.install-next-steps.json" ]; then
+    echo "  See also: .install-next-steps.json for machine-readable next steps"
+    echo "            .install-next-steps.md  for human-readable next steps"
+  fi
   exit 1
 elif [ "$WARN" -gt 0 ]; then
   echo "  Warnings present — runtime files are populated after the first agent cycle."
+  if [ -f "$AGENCY_DIR/.install-next-steps.json" ]; then
+    echo "  See also: .install-next-steps.json / .install-next-steps.md for follow-up steps"
+  fi
   exit 0
 else
   echo "  All checks passed. Your runtime is ready."

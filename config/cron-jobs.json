@@ -1,13 +1,13 @@
 {
-  "schema": "cron-jobs.v1",
+  "schema": "cron-jobs.v2",
   "description": "Self-IP Agency cron configuration template. Fill WORKSPACE_PATH after install.",
   "jobs": [
     {
       "name": "main-heartbeat",
       "agent": "main",
       "schedule": "*/10 * * * *",
-      "description": "Main orchestrator heartbeat — checks TAS, dispatches sub-agents",
-      "command_template": "cd {{WORKSPACE_PATH}} && ./scripts/dev-claude.sh \"Read runtime/main/task.json and execute heartbeat cycle. Update runtime/main/heartbeat.json.\"",
+      "description": "Main orchestrator heartbeat — checks TAS, dispatches sub-agents. Entrypoint: scripts/main-heartbeat.sh (NOT runtime/main/task.json)",
+      "command_template": "cd {{WORKSPACE_PATH}} && bash scripts/main-heartbeat.sh",
       "enabled": true,
       "timeout_seconds": 120
     },
@@ -31,7 +31,7 @@
     }
   ],
   "openclaw_cron_commands": [
-    "openclaw cron add main-heartbeat '*/10 * * * *' '{{WORKSPACE_PATH}}/scripts/dev-claude.sh \"Read runtime/main/task.json and execute heartbeat cycle.\"'",
+    "openclaw cron add main-heartbeat '*/10 * * * *' 'bash {{WORKSPACE_PATH}}/scripts/main-heartbeat.sh'",
     "openclaw cron add bookmarker-cycle '*/30 * * * *' '{{WORKSPACE_PATH}}/scripts/dev-claude.sh \"Read runtime/bookmarker/task.json and execute social curation cycle.\"'",
     "openclaw cron add trader-cycle '0 * * * *' '{{WORKSPACE_PATH}}/scripts/dev-claude.sh \"Read runtime/trader/task.json and execute trade cycle.\"'"
   ]

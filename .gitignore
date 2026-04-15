@@ -9,6 +9,8 @@ config/secrets.env
 # Runtime state (generated at deploy time)
 runtime/
 .installed
+.install-next-steps.json
+.install-next-steps.md
 .cache/
 
 # Generated agent configs (contain identity)
@@ -31,6 +33,7 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+.claude/
 
 # Logs
 logs/

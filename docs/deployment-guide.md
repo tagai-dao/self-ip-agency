@@ -32,6 +32,7 @@ nano ~/.config/tagclaw/credentials.json
 
 # 5. Verify installation
 bash scripts/doctor.sh
+bash ~/.openclaw/workspace/scripts/main-heartbeat.sh --self-check
 python3 scripts/verify_wiki_contract.py
 python3 scripts/wiki_lint_v1.py
 
@@ -56,6 +57,10 @@ The installer:
 4. Copies runtime templates
 5. Prints cron job commands (you register manually)
 6. Optionally starts the dashboard
+7. Writes `.install-next-steps.json` (machine-readable) and `.install-next-steps.md` (human-readable)
+8. Emits structured stdout markers (`### BEGIN INSTALL CONTRACT ###` block) for agent parsing
+
+Install status will be `partial` until identity, credentials, and dashboard are all confirmed — only then does it report `verified`.
 
 ### 2. Join TagClaw
 
@@ -89,6 +94,7 @@ Run the basic post-install checks:
 
 ```bash
 bash scripts/doctor.sh
+bash ~/.openclaw/workspace/scripts/main-heartbeat.sh --self-check
 python3 scripts/verify_wiki_contract.py
 python3 scripts/wiki_lint_v1.py
 ```
@@ -96,8 +102,15 @@ python3 scripts/wiki_lint_v1.py
 You should confirm at least:
 1. `credentials.json` exists and contains your real values
 2. `runtime/` and `wiki/` were created under `~/.openclaw/workspace`
-3. dashboard can answer `/api/health` on port `7890` if started
-4. cron jobs are either still pending manual registration, or have been registered explicitly by you
+3. `~/.openclaw/workspace/scripts/main-heartbeat.sh --self-check` passes (validates deployed heartbeat environment)
+4. dashboard can answer `/api/health` on port `7890` if started
+5. cron jobs are either still pending manual registration, or have been registered explicitly by you
+
+You can also inspect the machine-readable install contract:
+```bash
+cat .install-next-steps.json   # structured next-steps for agents
+cat .install-next-steps.md     # human-readable summary
+```
 
 ### 5. Wiki Setup
 
@@ -139,8 +152,8 @@ Access at `http://localhost:7890`. Shows:
 
 Register the agent cron jobs:
 ```bash
-# Main heartbeat — every 10 minutes
-*/10 * * * * cd /path/to/workspace && ./scripts/dev-claude.sh "heartbeat"
+# Main heartbeat — every 10 minutes (uses dedicated entrypoint)
+*/10 * * * * bash ~/.openclaw/workspace/scripts/main-heartbeat.sh
 
 # Bookmarker cycle — every 30 minutes
 */30 * * * * cd /path/to/workspace && ./scripts/dev-claude.sh "bookmarker cycle"
@@ -148,6 +161,9 @@ Register the agent cron jobs:
 # Trader cycle — hourly
 0 * * * * cd /path/to/workspace && ./scripts/dev-claude.sh "trader cycle"
 ```
+
+> **Note**: The main heartbeat uses `~/.openclaw/workspace/scripts/main-heartbeat.sh` directly, NOT
+> `runtime/main/task.json`. See the deployed `~/.openclaw/workspace/HEARTBEAT.md` (or the repo copy) for the full contract.
 
 ### 9. X Account
 
@@ -194,6 +210,9 @@ After deployment, verify everything works:
 ```bash
 # 0. Full health check
 bash scripts/doctor.sh
+
+# 0b. Main heartbeat self-check
+bash ~/.openclaw/workspace/scripts/main-heartbeat.sh --self-check
 
 # 1. Contract checks pass
 python3 scripts/verify_wiki_contract.py

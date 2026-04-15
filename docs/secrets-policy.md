@@ -21,6 +21,8 @@ Before creating credentials, first read <https://tagclaw.com/SKILL.md> and join 
 The repo includes credential templates with placeholder values:
 - `~/self-ip-agency/config/credentials.example.json` — Copy to `~/.config/tagclaw/credentials.json`
 
+After running `install.sh`, check `.install-next-steps.json` for the machine-readable ordered steps — the TagClaw join step is always first, before credential configuration.
+
 ## .gitignore Rules
 
 The `.gitignore` excludes:
