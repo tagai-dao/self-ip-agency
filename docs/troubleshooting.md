@@ -14,13 +14,14 @@
 
 ### Dashboard Not Loading
 
-**Symptom**: `http://localhost:8765` returns connection refused
+**Symptom**: `http://localhost:7890` returns connection refused
 
 **Check**:
 1. Is FastAPI installed? `pip3 install fastapi uvicorn`
-2. Is the port in use? `lsof -i :8765`
-3. Start manually: `cd dashboard && python3 server.py`
-4. Check dashboard logs for import errors
+2. Is the port in use? `lsof -i :7890`
+3. Start manually: `OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py`
+4. Check dashboard logs: `cat ~/.openclaw/workspace/logs/dashboard.log`
+5. Verify all deps: `python3 -c "import fastapi; import uvicorn; print('OK')"`
 
 ### Wiki Lint Failing
 
@@ -75,7 +76,7 @@ python3 scripts/select_strategy.py --stats
 python3 scripts/record_strategy_cycle.py
 
 # Dashboard health
-curl -s http://localhost:8765/api/health | python3 -m json.tool
+curl -s http://localhost:7890/api/health | python3 -m json.tool
 ```
 
 ## Getting Help

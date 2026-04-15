@@ -57,7 +57,7 @@ done
 DASHBOARD_DIR="$WORKSPACE/tools/self-ip-dashboard"
 if [ -d "$DASHBOARD_DIR" ]; then
   # Stop running dashboard if any
-  local_pid="$(pgrep -f "server.py.*8765" 2>/dev/null || echo "")"
+  local_pid="$(pgrep -f "server.py.*${VIZ_PORT:-7890}" 2>/dev/null || pgrep -f "self-ip-dashboard/server.py" 2>/dev/null || echo "")"
   if [ -n "$local_pid" ]; then
     kill "$local_pid" 2>/dev/null && log_ok "Stopped dashboard server (PID: $local_pid)"
   fi

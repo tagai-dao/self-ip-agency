@@ -8,8 +8,8 @@ strategy insights, live OP/VP, community heat, and agent status at a glance.
 ```bash
 pip3 install -r dashboard/requirements.txt
 
-# Point at your OpenClaw workspace
-python3 dashboard/server.py --workspace ~/.openclaw/workspace
+# Point at your OpenClaw workspace and start
+OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py
 ```
 
 Then open: **http://localhost:7890**
@@ -28,14 +28,12 @@ Then open: **http://localhost:7890**
 | **Social Feed** | Latest curate candidate preview from bookmarker runtime |
 | **Dependency Graph** | Runtime artifact freshness graph with countdown timers |
 
-## Arguments
+## Environment variables
 
-| Arg | Default | Description |
-|-----|---------|-------------|
-| `--workspace` | `~/.openclaw/workspace` | Path to OpenClaw workspace root |
-| `--port` | `7890` | HTTP port (`$VIZ_PORT` env var also accepted) |
-
-You can also set `OPENCLAW_WORKSPACE` env var instead of `--workspace`.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENCLAW_WORKSPACE` | `~/.openclaw/workspace` | Path to OpenClaw workspace root |
+| `VIZ_PORT` | `7890` | HTTP port for the dashboard server |
 
 ## Runtime files it reads
 
@@ -100,11 +98,14 @@ Create `~/Library/LaunchAgents/com.self-ip.dashboard.plist`:
   <array>
     <string>/usr/local/bin/python3</string>
     <string>/Users/YOUR_USER/self-ip-agency/dashboard/server.py</string>
-    <string>--workspace</string>
-    <string>/Users/YOUR_USER/.openclaw/workspace</string>
-    <string>--port</string>
-    <string>7890</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OPENCLAW_WORKSPACE</key>
+    <string>/Users/YOUR_USER/.openclaw/workspace</string>
+    <key>VIZ_PORT</key>
+    <string>7890</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/tmp/self-ip-dashboard.log</string>

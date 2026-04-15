@@ -22,7 +22,9 @@ source "$SCRIPT_DIR/lib/common.sh"
 AGENCY_VERSION="$(cat "$AGENCY_DIR/VERSION" 2>/dev/null || echo "unknown")"
 IDENTITY_FILE="$AGENCY_DIR/config/agency-identity.json"
 TAGCLAW_API="https://bsc-api.tagai.fun/tagclaw"
+DASHBOARD_PORT="${VIZ_PORT:-7890}"
 DRY_RUN=false
+DASHBOARD_STATUS="not_attempted"
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 
@@ -367,12 +369,12 @@ install_autoresearch() {
 # ──────────────────────────────────────────────────────────────────────────────
 
 register_crons() {
-  log_info "Step 7: Registering agent cron jobs..."
+  log_info "Step 7: Cron job commands (NOT auto-registered)..."
 
   echo ""
   echo "  ══════════════════════════════════════════════════════════"
-  echo "  CRON REGISTRATION COMMANDS"
-  echo "  Run these commands (or have your agent run them):"
+  echo "  ACTION REQUIRED: Run these commands to register cron jobs."
+  echo "  The installer does NOT register them automatically."
   echo "  ══════════════════════════════════════════════════════════"
   echo ""
 
@@ -397,7 +399,7 @@ for cmd in data.get('openclaw_cron_commands', []):
   echo "  ══════════════════════════════════════════════════════════"
   echo ""
 
-  log_ok "Cron registration commands displayed"
+  log_info "Cron commands printed above — copy and run them manually"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -421,28 +423,57 @@ install_dashboard() {
   # Copy dashboard files
   if [ -d "$AGENCY_DIR/dashboard" ]; then
     cp -r "$AGENCY_DIR/dashboard/." "$dashboard_dst/"
-    log_ok "Dashboard installed at: $dashboard_dst"
+    log_ok "Dashboard files installed at: $dashboard_dst"
   fi
 
-  # Try to start dashboard
-  if command -v python3 &>/dev/null; then
-    if python3 -c "import fastapi" 2>/dev/null; then
-      log_info "Starting dashboard server on port 8765..."
-      nohup python3 "$dashboard_dst/server.py" \
-        --workspace "$workspace" \
-        --port 8765 \
-        > "$workspace/logs/dashboard.log" 2>&1 &
-      local dashboard_pid=$!
-      sleep 1
-      if kill -0 "$dashboard_pid" 2>/dev/null; then
-        log_ok "Dashboard running at http://localhost:8765 (PID: $dashboard_pid)"
-      else
-        log_warn "Dashboard failed to start — check $workspace/logs/dashboard.log"
-      fi
-    else
-      log_warn "FastAPI not installed. Run: pip3 install fastapi uvicorn"
-      log_warn "Then start manually: python3 $dashboard_dst/server.py"
+  # Validate dashboard dependencies
+  local deps_missing=""
+  for dep in fastapi uvicorn; do
+    if ! python3 -c "import $dep" 2>/dev/null; then
+      deps_missing="$deps_missing $dep"
     fi
+  done
+
+  if [ -n "$deps_missing" ]; then
+    log_warn "Dashboard dependencies missing:$deps_missing"
+    log_warn "Install them:  pip3 install -r $dashboard_dst/requirements.txt"
+    log_warn "Then start:    OPENCLAW_WORKSPACE=$workspace python3 $dashboard_dst/server.py"
+    DASHBOARD_STATUS="deps_missing"
+    return 0
+  fi
+
+  # Start dashboard
+  mkdir -p "$workspace/logs"
+  log_info "Starting dashboard on port $DASHBOARD_PORT..."
+  OPENCLAW_WORKSPACE="$workspace" \
+    nohup python3 "$dashboard_dst/server.py" \
+    > "$workspace/logs/dashboard.log" 2>&1 &
+  local dashboard_pid=$!
+
+  # Real health check: wait for HTTP 200 from /api/health (up to 8 seconds)
+  local health_ok=false
+  for _i in 1 2 3 4 5 6 7 8; do
+    sleep 1
+    if curl -sf "http://localhost:${DASHBOARD_PORT}/api/health" >/dev/null 2>&1; then
+      health_ok=true
+      break
+    fi
+    # If process died, stop waiting
+    if ! kill -0 "$dashboard_pid" 2>/dev/null; then
+      break
+    fi
+  done
+
+  if [ "$health_ok" = "true" ]; then
+    log_ok "Dashboard verified at http://localhost:${DASHBOARD_PORT} (PID: $dashboard_pid, /api/health OK)"
+    DASHBOARD_STATUS="running"
+  elif kill -0 "$dashboard_pid" 2>/dev/null; then
+    log_warn "Dashboard process started (PID: $dashboard_pid) but /api/health did not respond"
+    log_warn "Check $workspace/logs/dashboard.log for errors"
+    DASHBOARD_STATUS="started_unverified"
+  else
+    log_warn "Dashboard failed to start — check $workspace/logs/dashboard.log"
+    DASHBOARD_STATUS="failed"
   fi
 }
 
@@ -476,23 +507,71 @@ from datetime import datetime, timezone
 d = {
     'version': '$AGENCY_VERSION',
     'installed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'dashboard_status': '$DASHBOARD_STATUS',
     'schema': 'installed.v1'
 }
 print(json.dumps(d, indent=2))
 ")"
     atomic_write_json "$INSTALLED_FILE" "$installed_json"
-    log_ok "Installation complete! Version $AGENCY_VERSION"
+
     echo ""
-    echo "  Next steps:"
-    echo "    1. Set up credentials: cp config/credentials.example.json ~/.config/tagclaw/credentials.json"
-    echo "    2. Edit credentials.json with your API key and private key"
-    echo "    3. Run the cron registration commands above"
-    echo "    4. Visit http://localhost:8765 for the dashboard"
-    echo "    5. Review agents/main.md for orchestrator rules"
-    echo "    6. See docs/wiki-guide.md for LLM Wiki setup"
-    echo "    7. See docs/autoresearch-guide.md for strategy optimization"
-    echo "    8. See docs/obsidian-setup.md to connect wiki to Obsidian"
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    echo "  ║  Installation Summary — v$AGENCY_VERSION"
+    echo "  ╠══════════════════════════════════════════════════════╣"
+    echo "  ║"
+    echo "  ║  Verified:"
+    echo "  ║    - Runtime directories created"
+    echo "  ║    - Wiki template + schema installed"
+    echo "  ║    - AutoResearch framework installed"
+    echo "  ║    - Agent templates configured"
+
+    case "$DASHBOARD_STATUS" in
+      running)
+        echo "  ║    - Dashboard running at http://localhost:$DASHBOARD_PORT (/api/health OK)"
+        ;;
+      started_unverified)
+        echo "  ║    ⚠ Dashboard started but /api/health not responding"
+        ;;
+      deps_missing)
+        echo "  ║    ⚠ Dashboard deps missing — run: pip3 install -r dashboard/requirements.txt"
+        ;;
+      failed)
+        echo "  ║    ⚠ Dashboard failed to start — check logs/dashboard.log"
+        ;;
+      *)
+        echo "  ║    ⚠ Dashboard not attempted"
+        ;;
+    esac
+
+    echo "  ║"
+    echo "  ║  Manual steps required:"
+    if [ ! -f "$HOME/.config/tagclaw/credentials.json" ]; then
+      echo "  ║    1. cp config/credentials.example.json ~/.config/tagclaw/credentials.json"
+      echo "  ║    2. Edit credentials.json with your API key and private key"
+    else
+      echo "  ║    - Credentials file exists (verify contents are correct)"
+    fi
+    echo "  ║    - Register cron jobs (see commands printed in Step 7 above)"
+    if [ "$DASHBOARD_STATUS" = "deps_missing" ]; then
+      echo "  ║    - Install dashboard deps: pip3 install -r dashboard/requirements.txt"
+      echo "  ║    - Start dashboard: OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py"
+    fi
+    echo "  ║"
+    echo "  ║  Docs:"
+    echo "  ║    - agents/main.md              — orchestrator rules"
+    echo "  ║    - docs/wiki-guide.md           — LLM Wiki setup"
+    echo "  ║    - docs/autoresearch-guide.md   — strategy optimization"
+    echo "  ║    - docs/obsidian-setup.md        — Obsidian integration"
+    echo "  ║    - docs/troubleshooting.md       — common issues"
+    echo "  ║"
+    echo "  ╚══════════════════════════════════════════════════════╝"
     echo ""
+
+    if [ "$DASHBOARD_STATUS" = "running" ] && [ -f "$HOME/.config/tagclaw/credentials.json" ]; then
+      log_ok "Installation complete — all verified!"
+    else
+      log_ok "Installation complete — see manual steps above"
+    fi
   fi
 }
 

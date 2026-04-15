@@ -257,8 +257,7 @@ Real-time monitoring at http://localhost:7890 with:
 
 ```bash
 pip3 install -r dashboard/requirements.txt
-python3 dashboard/server.py --workspace ~/.openclaw/workspace
-# or: OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py
+OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py
 ```
 
 ---

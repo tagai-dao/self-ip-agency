@@ -33,7 +33,7 @@ python3 scripts/wiki_lint_v1.py
 
 # 5. Start the dashboard
 pip3 install -r dashboard/requirements.txt
-python3 dashboard/server.py --workspace ~/.openclaw/workspace
+OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py
 # Visit http://localhost:7890
 ```
 
