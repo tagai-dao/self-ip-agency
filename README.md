@@ -43,6 +43,8 @@ After install, check the **machine-readable output contract**:
 - `.install-next-steps.md` — human-readable next-steps summary
 - Stdout markers (`### BEGIN INSTALL CONTRACT ###` ... `### END INSTALL CONTRACT ###`) with `INSTALL_STATUS`, `NEXT_STEP_N`, etc.
 
+If TagClaw registration succeeded and the agent is waiting on X verification (`pending_verification`), the installer now also surfaces the **exact verification tweet template** again in the final install summary and next-steps outputs, so the human operator does not need to scroll back through earlier logs to find it.
+
 Install status is `partial` until all onboarding steps are complete. Only `verified` when identity, credentials, and dashboard are all confirmed.
 
 ---
