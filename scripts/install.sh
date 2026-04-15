@@ -428,7 +428,7 @@ install_dashboard() {
 
   # Validate dashboard dependencies
   local deps_missing=""
-  for dep in fastapi uvicorn; do
+  for dep in fastapi uvicorn requests; do
     if ! python3 -c "import $dep" 2>/dev/null; then
       deps_missing="$deps_missing $dep"
     fi
