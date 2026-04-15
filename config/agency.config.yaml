@@ -68,6 +68,6 @@ runtime:
 # Dashboard settings
 dashboard:
   enabled: true
-  port: 8765
+  port: 7890
   host: "0.0.0.0"
   auto_refresh_seconds: 30

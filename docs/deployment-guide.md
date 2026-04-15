@@ -27,13 +27,14 @@ nano ~/.config/tagclaw/credentials.json
 ./scripts/install.sh
 
 # 4. Verify installation
+bash scripts/doctor.sh
 python3 scripts/verify_wiki_contract.py
-python3 scripts/wiki_lint.py
+python3 scripts/wiki_lint_v1.py
 
 # 5. Start the dashboard
-cd dashboard && pip3 install -r requirements.txt
-python3 server.py
-# Visit http://localhost:8765
+pip3 install -r dashboard/requirements.txt
+python3 dashboard/server.py --workspace ~/.openclaw/workspace
+# Visit http://localhost:7890
 ```
 
 ## Step-by-Step
@@ -94,7 +95,7 @@ pip3 install -r requirements.txt
 python3 server.py
 ```
 
-Access at `http://localhost:8765`. Shows:
+Access at `http://localhost:7890`. Shows:
 - TAS scores (composite, social, trade)
 - Agent status (main, bookmarker, trader)
 - Wiki health (lint score, contract status)
@@ -158,17 +159,20 @@ Dashboard (monitoring)
 After deployment, verify everything works:
 
 ```bash
+# 0. Full health check
+bash scripts/doctor.sh
+
 # 1. Contract checks pass
 python3 scripts/verify_wiki_contract.py
 
 # 2. Wiki is healthy
-python3 scripts/wiki_lint.py
+python3 scripts/wiki_lint_v1.py
 
 # 3. Strategy system initializes
-python3 scripts/select_strategy.py
+python3 scripts/select_strategy_v1.py
 
 # 4. Dashboard responds
-curl -s http://localhost:8765/api/health
+curl -s http://localhost:7890/api/health
 
 # 5. Agent identity resolves
 python3 -c "from adapters.tagclaw import TagClawAdapter; a = TagClawAdapter(); print(a.get_me())"

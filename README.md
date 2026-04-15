@@ -45,13 +45,16 @@ The installer will:
 |-------------|---------|
 | Python 3.10+ | Runtime scripts, dashboard server |
 | curl | API calls during install |
+| [Claude Code](https://claude.ai/code) | OpenClaw agent runtime |
 | [tagclaw-wallet](https://github.com/nicetomytyuk/tagclaw-wallet) | On-chain operations (Trader agent) |
 | TagClaw account | Agent identity + API access |
 | X (Twitter) account | Owner identity binding (see [docs/x-setup.md](docs/x-setup.md)) |
 
 Optional:
 - [Obsidian](https://obsidian.md) — for browsing the LLM Wiki locally (see [docs/obsidian-setup.md](docs/obsidian-setup.md))
-- FastAPI + uvicorn — for the monitoring dashboard (`pip3 install -r dashboard/requirements.txt`)
+- FastAPI + uvicorn + requests — for the monitoring dashboard (`pip3 install -r dashboard/requirements.txt`)
+
+See [docs/openclaw-install.md](docs/openclaw-install.md) for full OpenClaw installation instructions.
 
 ---
 
@@ -137,17 +140,23 @@ self-ip-agency/
 ├── README.md                   ← you are here
 ├── VERSION                     ← semantic version
 ├── scripts/
-│   ├── install.sh              ← main installer (8 steps)
-│   ├── uninstall.sh            ← clean removal
-│   ├── lib/common.sh           ← shared shell utilities
-│   ├── wiki_lint.py            ← wiki health checker (3-band scoring)
-│   ├── wiki_utils.py           ← shared wiki utilities
-│   ├── wiki_registry.py        ← canonical topic resolver
-│   ├── wiki_search.py          ← wiki query interface
-│   ├── verify_wiki_contract.py ← runtime contract verifier
-│   ├── select_strategy.py      ← strategy optimizer (hill-climbing)
-│   ├── strategy_experiment.py  ← dual-track A/B framework
-│   └── record_strategy_cycle.py← cycle outcome recorder
+│   ├── install.sh                    ← main installer (8 steps)
+│   ├── uninstall.sh                  ← clean removal
+│   ├── doctor.sh                     ← runtime health check
+│   ├── lib/common.sh                 ← shared shell utilities
+│   ├── runtime_utils_v2.py           ← shared runtime utilities (v2)
+│   ├── run_main_runtime_v2.py        ← main agent cycle (builds latest.json)
+│   ├── build_main_input_packet_v2.py ← input packet assembler
+│   ├── compute_tas_social_v2.py      ← TAS_social dual-track scorer
+│   ├── select_strategy_v1.py         ← strategy optimizer (hill-climbing)
+│   ├── wiki_lint_v1.py               ← wiki health checker (3-band scoring)
+│   ├── build_wiki_query_index_v1.py  ← wiki query index builder
+│   ├── wiki_utils.py                 ← shared wiki utilities
+│   ├── wiki_registry.py              ← canonical topic resolver
+│   ├── wiki_search.py                ← wiki query interface
+│   ├── verify_wiki_contract.py       ← runtime contract verifier
+│   ├── strategy_experiment.py        ← dual-track A/B framework
+│   └── record_strategy_cycle.py      ← cycle outcome recorder
 ├── agents/
 │   ├── main.md.tmpl            ← main agent template
 │   ├── bookmarker.md.tmpl      ← bookmarker agent template
@@ -239,7 +248,7 @@ See [docs/autoresearch-guide.md](docs/autoresearch-guide.md) for the full guide.
 
 ## Dashboard
 
-Real-time monitoring at http://localhost:8765 with:
+Real-time monitoring at http://localhost:7890 with:
 - TAS total display + agent status pills
 - Wiki health score + contract verification
 - AutoResearch experiment modes + recent strategy cycles
@@ -249,6 +258,7 @@ Real-time monitoring at http://localhost:8765 with:
 ```bash
 pip3 install -r dashboard/requirements.txt
 python3 dashboard/server.py --workspace ~/.openclaw/workspace
+# or: OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py
 ```
 
 ---
@@ -270,7 +280,10 @@ python3 dashboard/server.py --workspace ~/.openclaw/workspace
 | Guide | What it covers |
 |-------|---------------|
 | [Deployment Guide](docs/deployment-guide.md) | Full step-by-step deployment walkthrough |
+| [OpenClaw Install](docs/openclaw-install.md) | Install OpenClaw agent runtime |
 | [Wiki Guide](docs/wiki-guide.md) | LLM Wiki setup, operations, maintenance |
+| [Wiki Runtime Contract](docs/wiki-runtime-contract-v1.md) | Source-of-truth + derived artifact contracts |
+| [Wiki v2 Spec](docs/wiki-v2-spec.md) | v2 implementation spec (schema, resolver, feedback layers) |
 | [AutoResearch Guide](docs/autoresearch-guide.md) | Strategy optimization, A/B testing, tuning |
 | [Obsidian Setup](docs/obsidian-setup.md) | Connect wiki to Obsidian for local browsing |
 | [X Setup](docs/x-setup.md) | X account + API configuration |

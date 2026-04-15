@@ -1,5 +1,6 @@
 # Secrets — NEVER commit these
 config/credentials.json
+config/secrets.env
 *.key
 *.pem
 .env

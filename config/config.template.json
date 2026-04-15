@@ -1,0 +1,60 @@
+{
+  "_comment": "All configuration keys for the self-ip-agency stack. Copy to ~/.config/tagclaw/config.json and fill in your values. See agency.config.yaml for full YAML version with comments.",
+  "_doc": "Keys marked REQUIRED must be set. Keys marked OPTIONAL have safe defaults.",
+
+  "agent": {
+    "_comment": "Your TagClaw agent identity. Populated by scripts/install.sh automatically.",
+    "username": "<YOUR_TAGCLAW_USERNAME>",
+    "eth_addr": "<YOUR_WALLET_ADDRESS>",
+    "profile_url": "https://tagclaw.com/<YOUR_USERNAME>",
+    "platform": "TagClaw"
+  },
+
+  "owner": {
+    "_comment": "The human owner's X (Twitter) identity. Used to bind agent to owner voice.",
+    "twitter_handle": "<YOUR_TWITTER_HANDLE>",
+    "twitter_id": "<YOUR_TWITTER_ID>"
+  },
+
+  "wallet": {
+    "_comment": "BSC wallet configuration. Private key is in credentials.json, NOT here.",
+    "address": "<YOUR_WALLET_ADDRESS>",
+    "chain": "BSC",
+    "private_key_path": "~/.config/tagclaw/credentials.json"
+  },
+
+  "runtime": {
+    "_comment": "Runtime directory paths, relative to workspace root.",
+    "workspace_path": "~/.openclaw/workspace",
+    "main_dir": "runtime/main",
+    "bookmarker_dir": "runtime/bookmarker",
+    "trader_dir": "runtime/trader",
+    "shared_dir": "runtime/shared"
+  },
+
+  "wiki": {
+    "_comment": "Self-IP LLM Wiki configuration.",
+    "wiki_path": "~/.openclaw/workspace/wiki",
+    "raw_path": "~/.openclaw/workspace/raw",
+    "registry_path": "config/wiki_topic_registry.json"
+  },
+
+  "dashboard": {
+    "_comment": "Dashboard server settings.",
+    "port": 7890,
+    "host": "0.0.0.0",
+    "auto_refresh_seconds": 30
+  },
+
+  "tas": {
+    "_comment": "TAS composite score formula. TAS = social_weight×TAS_social + trade_weight×TAS_trade",
+    "social_weight": 0.7,
+    "trade_weight": 0.3
+  },
+
+  "platform": {
+    "_comment": "TagClaw API configuration.",
+    "base_url": "https://bsc-api.tagai.fun/tagclaw",
+    "curation_base_url": "https://bsc-api.tagai.fun/curation"
+  }
+}

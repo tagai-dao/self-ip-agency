@@ -1,102 +1,569 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Self-IP Agency Dashboard</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <title>@clawdbot · Agent Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260413e" />
 </head>
-<body>
+<body class="dev-mode">
 
+<!-- ═══════════════════════════════════════════ HEADER ══ -->
 <header id="header">
   <div class="header-left">
-    <span class="logo" id="agent-name">Self-IP Agency</span>
-    <span class="subtitle">Agent Dashboard v2</span>
+    <span class="logo">🐾 @clawdbot</span>
+    <span class="subtitle" data-i18n="subtitle">Agent Dashboard</span>
   </div>
   <div class="header-center">
     <div class="tas-big">
       <span class="label">TAS</span>
       <span id="tas-total" class="value">—</span>
+      <span id="tas-trend-arrow" class="trend-arrow">→</span>
     </div>
     <div class="tas-sub">
-      <span class="tas-detail">Social: <span id="tas-social">—</span></span>
-      <span class="tas-detail">Trade: <span id="tas-trade">—</span></span>
-      <span class="tas-detail">Mode: <span id="tas-mode" class="mode-badge">—</span></span>
+      <span id="strategy-badge" class="strategy-badge">—</span>
     </div>
   </div>
   <div class="header-right">
     <div class="agent-pills">
-      <span class="pill" id="pill-main">main</span>
-      <span class="pill" id="pill-bookmarker">bookmarker</span>
-      <span class="pill" id="pill-trader">trader</span>
+      <span class="pill" id="pill-main">main <span class="pill-age" id="pill-main-age"></span></span>
+      <span class="pill" id="pill-bookmarker">bookmarker <span class="pill-age" id="pill-bookmarker-age"></span></span>
+      <span class="pill" id="pill-trader">trader <span class="pill-age" id="pill-trader-age"></span></span>
     </div>
-    <div class="live-metrics">
-      <span>OP: <span id="live-op">—</span></span>
-      <span>VP: <span id="live-vp">—</span></span>
+    <div class="header-actions">
+      <div id="lang-toggle" class="lang-toggle">
+        <button class="lang-seg" data-lang="en" onclick="setLang('en')">EN</button>
+        <button class="lang-seg" data-lang="zh" onclick="setLang('zh')">中文</button>
+      </div>
+      <button id="refresh-btn" data-i18n="refresh" onclick="fetchAll()">↻ Refresh</button>
+      <div id="clock" class="clock muted">—</div>
     </div>
-    <button id="refresh-btn" onclick="fetchAll()">Refresh</button>
-    <div id="clock" class="clock">—</div>
   </div>
 </header>
 
-<main>
-  <section class="card" id="wiki-section">
-    <h2>Wiki System</h2>
-    <div class="metric-row">
-      <div class="metric"><span class="metric-label">Health Score</span><span class="metric-value" id="wiki-health">—</span></div>
-      <div class="metric"><span class="metric-label">Contract</span><span class="metric-value" id="wiki-contract">—</span></div>
-      <div class="metric"><span class="metric-label">Attention</span><span class="metric-value" id="wiki-attention">—</span></div>
-    </div>
-  </section>
-
-  <section class="card" id="strategy-section">
-    <h2>AutoResearch</h2>
-    <div class="metric-row">
-      <div class="metric"><span class="metric-label">BK Mode</span><span class="metric-value" id="strat-bk-mode">—</span></div>
-      <div class="metric"><span class="metric-label">BK Win Rate</span><span class="metric-value" id="strat-bk-wr">—</span></div>
-      <div class="metric"><span class="metric-label">TR Mode</span><span class="metric-value" id="strat-tr-mode">—</span></div>
-      <div class="metric"><span class="metric-label">TR Win Rate</span><span class="metric-value" id="strat-tr-wr">—</span></div>
-      <div class="metric"><span class="metric-label">Exp Cycles</span><span class="metric-value" id="strat-cycles">—</span></div>
-    </div>
-    <div id="recent-cycles" class="recent-cycles"></div>
-  </section>
-
-  <div class="agent-grid">
-    <section class="card agent-card" id="main-card">
-      <h2>Main Agent</h2>
-      <div class="metric-row">
-        <div class="metric"><span class="metric-label">Status</span><span class="metric-value" id="main-status">—</span></div>
-        <div class="metric"><span class="metric-label">Last Heartbeat</span><span class="metric-value" id="main-heartbeat">—</span></div>
-        <div class="metric"><span class="metric-label">Freshness</span><span class="metric-value" id="main-freshness">—</span></div>
-      </div>
-    </section>
-
-    <section class="card agent-card" id="bookmarker-card">
-      <h2>Bookmarker</h2>
-      <div class="metric-row">
-        <div class="metric"><span class="metric-label">Status</span><span class="metric-value" id="bk-status">—</span></div>
-        <div class="metric"><span class="metric-label">TAS Social</span><span class="metric-value" id="bk-tas">—</span></div>
-        <div class="metric"><span class="metric-label">Topics</span><span class="metric-value small" id="bk-topics">—</span></div>
-      </div>
-    </section>
-
-    <section class="card agent-card" id="trader-card">
-      <h2>Trader</h2>
-      <div class="metric-row">
-        <div class="metric"><span class="metric-label">Status</span><span class="metric-value" id="tr-status">—</span></div>
-        <div class="metric"><span class="metric-label">TAS Trade</span><span class="metric-value" id="tr-tas">—</span></div>
-        <div class="metric"><span class="metric-label">Wallet</span><span class="metric-value" id="tr-wallet">—</span></div>
-      </div>
-    </section>
+<!-- action-required-strip removed (community_heat stale warning no longer shown) -->
+<!-- ═══════════════════════════════════════════ CONTROL TOWER HEADER ══ -->
+<!-- Mission Status Bar slots removed (SYSTEM MODE, PRIMARY BOTTLENECK, HIGHEST PRIORITY, TAS LEVER, CONFIDENCE) -->
+<div id="control-tower-header">
+  <div id="alerts-strip" class="alerts-strip">
+    <span class="muted small">No active blockers</span>
   </div>
+</div>
 
-  <section class="card" id="community-section">
-    <h2>Community Heat</h2>
-    <div id="community-ticks" class="tick-list">—</div>
+<!-- ═══════════════════════════════════════════ MAIN CONTENT ══ -->
+<main>
+
+  <!-- ══ Section 1: TAS Command Center ══ -->
+  <section class="full-section" id="tas-command-center">
+    <h2 class="section-title" data-i18n="section-tas-command">🎯 TAS Command Center</h2>
+    <div class="tas-cc-grid">
+      <!-- Left: Aggregated TAS -->
+      <div class="tas-agent-col tas-center-col" id="tas-col-center">
+        <div class="agent-col-header center-accent">
+          <span>🎯</span> <span data-i18n="col-tas-aggregate">Aggregated TAS</span>
+        </div>
+        <div class="agent-col-body">
+          <div class="tas-big-row">
+            <div class="agent-big-num center-big">
+              <span id="cc-tas-total" class="big-num jumbo">—</span>
+              <span id="cc-tas-total-trend" class="trend-arrow">→</span>
+            </div>
+            <div id="cc-strategy-action" class="strategy-action-corner">—</div>
+          </div>
+          <div class="formula-line muted small">TAS = 0.7 × TAS_social + 0.3 × TAS_trade</div>
+          <div id="cc-planning-focus" class="planning-focus muted small">—</div>
+          <div class="sparkline-detail-row">
+            <div id="cc-sparkline" class="sparkline-wrap"></div>
+          </div>
+          <div id="cc-sparkline-legend" class="sparkline-legend muted small"></div>
+          <div class="kv-row"><span class="k">cycle_count</span><span class="v mono" id="cc-cycle-count">—</span></div>
+        </div>
+      </div>
+
+      <!-- Center: Bookmarker / TAS_social -->
+      <div class="tas-agent-col" id="tas-col-bookmarker">
+        <div class="agent-col-header bookmarker-accent">
+          <span>📝</span> <span data-i18n="col-tas-social">TAS_social</span>
+        </div>
+        <div class="agent-col-body">
+          <div class="agent-big-num">
+            <span id="cc-tas-social" class="big-num">—</span>
+            <span id="cc-tas-social-trend" class="trend-arrow small">→</span>
+          </div>
+          <div id="cc-social-formula" class="formula-line muted small">TAS_social = 0.5×align + 0.2×community + 0.3×pob×5</div>
+          <div class="kv-compact">
+            <div class="kv-row metric-expandable" data-metric="align">
+              <span class="k">align_score</span>
+              <span class="v-group"><span class="v mono" id="cc-align-score">—</span><span class="metric-chevron" id="chevron-align">▼</span></span>
+            </div>
+            <div class="metric-detail" id="detail-align"></div>
+            <div class="kv-row metric-expandable" data-metric="community">
+              <span class="k">community_score</span>
+              <span class="v-group"><span class="v mono" id="cc-community-score">—</span><span class="metric-chevron" id="chevron-community">▼</span></span>
+            </div>
+            <div class="metric-detail" id="detail-community"></div>
+            <div class="kv-row metric-expandable" data-metric="pob">
+              <span class="k">pob_reward_score</span>
+              <span class="v-group"><span class="v mono" id="cc-pob-score">—</span><span class="metric-chevron" id="chevron-pob">▼</span></span>
+            </div>
+            <div class="metric-detail" id="detail-pob"></div>
+            <div class="kv-row"><span class="k">Track B source</span><span class="v mono" id="cc-trackb-source">—</span></div>
+          </div>
+          <!-- strategy_action, skills, last active rows removed -->
+          <div id="cc-social-sparkline" class="sparkline-wrap"></div>
+          <div id="cc-social-flat-note" class="sparkline-legend muted small"></div>
+        </div>
+      </div>
+
+      <!-- Right: Trader / TAS_trade -->
+      <div class="tas-agent-col" id="tas-col-trader">
+        <div class="agent-col-header trader-accent">
+          <span>💰</span> <span data-i18n="col-tas-trade">TAS_trade</span>
+        </div>
+        <div class="agent-col-body">
+          <div class="agent-big-num">
+            <span id="cc-tas-trade" class="big-num">—</span>
+            <span id="cc-tas-trade-trend" class="trend-arrow small">→</span>
+          </div>
+          <div class="formula-line muted small">0.9×norm(portfolio/50) + 0.1×norm(claimable/5)</div>
+          <div class="kv-compact">
+            <div class="kv-row"><span class="k">portfolio_usd</span><span class="v mono" id="cc-portfolio-usd">—</span></div>
+            <div class="kv-row metric-expandable" data-metric="portfolio-norm">
+              <span class="k">portfolio_norm</span>
+              <span class="v-group"><span class="v mono" id="cc-portfolio-norm">—</span><span class="metric-chevron" id="chevron-portfolio-norm">▼</span></span>
+            </div>
+            <div class="metric-detail" id="detail-portfolio-norm"></div>
+            <div class="kv-row"><span class="k">claimable_usd</span><span class="v mono" id="cc-claimable-usd">—</span></div>
+            <div class="kv-row metric-expandable" data-metric="claimable-norm">
+              <span class="k">claimable_norm</span>
+              <span class="v-group"><span class="v mono" id="cc-claimable-norm">—</span><span class="metric-chevron" id="chevron-claimable-norm">▼</span></span>
+            </div>
+            <div class="metric-detail" id="detail-claimable-norm"></div>
+            <div class="kv-row metric-expandable" data-metric="pob-reward">
+              <span class="k">pob_reward</span>
+              <span class="v-group"><span class="v mono" id="cc-pob-reward-score">—</span><span class="metric-chevron" id="chevron-pob-reward">▼</span></span>
+            </div>
+            <div class="metric-detail" id="detail-pob-reward"></div>
+          </div>
+          <!-- recommended, autonomy_mode, skills, heat_signal, coupling_active rows removed -->
+          <div id="cc-trade-sparkline" class="sparkline-wrap"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Agent Quick Cards removed (策略总控 / 社交执行 / 交易管理) -->
+
+    <!-- ══ AutoResearch Evolution Loop (merged into TAS Command Center) ══ -->
+    <div id="autoresearch-loop" class="ar-in-tas" style="margin-top:1rem">
+      <h3 class="section-title" data-i18n="section-autoresearch">🔬 AutoResearch Evolution Loop</h3>
+      <div class="ar-panels">
+        <!-- Strategy Experiment Panel (left) -->
+        <div class="ar-panel">
+          <div class="section-label" data-i18n="ar-strategy-experiment">Strategy Experiment</div>
+          <div class="kv-compact">
+            <div class="kv-row"><span class="k">cycle_count</span><span class="v mono" id="ar-cycle-count">—</span></div>
+            <div class="kv-row"><span class="k">Track A (trader)</span><span class="v mono" id="ar-track-a">—</span></div>
+            <div class="kv-row"><span class="k">Track B (bookmarker)</span><span class="v mono" id="ar-track-b">—</span></div>
+            <div class="kv-row"><span class="k">coupling_alpha</span><span class="v mono" id="ar-coupling">—</span></div>
+          </div>
+          <div class="x-section-header" onclick="toggleSection('ar-verdicts')" style="margin-top:.6rem">
+            <span class="section-label" data-i18n="ar-recent-verdicts">Recent Verdicts</span>
+            <button id="ar-verdicts-toggle" class="x-toggle-btn">▼</button>
+          </div>
+          <div id="ar-verdicts-collapsible" class="x-collapsible">
+            <div id="ar-verdicts-list" class="ar-verdicts-list">—</div>
+          </div>
+        </div>
+
+        <!-- Evolution Flow Diagram (right) -->
+        <div class="ar-panel ar-flow-panel">
+          <div class="section-label">Evolution Cycle</div>
+          <div class="ar-flow-horizontal">
+            <div class="ar-step"><div class="ar-icon">🔄</div><div class="ar-label" data-i18n="ar-experiment">Experiment</div><div class="ar-sub">(heartbeat)</div></div>
+            <div class="ar-arrow-h">→</div>
+            <div class="ar-step"><div class="ar-icon">⚡</div><div class="ar-label" data-i18n="ar-execute">Execute</div><div class="ar-sub">(arm strategy)</div></div>
+            <div class="ar-arrow-h">→</div>
+            <div class="ar-step"><div class="ar-icon">📊</div><div class="ar-label" data-i18n="ar-evaluate">Evaluate</div><div class="ar-sub">(TAS delta)</div></div>
+            <div class="ar-arrow-h">→</div>
+            <div class="ar-step"><div class="ar-icon">✅</div><div class="ar-label" data-i18n="ar-decide">Keep/Discard</div><div class="ar-sub">(verdict)</div></div>
+            <div class="ar-arrow-h">→</div>
+            <div class="ar-step"><div class="ar-icon">🔁</div><div class="ar-label" data-i18n="ar-next">Next Round</div><div class="ar-sub">(cycle++)</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
   </section>
+
+  <!-- ══ Section 3: Three Agent Details ══ -->
+  <section class="full-section" id="agent-details">
+    <h2 class="section-title" data-i18n="section-agent-details">🤖 Agent Details</h2>
+    <div class="agent-tabs">
+      <button class="agent-tab active" data-tab="main" data-i18n="tab-main" onclick="switchAgentTab('main')">Main</button>
+      <button class="agent-tab" data-tab="bookmarker" data-i18n="tab-bookmarker" onclick="switchAgentTab('bookmarker')">Bookmarker</button>
+      <button class="agent-tab" data-tab="trader" data-i18n="tab-trader" onclick="switchAgentTab('trader')">Trader</button>
+      <button class="agent-tab" data-tab="claude-dispatch" data-i18n="tab-claude-dispatch" onclick="switchAgentTab('claude-dispatch')">Claude Dispatch</button>
+    </div>
+
+    <!-- Main Tab -->
+    <div class="agent-tab-content active" id="tab-main">
+      <div id="agent-card-main" class="agent-operating-card"></div>
+      <div class="detail-grid main-detail-grid">
+        <div class="detail-card">
+          <div class="section-label" data-i18n="section-last-decision">Last Decision</div>
+          <div id="main-decision" class="text-block muted">—</div>
+        </div>
+        <div class="detail-card">
+          <div class="section-label" data-i18n="section-budget">Budget Allocation</div>
+          <div id="main-budget-allocation" class="list-block">—</div>
+        </div>
+        <div class="detail-card">
+          <div class="card-tab-header">
+            <span class="card-tab active" data-card-tab="treasury" onclick="switchCardTab(this,'treasury')"><span data-i18n="section-treasury">Treasury Policy</span></span>
+            <span class="card-tab-divider">|</span>
+            <span class="card-tab" data-card-tab="social-intent" onclick="switchCardTab(this,'social-intent')"><span data-i18n="section-social-intent">Social Intent</span></span>
+          </div>
+          <div class="card-tab-body active" data-card-body="treasury">
+            <div id="main-treasury-policy" class="list-block">—</div>
+          </div>
+          <div class="card-tab-body" data-card-body="social-intent">
+            <div id="main-social-intent" class="list-block">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bookmarker Tab -->
+    <div class="agent-tab-content" id="tab-bookmarker">
+      <div id="agent-card-bookmarker" class="agent-operating-card"></div>
+
+      <!-- Next Post Preview (moved from standalone section) -->
+      <div id="next-post-preview" class="next-post-card" style="display:none; margin:0 0 1rem 0">
+        <div class="npp-header">
+          <span class="npp-badge">📢</span>
+          <span class="npp-title" data-i18n="npp-title">下一条帖子（待发布）</span>
+          <span class="npp-topic" id="nppTopic"></span>
+        </div>
+        <div class="npp-body" id="nppBody"></div>
+        <div class="npp-footer">
+          <span class="npp-meta" id="nppMeta"></span>
+        </div>
+      </div>
+
+      <!-- Detail cards moved into the Social Execution Pipeline grid below -->
+      <!-- Hidden fallback elements for backward compat -->
+      <div style="display:none">
+        <div id="bm-headline"></div><div id="bm-keywords"></div>
+        <div id="bm-cands-list"></div>
+        <div id="bm-drafts-status"></div><div id="bm-drafts-list"></div>
+        <div id="bm-sync-at"></div><div id="bm-mode-badge"></div>
+        <div id="bm-align-events"></div>
+      </div>
+
+      <div class="detail-grid bookmarker-detail-grid">
+        <div class="detail-card">
+          <div class="x-section-header compact" onclick="toggleSection('bm-curation-vp')">
+            <span class="section-label-inline">Curate VP Check (24h)</span>
+            <button id="bm-curation-vp-toggle" class="x-toggle-btn">▼</button>
+          </div>
+          <div id="bm-curation-vp-collapsible" class="x-collapsible">
+            <div id="bm-curation-vp-panel" class="list-block">—</div>
+          </div>
+        </div>
+        <div class="detail-card">
+          <div class="x-section-header compact" onclick="toggleSection('bm-curation-preview')">
+            <span class="section-label-inline">Fallback Candidate Preview</span>
+            <button id="bm-curation-preview-toggle" class="x-toggle-btn">▼</button>
+          </div>
+          <div id="bm-curation-preview-collapsible" class="x-collapsible">
+            <div id="bm-curation-preview-panel" class="list-block">—</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="x-section-header" onclick="toggleSection('bm-pipeline')">
+        <span class="section-label" data-i18n="section-social-pipeline">Social Execution Pipeline</span>
+        <button id="bm-pipeline-toggle" class="x-toggle-btn">▲</button>
+      </div>
+      <div id="bm-pipeline-collapsible" class="x-collapsible open">
+        <div class="pipeline-unified-card">
+          <div id="bm-social-pipeline" class="pipeline-container"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trader Tab -->
+    <div class="agent-tab-content" id="tab-trader">
+      <div id="agent-card-trader" class="agent-operating-card"></div>
+      <div class="detail-grid trader-detail-grid">
+        <div class="detail-card">
+          <div class="section-label" data-i18n="section-wallet">Wallet Snapshot</div>
+          <div id="trader-balances" class="list-block">—</div>
+        </div>
+        <div class="detail-card">
+          <div class="section-label" data-i18n="section-rewards">Reward Status</div>
+          <div id="trader-rewards" class="list-block">—</div>
+          <div class="kv-row" style="margin-top:.3rem">
+            <span class="k">claimable_usd</span>
+            <span class="v mono" id="trader-claimable-big">—</span>
+          </div>
+          <div id="trader-claim-progress" class="pob-bar-wrap"></div>
+        </div>
+        <div class="detail-card">
+          <div class="section-label" data-i18n="section-risk-flags">Risk Status</div>
+          <div class="kv-compact">
+            <div class="kv-row"><span class="k">TAS_trade</span><span class="v mono bold" id="trader-tas">—</span></div>
+            <div class="kv-row"><span class="k" data-i18n="label-mode">Mode</span><span id="trader-mode-badge" class="badge sm">—</span></div>
+            <div class="kv-row"><span class="k" data-i18n="label-risk">Risk</span><span id="trader-risk-badge" class="badge sm">—</span></div>
+          </div>
+          <div class="x-section-header compact" onclick="toggleSection('trader-risk-flags-wrap')">
+            <span class="section-label-inline" data-i18n="section-risk-detail">Risk Flags</span>
+            <button id="trader-risk-flags-wrap-toggle" class="x-toggle-btn">▼</button>
+          </div>
+          <div id="trader-risk-flags-wrap-collapsible" class="x-collapsible">
+            <div id="trader-risk-flags" class="list-block muted small">—</div>
+          </div>
+          <div class="section-label" style="margin-top:.5rem" data-i18n="section-community-heat">Community Heat</div>
+          <div id="trader-heat-badge" class="heat-trend-badge">—</div>
+          <div class="kv-row"><span class="k">coupling_active</span><span id="trader-coupling" class="indicator">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Claude Dispatch (鲁班) Tab -->
+    <div class="agent-tab-content" id="tab-claude-dispatch">
+      <div id="agent-card-claude_dispatch" class="agent-operating-card"></div>
+      <div class="detail-grid cd-trio-grid">
+        <!-- Card 1: Task Summary | Files Changed | Test Results -->
+        <div class="detail-card">
+          <div class="card-tab-header">
+            <span class="card-tab active" data-card-tab="cd-summary" onclick="switchCardTab(this,'cd-summary')"><span data-i18n="cd-task-summary">Task Summary</span></span>
+            <span class="card-tab-divider">|</span>
+            <span class="card-tab" data-card-tab="cd-files" onclick="switchCardTab(this,'cd-files')"><span data-i18n="cd-files-changed">Files Changed</span></span>
+            <span class="card-tab-divider">|</span>
+            <span class="card-tab" data-card-tab="cd-tests" onclick="switchCardTab(this,'cd-tests')"><span data-i18n="cd-test-results">Test Results</span></span>
+          </div>
+          <div class="card-tab-body active" data-card-body="cd-summary">
+            <div id="cd-task-summary" class="text-block muted">—</div>
+          </div>
+          <div class="card-tab-body" data-card-body="cd-files">
+            <div id="cd-files-changed" class="list-block">—</div>
+          </div>
+          <div class="card-tab-body" data-card-body="cd-tests">
+            <div class="kv-compact">
+              <div class="kv-row"><span class="k" data-i18n="label-status">Status</span><span id="cd-result-status-badge" class="badge sm">—</span></div>
+              <div class="kv-row"><span class="k" data-i18n="cd-tests-passed">Tests Passed</span><span id="cd-tests-passed" class="v mono">—</span></div>
+              <div class="kv-row"><span class="k" data-i18n="cd-pass-count">Pass</span><span id="cd-pass-count" class="v mono">—</span></div>
+              <div class="kv-row"><span class="k" data-i18n="cd-fail-count">Fail</span><span id="cd-fail-count" class="v mono">—</span></div>
+            </div>
+            <div class="kv-compact" style="margin-top:.5rem">
+              <div class="kv-row"><span class="k" data-i18n="label-completed-at">Completed</span><span class="v mono" id="cd-completed-at">—</span></div>
+            </div>
+          </div>
+        </div>
+        <!-- Card 2: Dispatch ROI -->
+        <div class="detail-card">
+          <div class="section-label" data-i18n="cd-dispatch-roi">Dispatch ROI</div>
+          <div id="cd-dispatch-roi" class="list-block">—</div>
+        </div>
+        <!-- Card 3: Built Tools | Result Links -->
+        <div class="detail-card">
+          <div class="card-tab-header">
+            <span class="card-tab active" data-card-tab="cd-tools" onclick="switchCardTab(this,'cd-tools')"><span data-i18n="cd-built-tools">Built Tools</span></span>
+            <span class="card-tab-divider">|</span>
+            <span class="card-tab" data-card-tab="cd-links" onclick="switchCardTab(this,'cd-links')"><span data-i18n="cd-result-links">Result Links</span></span>
+          </div>
+          <div class="card-tab-body active" data-card-body="cd-tools">
+            <div id="cd-built-tools" class="list-block muted small">—</div>
+          </div>
+          <div class="card-tab-body" data-card-body="cd-links">
+            <div id="cd-result-links" class="list-block">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ Section 4+5: Timeline + Wiki Intelligence (side-by-side) ══ -->
+  <div class="timeline-wiki-duo">
+
+  <!-- ══ Timeline (left) ══ -->
+  <section class="full-section" id="timeline-section">
+    <h2 class="section-title">
+      <span data-i18n="section-timeline">⏱ Action Timeline</span>
+      <span id="timeline-count" class="muted small"></span>
+      <span class="muted small" data-i18n="timeline-filter-note">Completed actions only</span>
+    </h2>
+    <div id="timeline-summary-row" class="timeline-summary-row"></div>
+    <div id="freshness-matrix" class="freshness-matrix-wrap"></div>
+    <div id="timeline-list-wrapper" class="timeline-wrapper">
+      <div id="timeline-list" class="timeline"></div>
+    </div>
+  </section>
+
+  <!-- ══ Wiki Intelligence + NOC (right) ══ -->
+  <section class="full-section" id="wiki-intelligence">
+    <h2 class="section-title" data-i18n="section-wiki-intel">📚 self-IP LLM Wiki — Intelligence Layer</h2>
+    <div class="noc-intel-layout">
+      <!-- Left: NOC -->
+      <div class="noc-left">
+        <div class="x-section-header compact" onclick="toggleSection('dep-graph')">
+          <span class="wiki-section-label" data-i18n="noc-dep-graph">🔗 Pipeline Dependency Graph</span>
+          <button id="dep-graph-toggle" class="x-toggle-btn">▲</button>
+        </div>
+        <div id="dep-graph-collapsible" class="x-collapsible open">
+          <div class="wiki-card" id="dependency-graph">
+            <div class="muted small">Loading…</div>
+          </div>
+        </div>
+
+        <div class="wiki-section-label" data-i18n="noc-state-machines">⚙ Execution State Machines</div>
+        <div class="wiki-card" id="state-machines">
+          <div class="muted small">Loading…</div>
+        </div>
+
+        <div class="wiki-section-label" data-i18n="noc-countdown">⏱ Countdown Strip</div>
+        <div id="countdown-strip" class="countdown-strip">
+          <div class="muted small">Loading…</div>
+        </div>
+      </div>
+
+      <!-- Right: Intelligence -->
+      <div class="noc-right">
+        <div class="wiki-section-label" data-i18n="noc-community-heat">🔥 Community Heat</div>
+        <div class="wiki-card" id="community-heat-visual">
+          <div class="muted small">Loading…</div>
+        </div>
+
+        <div class="wiki-section-label" data-i18n="noc-intel-summary">📊 Intelligence Summary</div>
+        <div class="wiki-card" id="intelligence-summary">
+          <div class="muted small">Loading…</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ══ Explainability Panel (P10) ══ -->
+    <div class="x-section-header" onclick="toggleSection('explainability')" style="margin-top:.75rem">
+      <span class="wiki-section-label" data-i18n="section-explainability">🔍 Artifact Explainability</span>
+      <button id="explainability-toggle" class="x-toggle-btn">▼</button>
+    </div>
+    <div id="explainability-collapsible" class="x-collapsible">
+      <div class="explain-layout">
+        <!-- Left: Artifact cards -->
+        <div class="explain-artifacts">
+          <div class="wiki-section-label small" data-i18n="explain-artifact-state">Artifact State & Provenance</div>
+          <div id="explain-artifact-list" class="explain-artifact-list">
+            <div class="muted small">Loading…</div>
+          </div>
+        </div>
+        <!-- Right: Events + Health -->
+        <div class="explain-events-health">
+          <div class="wiki-section-label small" data-i18n="explain-health-ctx">Health Context</div>
+          <div id="explain-health-ctx" class="wiki-card" style="margin-bottom:.5rem">
+            <div class="muted small">Loading…</div>
+          </div>
+          <div class="wiki-section-label small" data-i18n="explain-recent-events">Recent Wiki Events</div>
+          <div id="explain-events-list" class="explain-events-list">
+            <div class="muted small">Loading…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Wiki Details (collapsed by default) -->
+    <div class="x-section-header" onclick="toggleSection('wiki-details')" style="margin-top:.75rem">
+      <span class="wiki-section-label">📋 Wiki Data Layer Details</span>
+      <button id="wiki-details-toggle" class="x-toggle-btn">▼</button>
+    </div>
+    <div id="wiki-details-collapsible" class="x-collapsible">
+      <div class="wiki-arch-note">Raw(read-only) → LLM Compile → Wiki(compiled) → Agent Heartbeat Read(decisions)</div>
+      <div class="wiki-section-label">Data Layer Overview</div>
+      <div class="wiki-grid">
+        <div class="wiki-card" id="wiki-raw-layer">
+          <div class="wiki-card-header"><span class="wiki-card-icon">📥</span><span class="wiki-card-title">Raw</span><span class="wiki-total-badge" id="wiki-raw-total">—</span></div>
+          <div id="wiki-raw-list"></div>
+        </div>
+        <div class="wiki-card" id="wiki-wiki-layer">
+          <div class="wiki-card-header"><span class="wiki-card-icon">📚</span><span class="wiki-card-title">Wiki</span><span class="wiki-total-badge" id="wiki-wiki-total">—</span></div>
+          <div id="wiki-wiki-list"></div>
+          <div id="wiki-lint-inline" class="muted small" style="margin-top:6px"></div>
+        </div>
+        <div class="wiki-card" id="wiki-execution-brief">
+          <div class="wiki-card-header"><span class="wiki-card-icon">⚡</span><span class="wiki-card-title">Execution Brief</span></div>
+          <div id="wiki-brief-content"></div>
+        </div>
+      </div>
+      <div class="wiki-section-label">Ingest Pipeline Matrix</div>
+      <div class="wiki-card">
+        <div id="wiki-ingest-summary" class="muted small" style="margin-bottom:6px"></div>
+        <table class="wiki-pipeline-table" id="wiki-ingest-table">
+          <thead><tr><th>Pipeline</th><th>Script</th><th>Freq</th><th>Raw → Wiki</th><th>Last Run</th><th>Status</th></tr></thead>
+          <tbody id="wiki-ingest-tbody"></tbody>
+        </table>
+      </div>
+      <div class="wiki-section-label">Contract Health</div>
+      <div class="wiki-card" id="wiki-contract-health-card">
+        <div id="wiki-contract-health"></div>
+      </div>
+      <div class="wiki-section-label">Agent Wiki-first Status</div>
+      <div class="wiki-grid" id="wiki-agent-cards"></div>
+
+      <!-- Legacy community heat map for backward compat -->
+      <div class="wiki-section-label">Community Heat Map (legacy)</div>
+      <div class="wiki-card" id="community-heat-panel" style="display:none">
+        <div id="community-heat-map" class="heat-map-grid"></div>
+      </div>
+    </div>
+  </section>
+
+  </div><!-- /.timeline-wiki-duo -->
+
+  <!-- ══ Claude Dispatch — merged into Agent Details tab; hidden for backward compat ══ -->
+  <section class="full-section" id="dev-panel" style="display:none">
+    <div class="x-section-header" onclick="toggleSection('dev-detail')">
+      <h2 class="section-title" data-i18n="panel-dev">🔨 Claude Dispatch (鲁班)</h2>
+      <button id="dev-detail-toggle" class="x-toggle-btn">▼</button>
+    </div>
+    <div id="dev-detail-collapsible" class="x-collapsible">
+      <div class="detail-grid">
+        <div class="detail-card">
+          <div class="kv-compact">
+            <div class="kv-row"><span class="k" data-i18n="label-status">Status</span><span id="dev-status-badge" class="badge sm">—</span></div>
+            <div class="kv-row"><span class="k">Stage</span><span id="dev-stage-badge" class="badge sm">—</span></div>
+            <div class="kv-row"><span class="k" data-i18n="label-completed-at">Completed</span><span class="v mono" id="dev-completed-at">—</span></div>
+          </div>
+        </div>
+        <div class="detail-card">
+          <div class="section-label">Dispatch ROI</div>
+          <div id="dev-dispatch-roi" class="list-block">—</div>
+        </div>
+        <div class="detail-card">
+          <div class="section-label" data-i18n="section-result-summary">Result Summary</div>
+          <div id="dev-result-summary" class="text-block muted">—</div>
+        </div>
+        <div class="detail-card">
+          <div class="section-label" data-i18n="section-result-links">Result Links</div>
+          <div id="dev-result-links" class="list-block">—</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
 </main>
 
-<footer><span>Self-IP Agency Dashboard v2.0</span></footer>
-<script src="/static/app.js"></script>
+<!-- Kept for backward compat: hidden elements with original IDs -->
+<div style="display:none">
+  <div id="tas-panel"></div>
+  <div id="main-panel"></div>
+  <div id="bookmarker-panel"></div>
+  <div id="trader-panel"></div>
+  <div id="wiki-section"></div>
+  <div id="feedback-loop-section"></div>
+  <div id="lower-panels"></div>
+</div>
+
+<div id="error-bar" class="error-bar hidden"></div>
+
+<script src="/static/app.js?v=20260413e"></script>
 </body>
 </html>

@@ -1,81 +1,116 @@
-# Self-IP Agency Dashboard v2
+# Self-IP Agency Dashboard
 
-Real-time monitoring dashboard for the 3-agent IP operations stack with wiki health, strategy insights, and live OP/VP metrics.
+Real-time monitoring UI for the 3-agent Self-IP stack — TAS scores, wiki health,
+strategy insights, live OP/VP, community heat, and agent status at a glance.
 
 ## Quick start
 
 ```bash
-pip3 install -r requirements.txt
-python3 server.py --workspace /path/to/workspace --port 8765
+pip3 install -r dashboard/requirements.txt
+
+# Point at your OpenClaw workspace
+python3 dashboard/server.py --workspace ~/.openclaw/workspace
 ```
 
-Then open http://localhost:8765
+Then open: **http://localhost:7890**
 
-## API Endpoints
+## What it shows
 
-### `GET /api/status`
-
-Aggregated snapshot: TAS scores, agent health, wiki status, strategy summary, community heat, live OP/VP.
-
-```json
-{
-  "generated_at": "2026-04-15T10:00:00Z",
-  "tas": { "total": 856.0, "social": 980.0, "trade": 560.0, "mode": "active" },
-  "live_op_vp": { "op": 1200, "vp": 500 },
-  "agents": {
-    "main": { "status": "active", "last_heartbeat": "...", "age_status": "ok" },
-    "bookmarker": { "status": "active", "tas_social": 980.0, "topic_brief": [...] },
-    "trader": { "status": "active", "tas_trade": 560.0, "wallet": { "total_usd": 42.5 } }
-  },
-  "wiki": { "health_score": 7.2, "contract_status": "ok", "needs_attention": false },
-  "strategy": { "bk_mode": "EXPLOIT", "tr_mode": "EXPLORE", "experiment_cycle": 12 },
-  "community_heat": { "top_ticks": ["BTC", "ETH", "SOL"] }
-}
-```
-
-### `GET /api/wiki`
-
-Detailed wiki system health: directory listing, lint results, contract verification, execution brief.
-
-### `GET /api/strategy`
-
-Strategy and autoresearch status: experiment state (dual-track A/B), bookmarker/trader guidance, recent strategy cycles.
-
-### `GET /api/live-op-vp`
-
-Live TagAI OP/VP scores (cached 120s).
-
-### `GET /api/health`
-
-Health check with workspace path and version.
+| Panel | Data |
+|-------|------|
+| **TAS Total** | Composite score: 0.7×TAS_social + 0.3×TAS_trade |
+| **OP / VP** | Live on-chain operator power and vote power from TagClaw API |
+| **Agent Status** | Main / Bookmarker / Trader — last run, status, mode |
+| **Wiki Health** | 3-band lint score, contract verification, execution brief freshness |
+| **AutoResearch** | Current experiment mode (BASELINE / EXPLORE / EXPLOIT), recent strategy cycles |
+| **Community Heat** | Trending ticks and community heat scores |
+| **Strategy Ledger** | Last 10 strategy decisions with delta tracking |
+| **Social Feed** | Latest curate candidate preview from bookmarker runtime |
+| **Dependency Graph** | Runtime artifact freshness graph with countdown timers |
 
 ## Arguments
 
 | Arg | Default | Description |
 |-----|---------|-------------|
-| `--workspace` | repo root | Path to workspace root (parent of `runtime/`) |
-| `--port` | `8765` | HTTP port |
-| `--host` | `0.0.0.0` | Bind address |
+| `--workspace` | `~/.openclaw/workspace` | Path to OpenClaw workspace root |
+| `--port` | `7890` | HTTP port (`$VIZ_PORT` env var also accepted) |
 
-## Dashboard sections
+You can also set `OPENCLAW_WORKSPACE` env var instead of `--workspace`.
 
-- **Header**: TAS total (big number), agent status pills (green/yellow/red), live OP/VP
-- **Wiki System**: health score, contract verification pass/fail, attention needed indicator
-- **AutoResearch**: bookmarker/trader experiment modes, win rates, recent strategy cycles table
-- **Agent Grid**: Main (heartbeat age, freshness), Bookmarker (TAS, topics), Trader (TAS, wallet)
-- **Community Heat**: top trending ticks
+## Runtime files it reads
 
-## Runtime data
+The dashboard reads these files from the workspace. Missing files degrade gracefully
+with null values — the server always starts even with an empty runtime directory.
 
-The dashboard reads JSON files from `{workspace}/runtime/`:
+```
+$WORKSPACE/runtime/
+  main/
+    latest.json            ← main agent status, mode, last decision
+    runtime-state.json     ← OP/VP snapshot
+    input-packet.json      ← aggregated input packet summary
+    social-intent.json     ← current social action plan
+    treasury-policy.json   ← treasury risk policy
+  bookmarker/
+    latest.json            ← bookmarker agent status
+    tas-social.json        ← TAS_social score
+    topic-heatmap.json     ← topic heat scores
+    source-health.json     ← feed source health
+  trader/
+    latest.json            ← trader agent status
+    tas-trade.json         ← TAS_trade score
+    wallet-snapshot.json   ← wallet balances
+    reward-status.json     ← claimable rewards
+  shared/
+    wiki-lint-status.json        ← wiki health score
+    wiki-contract-verify.json    ← contract verification
+    wiki-execution-brief.json    ← weekly themes
+    community-heat.json          ← community heat
+    strategy-ledger.jsonl        ← AutoResearch strategy log
+    tas-history.jsonl            ← TAS history
+$WORKSPACE/memory/
+  main-strategy-log.jsonl  ← strategy cycle log
+  x-latest-tweets.md       ← recent social posts
+```
 
-| Path | Content |
-|------|---------|
-| `main/latest.json` | Main agent last heartbeat |
-| `main/tas-latest.json` | Latest TAS snapshot |
-| `bookmarker/latest.json` | Bookmarker last execution |
-| `trader/latest.json` | Trader last execution |
-| `shared/wiki-lint-status.json` | Wiki lint results |
-| `shared/wiki-contract-verify.json` | Contract verification |
-| `shared/strategy-experiment.json` | Dual-track experiment state |
-| `shared/community-heat.json` | Community tick heatmap |
+## API endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/status` | Aggregated agent health, TAS, wiki status |
+| `GET /api/wiki` | Wiki lint, contract verification |
+| `GET /api/strategy` | Strategy stats, experiment state, recent cycles |
+| `GET /api/monitor/full` | Full dependency graph, countdowns, community heat |
+| `GET /api/monitor/tas-history` | TAS history chart data |
+| `GET /api/feed/curate-preview` | Current feed fallback curate candidates |
+| `GET /api/health` | Server health check |
+| `GET /` | Dashboard UI |
+
+## Run as a LaunchAgent (macOS background service)
+
+Create `~/Library/LaunchAgents/com.self-ip.dashboard.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.self-ip.dashboard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/python3</string>
+    <string>/Users/YOUR_USER/self-ip-agency/dashboard/server.py</string>
+    <string>--workspace</string>
+    <string>/Users/YOUR_USER/.openclaw/workspace</string>
+    <string>--port</string>
+    <string>7890</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/self-ip-dashboard.log</string>
+  <key>StandardErrorPath</key><string>/tmp/self-ip-dashboard.err</string>
+</dict>
+</plist>
+```
+
+Then: `launchctl load ~/Library/LaunchAgents/com.self-ip.dashboard.plist`
