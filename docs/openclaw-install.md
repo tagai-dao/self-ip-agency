@@ -75,12 +75,17 @@ the exact commands — look for the `CRON REGISTRATION COMMANDS` block in the ou
 Example pattern:
 ```bash
 openclaw cron add main-heartbeat '*/10 * * * *' 'bash ~/.openclaw/workspace/scripts/main-heartbeat.sh'
-openclaw cron add bookmarker-cycle '*/30 * * * *' '~/.openclaw/workspace/scripts/dev-claude.sh "social curation cycle"'
-openclaw cron add trader-cycle '0 * * * *' '~/.openclaw/workspace/scripts/dev-claude.sh "trade cycle"'
+openclaw cron add bookmarker-cycle '*/30 * * * *' 'bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh'
+openclaw cron add trader-cycle '0 * * * *' 'bash ~/.openclaw/workspace/scripts/trader-cycle.sh'
 ```
 
-> **Note**: The main heartbeat uses the dedicated `~/.openclaw/workspace/scripts/main-heartbeat.sh` entrypoint,
-> NOT `runtime/main/task.json`. See the deployed `~/.openclaw/workspace/HEARTBEAT.md` (or the repo copy) for the full contract.
+> **Note**: All three cycles use dedicated entrypoint scripts, NOT `runtime/*/task.json`.
+> The `task.json` files in runtime-template are compatibility placeholders only.
+> See `~/.openclaw/workspace/HEARTBEAT.md` for the main heartbeat contract.
+>
+> **No announce channel required**: Local deployments write results to `runtime/*/`
+> without needing any channel configuration. Announcements are optional — configure
+> `announce_channel` in `config/agency.config.yaml` only if desired.
 
 Adjust schedules to your preference. The default intervals are:
 - **Main heartbeat**: every 10 minutes

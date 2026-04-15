@@ -71,3 +71,13 @@ dashboard:
   port: 7890
   host: "0.0.0.0"
   auto_refresh_seconds: 30
+
+# Announce settings (OPTIONAL — not required for local deployments)
+# Uncomment and configure only if you want cycle results announced to a channel.
+# Without this, all cycle scripts run locally and write to runtime/*/ only.
+# announce:
+#   enabled: false
+#   channel: ""          # e.g. "discord://webhook-url" or "slack://channel-id"
+#   on_heartbeat: false  # announce main heartbeat results
+#   on_bookmarker: false # announce bookmarker cycle results
+#   on_trader: false     # announce trader cycle results

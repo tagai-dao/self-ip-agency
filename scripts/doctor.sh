@@ -139,28 +139,74 @@ check_file "$AGENCY_DIR/config/wiki_topic_registry.json" "wiki_topic_registry.js
 
 echo ""
 
-# ── 7. Main heartbeat entrypoint ──────────────────────────────────────────────
-echo "7. Main heartbeat"
-check_file "$AGENCY_DIR/scripts/main-heartbeat.sh" "repo scripts/main-heartbeat.sh (source entrypoint)"
-check_file "$AGENCY_DIR/HEARTBEAT.md" "repo HEARTBEAT.md (source contract)"
+# ── 7. Cycle entrypoints ─────────────────────────────────────────────────────
+echo "7. Cycle entrypoints"
+check_file "$AGENCY_DIR/scripts/main-heartbeat.sh" "repo scripts/main-heartbeat.sh"
+check_file "$AGENCY_DIR/scripts/bookmarker-cycle.sh" "repo scripts/bookmarker-cycle.sh"
+check_file "$AGENCY_DIR/scripts/trader-cycle.sh" "repo scripts/trader-cycle.sh"
+check_file "$AGENCY_DIR/HEARTBEAT.md" "repo HEARTBEAT.md (contract)"
 check_file "$AGENCY_DIR/docs/main-heartbeat-contract.md" "docs/main-heartbeat-contract.md"
-check_file "$WORKSPACE/scripts/main-heartbeat.sh" "workspace/scripts/main-heartbeat.sh (deployed entrypoint)"
-check_file "$WORKSPACE/HEARTBEAT.md" "workspace/HEARTBEAT.md (deployed contract)"
-if [ -x "$AGENCY_DIR/scripts/main-heartbeat.sh" ]; then
-  ok "repo main-heartbeat.sh is executable"
-else
-  warn "repo main-heartbeat.sh is not executable — run: chmod +x scripts/main-heartbeat.sh"
+
+for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh; do
+  if [ -f "$AGENCY_DIR/scripts/$cycle_script" ]; then
+    if [ -x "$AGENCY_DIR/scripts/$cycle_script" ]; then
+      ok "repo $cycle_script is executable"
+    else
+      warn "repo $cycle_script is not executable — run: chmod +x scripts/$cycle_script"
+    fi
+  fi
+  if [ -f "$WORKSPACE/scripts/$cycle_script" ]; then
+    ok "deployed $cycle_script exists"
+    if [ -x "$WORKSPACE/scripts/$cycle_script" ]; then
+      ok "deployed $cycle_script is executable"
+    else
+      warn "deployed $cycle_script is not executable — rerun install or chmod +x"
+    fi
+  else
+    warn "deployed $cycle_script not found — rerun install.sh"
+  fi
+done
+
+check_file_warn "$WORKSPACE/HEARTBEAT.md" "workspace HEARTBEAT.md (deployed contract)"
+
+echo ""
+
+# ── 8. Deployment contract consistency ───────────────────────────────────────
+echo "8. Deployment contract consistency"
+
+# Check for stale task.json references in cron-jobs.json
+if [ -f "$AGENCY_DIR/config/cron-jobs.json" ]; then
+  if grep -q "runtime/bookmarker/task.json\|runtime/trader/task.json" "$AGENCY_DIR/config/cron-jobs.json"; then
+    fail "cron-jobs.json still references runtime/*/task.json — these are not primary entrypoints"
+  else
+    ok "cron-jobs.json uses dedicated entrypoint scripts (no stale task.json refs)"
+  fi
 fi
-if [ -x "$WORKSPACE/scripts/main-heartbeat.sh" ]; then
-  ok "deployed main-heartbeat.sh is executable"
-else
-  warn "deployed main-heartbeat.sh is not executable — rerun install or chmod +x $WORKSPACE/scripts/main-heartbeat.sh"
+
+# Check for stale references in openclaw-agents.yaml
+if [ -f "$AGENCY_DIR/config/openclaw-agents.yaml" ]; then
+  if grep -q "dev-claude.sh" "$AGENCY_DIR/config/openclaw-agents.yaml"; then
+    warn "openclaw-agents.yaml still references dev-claude.sh — should use dedicated cycle scripts"
+  else
+    ok "openclaw-agents.yaml uses dedicated cycle scripts"
+  fi
+fi
+
+# Check cron-jobs.json and openclaw-agents.yaml reference the same entrypoints
+if [ -f "$AGENCY_DIR/config/cron-jobs.json" ]; then
+  for agent_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh; do
+    if grep -q "$agent_script" "$AGENCY_DIR/config/cron-jobs.json"; then
+      ok "cron-jobs.json references $agent_script"
+    else
+      warn "cron-jobs.json missing reference to $agent_script"
+    fi
+  done
 fi
 
 echo ""
 
-# ── 8. Key scripts ──────────────────────────────────────────────────────────
-echo "8. Key scripts"
+# ── 9. Key scripts ──────────────────────────────────────────────────────────
+echo "9. Key scripts"
 for s in run_main_runtime_v2.py wiki_lint_v1.py select_strategy_v1.py \
           compute_tas_social_v2.py build_main_input_packet_v2.py \
           build_wiki_query_index_v1.py runtime_utils_v2.py; do

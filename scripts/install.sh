@@ -272,14 +272,16 @@ install_runtime() {
     log_ok "Runtime template files copied"
   fi
 
-  # Deploy main-heartbeat executable and contract into the actual workspace.
+  # Deploy all cycle entrypoints into the actual workspace.
   local scripts_dst="$workspace/scripts"
   mkdir -p "$scripts_dst"
-  if [ -f "$AGENCY_DIR/scripts/main-heartbeat.sh" ]; then
-    cp -f "$AGENCY_DIR/scripts/main-heartbeat.sh" "$scripts_dst/main-heartbeat.sh"
-    chmod +x "$scripts_dst/main-heartbeat.sh" || true
-    log_ok "Installed main-heartbeat entrypoint: $scripts_dst/main-heartbeat.sh"
-  fi
+  for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh; do
+    if [ -f "$AGENCY_DIR/scripts/$cycle_script" ]; then
+      cp -f "$AGENCY_DIR/scripts/$cycle_script" "$scripts_dst/$cycle_script"
+      chmod +x "$scripts_dst/$cycle_script" || true
+      log_ok "Installed entrypoint: $scripts_dst/$cycle_script"
+    fi
+  done
   if [ -f "$AGENCY_DIR/HEARTBEAT.md" ]; then
     cp -f "$AGENCY_DIR/HEARTBEAT.md" "$workspace/HEARTBEAT.md"
     log_ok "Installed heartbeat contract: $workspace/HEARTBEAT.md"
@@ -412,8 +414,8 @@ for cmd in data.get('openclaw_cron_commands', []):
 "
   else
     echo "  openclaw cron add main-heartbeat '*/10 * * * *' 'bash $workspace/scripts/main-heartbeat.sh'"
-    echo "  openclaw cron add bookmarker-cycle '*/30 * * * *' '$workspace/scripts/dev-claude.sh \"social curation cycle\"'"
-    echo "  openclaw cron add trader-cycle '0 * * * *' '$workspace/scripts/dev-claude.sh \"trade cycle\"'"
+    echo "  openclaw cron add bookmarker-cycle '*/30 * * * *' 'bash $workspace/scripts/bookmarker-cycle.sh'"
+    echo "  openclaw cron add trader-cycle '0 * * * *' 'bash $workspace/scripts/trader-cycle.sh'"
   fi
 
   echo "  ══════════════════════════════════════════════════════════"
@@ -678,9 +680,10 @@ print(json.dumps(d, indent=2))
       echo "  ║    ${box_i}. ${step}"
     done
     echo "  ║"
-    echo "  ║  Main heartbeat:"
-    echo "  ║    bash $workspace/scripts/main-heartbeat.sh --self-check   (first-run validation)"
-    echo "  ║    bash $workspace/scripts/main-heartbeat.sh                (run heartbeat cycle)"
+    echo "  ║  Cycle entrypoints:"
+    echo "  ║    bash $workspace/scripts/main-heartbeat.sh --self-check   (main validation)"
+    echo "  ║    bash $workspace/scripts/bookmarker-cycle.sh --self-check (bookmarker validation)"
+    echo "  ║    bash $workspace/scripts/trader-cycle.sh --self-check     (trader validation)"
     echo "  ║    contract: $workspace/HEARTBEAT.md"
     echo "  ║"
     echo "  ║  Docs:"
@@ -700,6 +703,8 @@ print(json.dumps(d, indent=2))
     echo "### BEGIN INSTALL CONTRACT ###"
     echo "INSTALL_STATUS=\"${INSTALL_STATUS}\""
     echo "MAIN_HEARTBEAT_ENTRYPOINT=\"$workspace/scripts/main-heartbeat.sh\""
+    echo "BOOKMARKER_CYCLE_ENTRYPOINT=\"$workspace/scripts/bookmarker-cycle.sh\""
+    echo "TRADER_CYCLE_ENTRYPOINT=\"$workspace/scripts/trader-cycle.sh\""
     echo "HEARTBEAT_CONTRACT_PATH=\"$workspace/HEARTBEAT.md\""
     local marker_i=0
     for step in "${NEXT_STEPS[@]}"; do

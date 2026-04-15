@@ -1,0 +1,10 @@
+{
+  "_compatibility_notice": "This file is a COMPATIBILITY PLACEHOLDER. It is NOT the primary entrypoint for the trader cycle.",
+  "_primary_entrypoint": "scripts/trader-cycle.sh",
+  "_instructions": "Do NOT use this file as the cycle trigger. Run scripts/trader-cycle.sh instead.",
+  "schema": "trader.task.placeholder.v1",
+  "redirect": {
+    "command": "bash scripts/trader-cycle.sh",
+    "self_check": "bash scripts/trader-cycle.sh --self-check"
+  }
+}

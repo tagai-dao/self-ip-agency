@@ -33,6 +33,8 @@ nano ~/.config/tagclaw/credentials.json
 # 5. Verify installation
 bash scripts/doctor.sh
 bash ~/.openclaw/workspace/scripts/main-heartbeat.sh --self-check
+bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh --self-check
+bash ~/.openclaw/workspace/scripts/trader-cycle.sh --self-check
 python3 scripts/verify_wiki_contract.py
 python3 scripts/wiki_lint_v1.py
 
@@ -95,6 +97,8 @@ Run the basic post-install checks:
 ```bash
 bash scripts/doctor.sh
 bash ~/.openclaw/workspace/scripts/main-heartbeat.sh --self-check
+bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh --self-check
+bash ~/.openclaw/workspace/scripts/trader-cycle.sh --self-check
 python3 scripts/verify_wiki_contract.py
 python3 scripts/wiki_lint_v1.py
 ```
@@ -102,7 +106,7 @@ python3 scripts/wiki_lint_v1.py
 You should confirm at least:
 1. `credentials.json` exists and contains your real values
 2. `runtime/` and `wiki/` were created under `~/.openclaw/workspace`
-3. `~/.openclaw/workspace/scripts/main-heartbeat.sh --self-check` passes (validates deployed heartbeat environment)
+3. All three `--self-check` commands pass (validates deployed cycle entrypoints)
 4. dashboard can answer `/api/health` on port `7890` if started
 5. cron jobs are either still pending manual registration, or have been registered explicitly by you
 
@@ -150,20 +154,26 @@ Access at `http://localhost:7890`. Shows:
 
 ### 8. Cron Jobs
 
-Register the agent cron jobs:
+Register the agent cron jobs. All three cycles use dedicated shell entrypoints:
 ```bash
-# Main heartbeat — every 10 minutes (uses dedicated entrypoint)
+# Main heartbeat — every 10 minutes
 */10 * * * * bash ~/.openclaw/workspace/scripts/main-heartbeat.sh
 
 # Bookmarker cycle — every 30 minutes
-*/30 * * * * cd /path/to/workspace && ./scripts/dev-claude.sh "bookmarker cycle"
+*/30 * * * * bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh
 
 # Trader cycle — hourly
-0 * * * * cd /path/to/workspace && ./scripts/dev-claude.sh "trader cycle"
+0 * * * * bash ~/.openclaw/workspace/scripts/trader-cycle.sh
 ```
 
-> **Note**: The main heartbeat uses `~/.openclaw/workspace/scripts/main-heartbeat.sh` directly, NOT
-> `runtime/main/task.json`. See the deployed `~/.openclaw/workspace/HEARTBEAT.md` (or the repo copy) for the full contract.
+> **Note**: All cycles use dedicated entrypoint scripts, NOT `runtime/*/task.json`.
+> The `task.json` files in runtime-template are compatibility placeholders only.
+> See `~/.openclaw/workspace/HEARTBEAT.md` for the main heartbeat contract.
+>
+> **No announce channel required**: For local/distributable deployments, all cycle
+> scripts run locally and write results to `runtime/*/`. No channel configuration
+> is needed. To enable optional announcements, configure `announce_channel` in
+> `config/agency.config.yaml`.
 
 ### 9. X Account
 
@@ -211,8 +221,10 @@ After deployment, verify everything works:
 # 0. Full health check
 bash scripts/doctor.sh
 
-# 0b. Main heartbeat self-check
+# 0b. Cycle entrypoint self-checks
 bash ~/.openclaw/workspace/scripts/main-heartbeat.sh --self-check
+bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh --self-check
+bash ~/.openclaw/workspace/scripts/trader-cycle.sh --self-check
 
 # 1. Contract checks pass
 python3 scripts/verify_wiki_contract.py

@@ -27,12 +27,15 @@ Every 10 minutes you:
 ## Dispatch Protocol
 
 ```bash
-# Dispatch bookmarker
-./scripts/dev-claude.sh "Read runtime/bookmarker/task.json and execute social curation cycle."
+# Dispatch bookmarker (dedicated entrypoint)
+bash scripts/bookmarker-cycle.sh
 
-# Dispatch trader
-./scripts/dev-claude.sh "Read runtime/trader/task.json and execute trade cycle."
+# Dispatch trader (dedicated entrypoint)
+bash scripts/trader-cycle.sh
 ```
+
+> NOTE: Do NOT use `runtime/bookmarker/task.json` or `runtime/trader/task.json` as
+> dispatch targets. Those files are compatibility placeholders only.
 
 ## Mode Thresholds
 
