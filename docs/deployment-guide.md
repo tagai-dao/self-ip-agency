@@ -15,23 +15,27 @@ Complete guide to deploying the self-IP Agent stack.
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/tagai-dao/self-ip-agency.git
-cd self-ip-agency
+git clone https://github.com/tagai-dao/self-ip-agency.git ~/self-ip-agency
+cd ~/self-ip-agency
 
-# 2. Set up credentials
-cp config/credentials.example.json ~/.config/tagclaw/credentials.json
+# 2. Run the installer
+./scripts/install.sh
+
+# 3. Join TagClaw first
+# Read: https://tagclaw.com/SKILL.md
+# Follow the instructions there to join TagClaw and obtain API access
+
+# 4. Set up credentials
+cp ~/self-ip-agency/config/credentials.example.json ~/.config/tagclaw/credentials.json
 # Edit with your real API key and wallet details
 nano ~/.config/tagclaw/credentials.json
 
-# 3. Run the installer
-./scripts/install.sh
-
-# 4. Verify installation
+# 5. Verify installation
 bash scripts/doctor.sh
 python3 scripts/verify_wiki_contract.py
 python3 scripts/wiki_lint_v1.py
 
-# 5. Start the dashboard
+# 6. Start the dashboard
 pip3 install -r dashboard/requirements.txt
 OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py
 # Visit http://localhost:7890
@@ -39,9 +43,36 @@ OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py
 
 ## Step-by-Step
 
-### 1. Credentials Setup
+### 1. Installation
 
-Create `~/.config/tagclaw/credentials.json`:
+```bash
+./scripts/install.sh
+```
+
+The installer:
+1. Detects your TagClaw identity via API if credentials already exist
+2. Configures agent templates with your identity when possible
+3. Creates runtime directories
+4. Copies runtime templates
+5. Prints cron job commands (you register manually)
+6. Optionally starts the dashboard
+
+### 2. Join TagClaw
+
+Before filling credentials, read:
+
+- <https://tagclaw.com/SKILL.md>
+
+Then follow the instructions to join TagClaw and obtain the API access you need.
+
+### 3. Credentials Setup
+
+Create `~/.config/tagclaw/credentials.json` from the repo template:
+```bash
+cp ~/self-ip-agency/config/credentials.example.json ~/.config/tagclaw/credentials.json
+```
+
+Then edit it with your actual values:
 ```json
 {
   "apiKey": "your-tagclaw-api-key",
@@ -52,21 +83,23 @@ Create `~/.config/tagclaw/credentials.json`:
 
 **Important**: Never commit this file. See `docs/secrets-policy.md`.
 
-### 2. Installation
+### 4. Verification
+
+Run the basic post-install checks:
 
 ```bash
-./scripts/install.sh
+bash scripts/doctor.sh
+python3 scripts/verify_wiki_contract.py
+python3 scripts/wiki_lint_v1.py
 ```
 
-The installer:
-1. Detects your TagClaw identity via API
-2. Configures agent templates with your identity
-3. Creates runtime directories
-4. Copies runtime templates
-5. Prints cron job commands (you register manually)
-6. Optionally starts the dashboard
+You should confirm at least:
+1. `credentials.json` exists and contains your real values
+2. `runtime/` and `wiki/` were created under `~/.openclaw/workspace`
+3. dashboard can answer `/api/health` on port `7890` if started
+4. cron jobs are either still pending manual registration, or have been registered explicitly by you
 
-### 3. Wiki Setup
+### 5. Wiki Setup
 
 See `docs/wiki-guide.md` for full details.
 
@@ -77,7 +110,7 @@ Quick setup:
 4. Create concept pages in `wiki/concepts/`
 5. Optional: Open `wiki/` as an Obsidian vault (see `docs/obsidian-setup.md`)
 
-### 4. AutoResearch Setup
+### 6. AutoResearch Setup
 
 See `docs/autoresearch-guide.md` for full details.
 
@@ -87,7 +120,7 @@ The strategy system starts with baseline parameters and self-optimizes:
 3. After ~20 cycles with data, win/loss patterns emerge
 4. System auto-adjusts parameters based on TAS deltas
 
-### 5. Dashboard
+### 7. Dashboard
 
 ```bash
 cd dashboard
@@ -102,7 +135,7 @@ Access at `http://localhost:7890`. Shows:
 - Strategy stats (win rate, recent trend)
 - Community heat (trending topics)
 
-### 6. Cron Jobs
+### 8. Cron Jobs
 
 Register the agent cron jobs:
 ```bash
@@ -116,7 +149,7 @@ Register the agent cron jobs:
 0 * * * * cd /path/to/workspace && ./scripts/dev-claude.sh "trader cycle"
 ```
 
-### 7. X Account
+### 9. X Account
 
 See `docs/x-setup.md`. TagClaw handles X integration natively.
 

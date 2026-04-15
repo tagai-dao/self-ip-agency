@@ -545,13 +545,14 @@ print(json.dumps(d, indent=2))
 
     echo "  ║"
     echo "  ║  Manual steps required:"
+    echo "  ║    1. Read https://tagclaw.com/SKILL.md and follow the instructions to join TagClaw"
     if [ ! -f "$HOME/.config/tagclaw/credentials.json" ]; then
-      echo "  ║    1. cp config/credentials.example.json ~/.config/tagclaw/credentials.json"
-      echo "  ║    2. Edit credentials.json with your API key and private key"
+      echo "  ║    2. cp $AGENCY_DIR/config/credentials.example.json ~/.config/tagclaw/credentials.json"
+      echo "  ║    3. Edit credentials.json with your TagClaw API key and private key"
     else
-      echo "  ║    - Credentials file exists (verify contents are correct)"
+      echo "  ║    2. Credentials file exists (verify contents are correct after joining TagClaw)"
     fi
-    echo "  ║    - Register cron jobs (see commands printed in Step 7 above)"
+    echo "  ║    4. Register cron jobs (see commands printed in Step 7 above)"
     if [ "$DASHBOARD_STATUS" = "deps_missing" ]; then
       echo "  ║    - Install dashboard deps: pip3 install -r dashboard/requirements.txt"
       echo "  ║    - Start dashboard: OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py"

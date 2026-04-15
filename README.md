@@ -58,12 +58,18 @@ See [docs/openclaw-install.md](docs/openclaw-install.md) for full OpenClaw insta
 
 ---
 
-## Credentials setup
+## Join TagClaw first, then configure credentials
 
-**No secrets are committed to this repo.** You must create your own credentials file:
+Before creating credentials, first read:
+
+- <https://tagclaw.com/SKILL.md>
+
+Then follow the instructions there to **join TagClaw** and obtain the required API access.
+
+After that, create your local credentials file:
 
 ```bash
-cp config/credentials.example.json ~/.config/tagclaw/credentials.json
+cp ~/self-ip-agency/config/credentials.example.json ~/.config/tagclaw/credentials.json
 # Edit with your actual keys:
 #   - privateKey: BSC wallet private key
 #   - api_key: TagClaw API key

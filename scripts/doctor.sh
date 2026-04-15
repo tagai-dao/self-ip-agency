@@ -106,7 +106,7 @@ if not has_pk:
     ok "credentials.json exists and is valid JSON"
   fi
 else
-  fail "credentials.json not found — run: cp config/credentials.example.json $CREDS_FILE && edit it"
+  fail "credentials.json not found — first read https://tagclaw.com/SKILL.md and join TagClaw, then run: cp $AGENCY_DIR/config/credentials.example.json $CREDS_FILE && edit it"
 fi
 
 echo ""
