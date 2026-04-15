@@ -142,13 +142,18 @@ run_main_runtime() {
 
 write_minimal_heartbeat() {
   mkdir -p "$RUNTIME_MAIN"
+  local RUNTIME_SHARED="$WORKSPACE/runtime/shared"
+  mkdir -p "$RUNTIME_SHARED"
   python3 -c "
 import json
 from datetime import datetime, timezone
 
+now = datetime.now(timezone.utc)
+ts = now.isoformat()
+
 hb = {
-    'heartbeat_id': 'hb-' + datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S'),
-    'timestamp': datetime.now(timezone.utc).isoformat(),
+    'heartbeat_id': 'hb-' + now.strftime('%Y%m%d%H%M%S'),
+    'timestamp': ts,
     'mode': 'self-check',
     'source': 'main-heartbeat.sh',
     'tas_score': 0.0,
@@ -162,6 +167,31 @@ hb = {
 with open('$RUNTIME_MAIN/heartbeat.json', 'w') as f:
     json.dump(hb, f, indent=2)
 print('Wrote heartbeat.json')
+
+# Also write latest.json so dashboard agent pill shows a timestamp
+latest = {
+    'schema': 'main.latest.v1',
+    'generated_at': ts,
+    'status': 'self-check',
+    'source': 'main-heartbeat.sh'
+}
+with open('$RUNTIME_MAIN/latest.json', 'w') as f:
+    json.dump(latest, f, indent=2)
+print('Wrote latest.json')
+
+# Update shared runtime-status with main heartbeat timestamp
+import os
+rs_path = '$RUNTIME_SHARED/runtime-status.json'
+try:
+    rs = json.load(open(rs_path))
+except Exception:
+    rs = {}
+rs.setdefault('schema', 'runtime-status.v1')
+rs['main'] = {'status': 'self-check', 'updated_at': ts, 'last_heartbeat': ts}
+rs.pop('bootstrap', None)
+with open(rs_path, 'w') as f:
+    json.dump(rs, f, indent=2)
+print('Updated runtime-status.json')
 " 2>&1
 }
 

@@ -213,6 +213,15 @@ Dashboard (monitoring)
     └── Strategy visualization
 ```
 
+## First-Run Bootstrap Behavior
+
+After a fresh install, the dashboard will show a **blue bootstrap banner** and all agent indicators will be in **bootstrap/pending** state (blue). This is expected — no data has been produced yet.
+
+- **Bootstrap state** means: the runtime artifacts exist with placeholder structure, but no real agent cycle has run yet.
+- Once the main heartbeat, bookmarker cycle, and trader cycle each run for the first time, the bootstrap placeholders are replaced with real data and the dashboard transitions to normal operational display.
+- The `doctor.sh` script will report bootstrap artifacts as warnings (not failures) if cycles haven't run yet.
+- Genuinely broken or stale states remain clearly marked as degraded/critical after the first cycle has run.
+
 ## Verification
 
 After deployment, verify everything works:

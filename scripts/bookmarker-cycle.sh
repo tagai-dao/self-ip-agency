@@ -117,6 +117,28 @@ run_bookmarker_cycle() {
   fi
 }
 
+# ── Runtime status update ─────────────────────────────────────────────────────
+
+_update_runtime_status() {
+  local agent="$1" status="$2"
+  local rs_path="$WORKSPACE/runtime/shared/runtime-status.json"
+  mkdir -p "$(dirname "$rs_path")"
+  python3 -c "
+import json
+from datetime import datetime, timezone
+ts = datetime.now(timezone.utc).isoformat()
+try:
+    rs = json.load(open('$rs_path'))
+except Exception:
+    rs = {}
+rs.setdefault('schema', 'runtime-status.v1')
+rs['$agent'] = {'status': '$status', 'updated_at': ts}
+rs.pop('bootstrap', None)
+with open('$rs_path', 'w') as f:
+    json.dump(rs, f, indent=2)
+" 2>/dev/null || true
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 main() {
@@ -152,6 +174,9 @@ main() {
 
   # Full bookmarker cycle
   run_bookmarker_cycle
+
+  # Update shared runtime-status with bookmarker timestamp
+  _update_runtime_status "bookmarker" "completed"
 
   log_ok "Bookmarker cycle complete"
 

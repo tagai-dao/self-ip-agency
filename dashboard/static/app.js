@@ -6,6 +6,9 @@ const I18N = {
   zh: {
     subtitle: '智能体看板',
     refresh: '↻ 刷新',
+    // Bootstrap banner
+    'bootstrap-title': '🔵 环境刚刚安装 — 等待首次智能体运行',
+    'bootstrap-hint': '首次运行主心跳、书签员和交易员周期后，数据将自动填充。下方所有指标目前处于引导/待定状态。',
     // Section titles
     'section-tas-command': '🎯 TAS 指挥中心',
     'col-tas-social': 'TAS_social',
@@ -824,6 +827,7 @@ function shortTs(ts) {
 function statusClass(s) {
   if (!s) return '';
   const sl = String(s).toLowerCase();
+  if (['bootstrap', 'pending', 'initializing', 'pending_first_run'].some(k => sl.includes(k))) return 'bootstrap';
   if (['ok', 'approve', 'active', 'healthy'].some(k => sl.includes(k))) return 'ok';
   if (['warn', 'partial', 'hold'].some(k => sl.includes(k))) return 'warn';
   if (['error', 'fail', 'reject'].some(k => sl.includes(k))) return 'error';
@@ -889,6 +893,7 @@ function cleanSummary(text) {
 // ── agentStatusDot: freshness → emoji dot ────────────────────────────────
 function agentStatusDot(freshness) {
   if (!freshness) return '⚫';
+  if (freshness === 'bootstrap') return '🔵';
   if (freshness === 'fresh') return '🟢';
   if (freshness === 'aging') return '🟡';
   if (freshness === 'stale') return '🟠';
@@ -1137,9 +1142,9 @@ function renderStatus(data) {
   const tasTrade = numericOrNull(tas.tas_trade);
 
   // Header TAS
-  setText('tas-total', fmt(tasTotal));
+  setText('tas-total', tasTotal != null ? fmt(tasTotal) : '—');
   const totalEl = $('tas-total');
-  if (totalEl) totalEl.className = 'value ' + (tasTotal >= 1.5 ? 'clr-ok' : tasTotal >= 0.8 ? 'clr-warn' : 'clr-error');
+  if (totalEl) totalEl.className = 'value ' + (tasTotal == null ? 'clr-bootstrap' : tasTotal >= 1.5 ? 'clr-ok' : tasTotal >= 0.8 ? 'clr-warn' : 'clr-error');
 
   // Trend arrow from history
   const prevTotal = history.length >= 2 ? numericOrNull(history[history.length - 2].tas_total) : null;
@@ -3400,6 +3405,12 @@ async function fetchAll() {
     _lastNoc = noc;
     _lastExplainability = explainability;
     renderStatus(status);
+    // Bootstrap banner: show if freshly installed environment
+    const bannerEl = $('bootstrap-banner');
+    if (bannerEl) {
+      if (status && status.is_bootstrap) bannerEl.classList.add('visible');
+      else bannerEl.classList.remove('visible');
+    }
     renderTimeline(timeline);
     if (timeline && timeline.summary) renderTimelineSummary(timeline.summary);
     if (autoresearch) renderAutoResearch(autoresearch);

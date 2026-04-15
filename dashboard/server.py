@@ -226,10 +226,10 @@ def _bucket_from_age(age_min: float, profile: str = "runtime") -> str:
 
 
 def _age_status(date_str: str | None, max_hours: float) -> str:
-    """Return 'ok', 'stale', or 'missing' based on age."""
+    """Return 'ok', 'stale', or 'bootstrap' based on age."""
     dt = _parse_dt(date_str)
     if not dt:
-        return "missing"
+        return "bootstrap"
     age = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
     return "ok" if age < max_hours else "stale"
 
@@ -1513,6 +1513,37 @@ def api_status():
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     live_resources = _fetch_live_op_vp()
 
+    # Detect bootstrap state: keep first-run banner visible until the core
+    # main/bookmarker/trader artifacts have each been replaced by real outputs.
+    def _core_bootstrap(obj: dict | None) -> bool:
+        if not isinstance(obj, dict):
+            return False
+        status = str(obj.get("status", "")).lower()
+        return bool(
+            obj.get("bootstrap")
+            or status in {"bootstrap", "pending", "initializing", "pending_first_run"}
+        )
+
+    core_runtime_bootstrap = any(
+        isinstance(runtime_status.get(agent), dict)
+        and str(runtime_status.get(agent, {}).get("status", "")).lower() == "bootstrap"
+        for agent in ("main", "bookmarker", "trader")
+    )
+    _is_bootstrap = any([
+        bool(runtime_status.get("bootstrap")),
+        core_runtime_bootstrap,
+        _core_bootstrap(health),
+        _core_bootstrap(tas_latest),
+        _core_bootstrap(last_dec),
+        _core_bootstrap(social_int),
+        _core_bootstrap(topic_brief),
+        _core_bootstrap(src_health),
+        _core_bootstrap(bm_cands),
+        _core_bootstrap(wallet),
+        _core_bootstrap(tas_trd),
+        _core_bootstrap(risk),
+    ])
+
     # Serve enough TAS points for the 7-day sparkline window.
     # At 30-min cadence this needs ~336 points; use 400 for headroom.
     tas_history = _load_tas_history(
@@ -1523,6 +1554,7 @@ def api_status():
 
     return JSONResponse({
         "fetched_at": now_utc,
+        "is_bootstrap": _is_bootstrap,
         "runtime_status": runtime_status,
         "health": health,
         "main": {
@@ -1701,9 +1733,19 @@ def api_explainability():
     contract_ok = alert.get("status") == "ok" and alert.get("severity") == "clear"
     maint_ok = maint_alert.get("severity") == "clear"
     lint_ok = not lint.get("needs_attention")
+    # Bootstrap: treat pending/uninitialized alerts as not-yet-failed
+    contract_bootstrap = alert.get("bootstrap") or alert.get("severity") == "none"
+    maint_bootstrap = maint_alert.get("bootstrap") or maint_alert.get("severity") == "none"
+
+    if contract_bootstrap and maint_bootstrap:
+        wiki_overall = "bootstrap"
+    elif contract_ok and maint_ok and lint_ok:
+        wiki_overall = "ok"
+    else:
+        wiki_overall = "degraded"
 
     health = {
-        "overall": "ok" if (contract_ok and maint_ok and lint_ok) else "degraded",
+        "overall": wiki_overall,
         "contract": {"status": alert.get("status", "unknown"), "severity": alert.get("severity", "unknown")},
         "maintenance": {"severity": maint_alert.get("severity", "unknown"), "action": maint_alert.get("action", "unknown")},
         "lint": {"health_score": lint.get("health_score"), "needs_attention": lint.get("needs_attention")},
@@ -2031,7 +2073,7 @@ def _freshness_bucket(date_str: str | None, profile: str = "runtime") -> str:
     """Return freshness bucket using source-specific SLA profiles."""
     dt = _parse_dt(date_str)
     if not dt:
-        return "critical"
+        return "bootstrap"
     now = datetime.now(timezone.utc)
     if profile == "valid_until":
         if dt >= now:
@@ -2094,7 +2136,15 @@ def api_control_tower():
             "age_min": round(_freshness_minutes(ts) or -1, 1) if ts else None,
         }
 
-    # System mode
+    # System mode — detect bootstrap first
+    all_bootstrap = all(
+        freshness[k]["bucket"] == "bootstrap"
+        for k in freshness
+    )
+    any_bootstrap = any(
+        freshness[k]["bucket"] == "bootstrap"
+        for k in freshness
+    )
     any_social_critical = any(
         freshness[k]["bucket"] == "critical"
         for k in ("tas_social", "topic_brief", "social_intent")
@@ -2115,7 +2165,11 @@ def api_control_tower():
             elif curr < prev - 0.01:
                 tas_trend = "declined"
 
-    if any_social_critical:
+    if all_bootstrap:
+        system_mode = "bootstrap"
+    elif any_bootstrap and not any_social_critical:
+        system_mode = "initializing"
+    elif any_social_critical:
         system_mode = "degraded"
     elif tas_trend == "declined" and any_social_stale:
         system_mode = "repair"
@@ -2126,7 +2180,9 @@ def api_control_tower():
 
     # Primary bottleneck
     bottleneck = None
-    if freshness.get("topic_brief", {}).get("bucket") in ("stale", "critical"):
+    if system_mode in ("bootstrap", "initializing"):
+        bottleneck = "awaiting first agent cycles"
+    elif freshness.get("topic_brief", {}).get("bucket") in ("stale", "critical"):
         bottleneck = "bookmarker topic_brief stale"
     elif freshness.get("social_intent", {}).get("bucket") in ("stale", "critical"):
         bottleneck = "X sync / social pipeline stale"
@@ -2139,7 +2195,9 @@ def api_control_tower():
 
     # Highest priority action
     strat_action = strategy_plan.get("strategy_action") or last_dec.get("strategy_action") or "—"
-    if system_mode == "degraded":
+    if system_mode in ("bootstrap", "initializing"):
+        highest_action = "run first agent cycles"
+    elif system_mode == "degraded":
         highest_action = "repair social freshness"
     elif system_mode == "repair":
         highest_action = "rewrite social-intent / treasury-policy"
@@ -2159,18 +2217,25 @@ def api_control_tower():
     else:
         expected_lever = "balanced"
 
-    # Confidence
+    # Confidence — bootstrap is not failure
     critical_count = sum(1 for v in freshness.values() if v["bucket"] == "critical")
     stale_count = sum(1 for v in freshness.values() if v["bucket"] in ("stale", "critical"))
-    if critical_count >= 3:
+    bootstrap_count = sum(1 for v in freshness.values() if v["bucket"] == "bootstrap")
+    if all_bootstrap:
+        confidence = "bootstrap"
+    elif critical_count >= 3:
         confidence = "low"
     elif stale_count >= 3:
         confidence = "medium"
     else:
         confidence = "high"
 
-    # Alerts
+    # Alerts — bootstrap items are info-level, not critical
     alerts: list[dict[str, str]] = []
+    if all_bootstrap:
+        alerts.append({"level": "info", "message": "Environment freshly installed — awaiting first agent cycles"})
+    elif any_bootstrap:
+        alerts.append({"level": "info", "message": f"{bootstrap_count} artifact(s) pending first run"})
     for key, info in freshness.items():
         if info["bucket"] == "critical":
             alerts.append({"level": "critical", "message": f"{key} critical"})
@@ -2270,7 +2335,9 @@ def api_agent_health():
                 tas_trend = "improved"
 
     main_blocker = None
-    if tas_trend == "declined":
+    if main_freshness == "bootstrap":
+        main_blocker = "awaiting first heartbeat"
+    elif tas_trend == "declined":
         main_blocker = "TAS declined"
     elif _freshness_bucket(social_int.get("issued_at") or social_int.get("generated_at"), "runtime") in ("stale", "critical"):
         main_blocker = "social-intent stale"
@@ -2299,7 +2366,9 @@ def api_agent_health():
             elif curr_s < prev_s - 0.01:
                 tas_social_trend = "declined"
 
-    if tb_fresh in ("stale", "critical") or sh_status != "ok":
+    if tb_fresh == "bootstrap":
+        bm_mode = "bootstrap"
+    elif tb_fresh in ("stale", "critical") or sh_status != "ok":
         bm_mode = "stale"
     elif tas_social_trend == "improved":
         bm_mode = "active"
@@ -2307,7 +2376,9 @@ def api_agent_health():
         bm_mode = "conservative"
 
     bm_blocker = None
-    if tb_fresh in ("stale", "critical"):
+    if tb_fresh == "bootstrap":
+        bm_blocker = "awaiting first bookmarker cycle"
+    elif tb_fresh in ("stale", "critical"):
         bm_blocker = "topic_brief stale"
     elif sh_status != "ok":
         bm_blocker = "source_health degraded"
@@ -2323,7 +2394,9 @@ def api_agent_health():
     trader_mode = tas_trade.get("autonomy_mode", "—")
     trader_blocker = None
     risk_flags = tas_trade.get("risk_flags") or []
-    if risk_flags:
+    if trader_freshness == "bootstrap":
+        trader_blocker = "awaiting first trader cycle"
+    elif risk_flags:
         trader_blocker = f"risk: {risk_flags[0]}"
     elif community_heat.get("source_health") != "ok":
         trader_blocker = "heat signal unavailable"
@@ -2563,7 +2636,9 @@ def api_noc():
     def _edge(src: str, dst: str, label: str, src_ts: str | None, dst_ts: str | None, src_profile: str = "runtime", dst_profile: str = "runtime", src_bucket_ts: str | None = None, dst_bucket_ts: str | None = None, src_bucket_profile: str | None = None, dst_bucket_profile: str | None = None) -> dict:
         src_bucket = _freshness_bucket(src_bucket_ts or src_ts, src_bucket_profile or src_profile)
         dst_bucket = _freshness_bucket(dst_bucket_ts or dst_ts, dst_bucket_profile or dst_profile)
-        if src_bucket == "critical" or not src_ts:
+        if src_bucket == "bootstrap" or dst_bucket == "bootstrap":
+            status = "bootstrap"
+        elif src_bucket == "critical" or not src_ts:
             status = "broken"
         elif src_bucket in ("stale", "critical"):
             status = "degraded"

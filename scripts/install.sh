@@ -288,6 +288,14 @@ install_runtime() {
   fi
 
   log_ok "Runtime installed at: $runtime_root"
+
+  # Seed dashboard-required artifacts with bootstrap/pending state
+  if [ -f "$AGENCY_DIR/scripts/bootstrap-dashboard-state.sh" ]; then
+    log_info "Seeding dashboard bootstrap state..."
+    bash "$AGENCY_DIR/scripts/bootstrap-dashboard-state.sh" --workspace="$workspace" 2>&1 || \
+      log_warn "Bootstrap dashboard state seeding had warnings (non-fatal)"
+    log_ok "Dashboard bootstrap state seeded"
+  fi
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -533,6 +541,9 @@ main() {
   install_dashboard
 
   if [ "$DRY_RUN" = "false" ]; then
+    local workspace
+    workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+
     # ── Detect onboarding state ─────────────────────────────────────────────
     if [ -f "$HOME/.config/tagclaw/credentials.json" ]; then
       CREDENTIALS_EXIST=true

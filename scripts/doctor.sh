@@ -111,13 +111,50 @@ fi
 
 echo ""
 
-# ── 4. Runtime files (from last agent cycle) ────────────────────────────────
+# ── 4. Runtime files (populated after first agent cycle) ────────────────────
 echo "4. Runtime files (populated after first agent cycle)"
 check_file_warn "$WORKSPACE/runtime/main/latest.json" "runtime/main/latest.json"
 check_file_warn "$WORKSPACE/runtime/bookmarker/latest.json" "runtime/bookmarker/latest.json"
 check_file_warn "$WORKSPACE/runtime/trader/latest.json" "runtime/trader/latest.json"
 check_file_warn "$WORKSPACE/runtime/shared/wiki-lint-status.json" "runtime/shared/wiki-lint-status.json"
 check_file_warn "$WORKSPACE/runtime/shared/community-heat.json" "runtime/shared/community-heat.json"
+
+echo ""
+
+# ── 4b. Dashboard-required artifacts (bootstrap vs missing) ─────────────────
+echo "4b. Dashboard-required artifacts"
+
+check_bootstrap_or_real() {
+  local filepath="$1" label="$2"
+  if [ ! -f "$filepath" ]; then
+    warn "$label — missing (run install.sh to bootstrap)"
+    return
+  fi
+  # Check if file has bootstrap marker
+  if python3 -c "import json; d=json.load(open('$filepath')); exit(0 if d.get('bootstrap') else 1)" 2>/dev/null; then
+    ok "$label (bootstrap — awaiting first cycle)"
+  else
+    ok "$label (populated)"
+  fi
+}
+
+DASHBOARD_ARTIFACTS=(
+  "shared/runtime-status.json"
+  "main/runtime-health.json"
+  "main/tas-latest.json"
+  "main/last-decision.json"
+  "main/social-intent.json"
+  "bookmarker/topic-brief.json"
+  "bookmarker/source-health.json"
+  "bookmarker/content-candidates.json"
+  "trader/wallet-snapshot.json"
+  "trader/tas-trade.json"
+  "trader/risk-status.json"
+)
+
+for art in "${DASHBOARD_ARTIFACTS[@]}"; do
+  check_bootstrap_or_real "$WORKSPACE/runtime/$art" "runtime/$art"
+done
 
 echo ""
 
