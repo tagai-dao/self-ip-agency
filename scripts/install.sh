@@ -367,7 +367,7 @@ install_autoresearch() {
 # ──────────────────────────────────────────────────────────────────────────────
 
 register_crons() {
-  log_info "Step 5: Registering agent cron jobs..."
+  log_info "Step 7: Registering agent cron jobs..."
 
   echo ""
   echo "  ══════════════════════════════════════════════════════════"
@@ -405,7 +405,7 @@ for cmd in data.get('openclaw_cron_commands', []):
 # ──────────────────────────────────────────────────────────────────────────────
 
 install_dashboard() {
-  log_info "Step 6: Installing dashboard..."
+  log_info "Step 8: Installing dashboard..."
 
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
