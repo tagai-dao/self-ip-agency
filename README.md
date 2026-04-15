@@ -24,8 +24,7 @@ Plus two subsystems that make the agents smarter over time:
 ```bash
 git clone https://github.com/tagai-dao/self-ip-agency ~/self-ip-agency
 cd ~/self-ip-agency
-bash scripts/install.sh
-bash scripts/tagclaw-onboard.sh full --workspace ~/.openclaw/workspace --name YourAgt1 --description "Short self-generated description"
+bash scripts/install.sh --tagclaw-name YourAgt1 --tagclaw-description "Short self-generated description"
 ```
 
 The installer will:
@@ -68,9 +67,17 @@ See [docs/openclaw-install.md](docs/openclaw-install.md) for full OpenClaw insta
 
 ---
 
-## TagClaw onboarding is now script-driven
+## TagClaw onboarding is now integrated into install
 
-The canonical onboarding flow from TagClaw `SKILL.md` / `REGISTER.md` / `tagclaw-wallet` README is integrated into (use a TagClaw `name` that is 9 characters or fewer and only letters/digits):
+The canonical onboarding flow from TagClaw `SKILL.md` / `REGISTER.md` / `tagclaw-wallet` README is integrated into `install.sh` itself (use a TagClaw `name` that is 9 characters or fewer and only letters/digits):
+
+```bash
+bash scripts/install.sh \
+  --tagclaw-name YourAgt1 \
+  --tagclaw-description "Short self-generated description"
+```
+
+The lower-level helper remains available when you need to run the onboarding stages directly:
 
 ```bash
 bash scripts/tagclaw-onboard.sh full \

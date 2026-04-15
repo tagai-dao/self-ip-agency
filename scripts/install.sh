@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install.sh — Self-IP Agency idempotent installer
-# Usage: bash scripts/install.sh [--dry-run]
+# Usage: bash scripts/install.sh [--dry-run] [--tagclaw-name NAME] [--tagclaw-description TEXT] [--tagclaw-poll] [--skip-tagclaw-onboarding]
 #
 # Installs the self-ip-agency into an existing OpenClaw workspace:
 #   1. load_tagclaw_skill    — install TagClaw skill pack + wallet repo scaffold
@@ -25,6 +25,11 @@ TAGCLAW_API="https://bsc-api.tagai.fun/tagclaw"
 DASHBOARD_PORT="${VIZ_PORT:-7890}"
 DRY_RUN=false
 DASHBOARD_STATUS="not_attempted"
+TAGCLAW_ONBOARD_NAME="${TAGCLAW_AGENT_NAME:-}"
+TAGCLAW_ONBOARD_DESCRIPTION="${TAGCLAW_AGENT_DESCRIPTION:-}"
+TAGCLAW_ONBOARD_POLL=false
+SKIP_TAGCLAW_ONBOARD=false
+TAGCLAW_ONBOARD_STATUS="not_requested"
 
 # ── Install state tracking (for machine-readable output contract) ─────────────
 TAGCLAW_JOINED=false
@@ -34,10 +39,16 @@ CRONS_REGISTERED=false  # always false — installer never auto-registers
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) DRY_RUN=true ;;
-    *) log_warn "Unknown argument: $arg" ;;
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=true; shift ;;
+    --tagclaw-name=*) TAGCLAW_ONBOARD_NAME="${1#--tagclaw-name=}"; shift ;;
+    --tagclaw-name) TAGCLAW_ONBOARD_NAME="${2:-}"; shift 2 ;;
+    --tagclaw-description=*) TAGCLAW_ONBOARD_DESCRIPTION="${1#--tagclaw-description=}"; shift ;;
+    --tagclaw-description) TAGCLAW_ONBOARD_DESCRIPTION="${2:-}"; shift 2 ;;
+    --tagclaw-poll) TAGCLAW_ONBOARD_POLL=true; shift ;;
+    --skip-tagclaw-onboarding) SKIP_TAGCLAW_ONBOARD=true; shift ;;
+    *) log_warn "Unknown argument: $1"; shift ;;
   esac
 done
 
@@ -131,6 +142,56 @@ has_tagclaw_credentials() {
   local api_key
   api_key="$(resolve_tagclaw_api_key)"
   [ -n "$api_key" ]
+}
+
+run_auto_tagclaw_onboarding() {
+  local workspace
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+
+  if [ "$SKIP_TAGCLAW_ONBOARD" = "true" ]; then
+    TAGCLAW_ONBOARD_STATUS="skipped"
+    log_info "TagClaw onboarding auto-run skipped by flag"
+    return 0
+  fi
+
+  if [ ! -f "$AGENCY_DIR/scripts/tagclaw-onboard.sh" ]; then
+    TAGCLAW_ONBOARD_STATUS="helper-missing"
+    log_warn "tagclaw-onboard.sh missing — cannot auto-run TagClaw onboarding"
+    return 0
+  fi
+
+  if has_tagclaw_credentials; then
+    TAGCLAW_ONBOARD_STATUS="already-configured"
+    log_ok "TagClaw credentials already detected — skipping auto registration"
+    return 0
+  fi
+
+  if [ -n "$TAGCLAW_ONBOARD_NAME" ] && [ -n "$TAGCLAW_ONBOARD_DESCRIPTION" ]; then
+    if [ "$DRY_RUN" = "true" ]; then
+      TAGCLAW_ONBOARD_STATUS="dry-run"
+      log_info "[DRY RUN] Would run TagClaw onboarding with name=$TAGCLAW_ONBOARD_NAME"
+      return 0
+    fi
+    log_info "Running integrated TagClaw onboarding via install.sh"
+    local -a cmd=(bash "$AGENCY_DIR/scripts/tagclaw-onboard.sh" full --workspace="$workspace" --name "$TAGCLAW_ONBOARD_NAME" --description "$TAGCLAW_ONBOARD_DESCRIPTION")
+    if [ "$TAGCLAW_ONBOARD_POLL" = "true" ]; then
+      cmd+=(--poll)
+    fi
+    "${cmd[@]}"
+    TAGCLAW_ONBOARD_STATUS="completed"
+    if has_tagclaw_credentials; then
+      TAGCLAW_JOINED=true
+    fi
+    return 0
+  fi
+
+  if [ -n "$TAGCLAW_ONBOARD_NAME" ] || [ -n "$TAGCLAW_ONBOARD_DESCRIPTION" ]; then
+    TAGCLAW_ONBOARD_STATUS="missing-args"
+    log_warn "To auto-run TagClaw onboarding during install, provide both --tagclaw-name and --tagclaw-description"
+  else
+    TAGCLAW_ONBOARD_STATUS="awaiting-args"
+    log_info "TagClaw onboarding args not provided — scaffold installed only"
+  fi
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -580,15 +641,16 @@ main() {
   echo ""
 
   load_tagclaw_skill
+  run_auto_tagclaw_onboarding
 
   # ── P1-A: Early warning when credentials / identity unresolved ──────────────
   if ! has_tagclaw_credentials; then
     echo ""
-    echo "  ╔════════════════════════════════════════════════════════════════════════╗"
-    echo "  ║  ACTION REQUIRED: Complete TagClaw onboarding for this workspace.    ║"
-    echo "  ║  Run: bash scripts/tagclaw-onboard.sh full --workspace \"$HOME/.openclaw/workspace\" ║"
-    echo "  ║  (add --name and --description to control registration values)       ║"
-    echo "  ╚════════════════════════════════════════════════════════════════════════╝"
+    echo "  ╔══════════════════════════════════════════════════════════════════════════════╗"
+    echo "  ║  ACTION REQUIRED: Complete TagClaw onboarding in the installer flow.       ║"
+    echo "  ║  Preferred: re-run install with --tagclaw-name and --tagclaw-description   ║"
+    echo "  ║  Fallback: use $HOME/.openclaw/workspace/scripts/tagclaw-onboard.sh full   ║"
+    echo "  ╚══════════════════════════════════════════════════════════════════════════════╝"
     echo ""
   fi
 
@@ -624,11 +686,16 @@ main() {
     local -a NEXT_STEPS=()
     local step_num=0
 
-    # Step 1: complete TagClaw onboarding in the workspace skills directory.
-    step_num=$((step_num + 1))
-    NEXT_STEPS+=("bash $workspace/scripts/tagclaw-onboard.sh full --workspace $workspace --name <9-char-agent-name> --description <short-agent-description>")
+    if [ "$CREDENTIALS_EXIST" != "true" ]; then
+      # Step 1: rerun installer with integrated TagClaw onboarding args, or call the helper directly.
+      step_num=$((step_num + 1))
+      NEXT_STEPS+=("Re-run install with onboarding args: bash scripts/install.sh --tagclaw-name <9-char-agent-name> --tagclaw-description <short-agent-description>")
 
-    # Step 2: after registration, post the verification tweet and poll until active.
+      step_num=$((step_num + 1))
+      NEXT_STEPS+=("Or run helper directly: bash $workspace/scripts/tagclaw-onboard.sh full --workspace $workspace --name <9-char-agent-name> --description <short-agent-description>")
+    fi
+
+    # After registration, post the verification tweet and poll until active.
     step_num=$((step_num + 1))
     NEXT_STEPS+=("After posting the verification tweet, run: bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace")
 
@@ -645,7 +712,7 @@ main() {
       NEXT_STEPS+=("Install dashboard deps: pip3 install -r dashboard/requirements.txt")
     fi
 
-    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Crons: manual."
+    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Crons: manual."
 
     # ── Write .installed marker atomically ──────────────────────────────────
     local installed_json
@@ -657,6 +724,7 @@ d = {
     'installed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'install_status': '$INSTALL_STATUS',
     'dashboard_status': '$DASHBOARD_STATUS',
+    'tagclaw_onboard_status': '$TAGCLAW_ONBOARD_STATUS',
     'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
     'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
     'schema': 'installed.v2'
@@ -703,6 +771,7 @@ print(json.dumps(d, indent=2))
       echo "| Component | Status |"
       echo "|-----------|--------|"
       echo "| Identity resolved | ${IDENTITY_RESOLVED} |"
+      echo "| TagClaw onboarding | ${TAGCLAW_ONBOARD_STATUS} |"
       echo "| TagClaw credentials ready | ${CREDENTIALS_EXIST} |"
       echo "| Dashboard | ${DASHBOARD_STATUS} |"
       echo "| Cron jobs | manual (not auto-registered) |"
@@ -783,6 +852,7 @@ print(json.dumps(d, indent=2))
     done
     echo "IDENTITY_RESOLVED=\"${IDENTITY_RESOLVED}\""
     echo "CREDENTIALS_EXIST=\"${CREDENTIALS_EXIST}\""
+    echo "TAGCLAW_ONBOARD_STATUS=\"${TAGCLAW_ONBOARD_STATUS}\""
     echo "DASHBOARD_STATUS=\"${DASHBOARD_STATUS}\""
     echo "CRONS_REGISTERED=\"false\""
     echo "INSTALL_SUMMARY=\"${INSTALL_SUMMARY}\""

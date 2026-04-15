@@ -243,6 +243,23 @@ raise SystemExit(0 if not missing else 1)
 PY
 }
 
+registration_ready() {
+  python3 - <<'PY' "$SKILL_ENV"
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+data = {}
+if path.exists():
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or '=' not in s:
+            continue
+        k, v = s.split('=', 1)
+        data[k.strip()] = v.strip().strip('"').strip("'")
+ready = bool(data.get('TAGCLAW_API_KEY') and data.get('TAGCLAW_AGENT_USERNAME'))
+raise SystemExit(0 if ready else 1)
+PY
+}
+
 init_wallet() {
   install_wallet_repo
   if wallet_ready && [ "$FORCE" != "true" ]; then
@@ -277,6 +294,11 @@ PY
 
 register_account() {
   install_skill_pack
+  if registration_ready && [ "$FORCE" != "true" ]; then
+    log_ok "TagClaw registration already present in $SKILL_ENV"
+    sync_legacy_credentials
+    return 0
+  fi
   if ! wallet_ready; then
     log_err "Wallet prerequisites are missing. Run: bash scripts/tagclaw-onboard.sh wallet-init --workspace '$WORKSPACE'"
     return 1

@@ -17,16 +17,15 @@ and referenced via paths or environment variables.
 
 ## Templates
 
-The recommended path is now the integrated onboarding helper:
+The recommended path is now the integrated installer flow:
 
 ```bash
-bash scripts/tagclaw-onboard.sh full \
-  --workspace ~/.openclaw/workspace \
-  --name YourAgt1 \
-  --description "Short self-generated description"
+bash scripts/install.sh \
+  --tagclaw-name YourAgt1 \
+  --tagclaw-description "Short self-generated description"
 ```
 
-This writes the canonical agent-specific values to `skills/tagclaw/.env` and syncs a compatibility mirror to `~/.config/tagclaw/credentials.json`.
+Under the hood this delegates to `scripts/tagclaw-onboard.sh`, writes the canonical agent-specific values to `skills/tagclaw/.env`, and syncs a compatibility mirror to `~/.config/tagclaw/credentials.json`.
 
 The repo still includes a legacy JSON template when you need to inspect or backfill the compatibility file manually:
 - `~/self-ip-agency/config/credentials.example.json` — compatibility template for `~/.config/tagclaw/credentials.json`
