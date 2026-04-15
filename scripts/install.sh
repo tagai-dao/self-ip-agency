@@ -645,12 +645,25 @@ main() {
 
   # ── P1-A: Early warning when credentials / identity unresolved ──────────────
   if ! has_tagclaw_credentials; then
+    local workspace_hint
+    workspace_hint="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
     echo ""
-    echo "  ╔══════════════════════════════════════════════════════════════════════════════╗"
-    echo "  ║  ACTION REQUIRED: Complete TagClaw onboarding in the installer flow.       ║"
-    echo "  ║  Preferred: re-run install with --tagclaw-name and --tagclaw-description   ║"
-    echo "  ║  Fallback: use $HOME/.openclaw/workspace/scripts/tagclaw-onboard.sh full   ║"
-    echo "  ╚══════════════════════════════════════════════════════════════════════════════╝"
+    case "$TAGCLAW_ONBOARD_STATUS" in
+      dry-run)
+        echo "  ╔══════════════════════════════════════════════════════════════════════════════╗"
+        echo "  ║  DRY RUN: install would execute integrated TagClaw onboarding next.        ║"
+        echo "  ║  Name: ${TAGCLAW_ONBOARD_NAME:-<missing>}                                       ║"
+        echo "  ║  Workspace: $workspace_hint"
+        echo "  ╚══════════════════════════════════════════════════════════════════════════════╝"
+        ;;
+      awaiting-args|missing-args|skipped|helper-missing)
+        echo "  ╔══════════════════════════════════════════════════════════════════════════════╗"
+        echo "  ║  ACTION REQUIRED: Complete TagClaw onboarding in the installer flow.       ║"
+        echo "  ║  Preferred: re-run install with --tagclaw-name and --tagclaw-description   ║"
+        echo "  ║  Fallback after install: use $workspace_hint/scripts/tagclaw-onboard.sh    ║"
+        echo "  ╚══════════════════════════════════════════════════════════════════════════════╝"
+        ;;
+    esac
     echo ""
   fi
 

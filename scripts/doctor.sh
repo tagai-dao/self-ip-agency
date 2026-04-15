@@ -316,7 +316,7 @@ if [ "$FAIL" -gt 0 ]; then
   fi
   exit 1
 elif [ "$WARN" -gt 0 ]; then
-  echo "  Warnings present — runtime files are populated after the first agent cycle."
+  echo "  Warnings present — runtime may still be awaiting first cycle, or TagClaw onboarding may be incomplete."
   if [ -f "$AGENCY_DIR/.install-next-steps.json" ]; then
     echo "  See also: .install-next-steps.json / .install-next-steps.md for follow-up steps"
   fi
