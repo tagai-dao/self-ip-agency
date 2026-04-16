@@ -200,6 +200,116 @@ done
 
 echo ""
 
+# ── 4c. Dashboard service (local + opt-in public) ───────────────────────────
+echo "4c. Dashboard service"
+
+DASHBOARD_SERVICE_SCRIPT="$AGENCY_DIR/scripts/dashboard-service.sh"
+DASHBOARD_SERVICE_STATE="$WORKSPACE/runtime/shared/dashboard-service.json"
+
+if [ -f "$DASHBOARD_SERVICE_SCRIPT" ]; then
+  ok "scripts/dashboard-service.sh present (canonical owner)"
+else
+  fail "scripts/dashboard-service.sh missing — install.sh cannot delegate dashboard lifecycle"
+fi
+
+# Check whether public exposure is opted in via agency.config.yaml
+PUBLIC_OPTED_IN="false"
+if [ -f "$AGENCY_DIR/config/agency.config.yaml" ]; then
+  PUBLIC_OPTED_IN="$(AGENCY_CONFIG="$AGENCY_DIR/config/agency.config.yaml" python3 -c "
+import os, sys
+try:
+    import yaml
+except ImportError:
+    print('false'); sys.exit(0)
+try:
+    with open(os.environ['AGENCY_CONFIG']) as f:
+        d = yaml.safe_load(f) or {}
+    enabled = bool((d.get('dashboard') or {}).get('public', {}).get('enabled', False))
+    print('true' if enabled else 'false')
+except Exception:
+    print('false')
+" 2>/dev/null || echo "false")"
+  if [ -z "$PUBLIC_OPTED_IN" ]; then PUBLIC_OPTED_IN="false"; fi
+fi
+
+if [ ! -f "$DASHBOARD_SERVICE_STATE" ]; then
+  if [ "$PUBLIC_OPTED_IN" = "true" ]; then
+    warn "runtime/shared/dashboard-service.json missing — run: bash scripts/dashboard-service.sh start-local"
+  else
+    warn "runtime/shared/dashboard-service.json missing — run: bash scripts/dashboard-service.sh status"
+  fi
+else
+  # Parse state file
+  DASH_LOCAL_STATUS="$(python3 -c "import json; d=json.load(open('$DASHBOARD_SERVICE_STATE')); print((d.get('local') or {}).get('status',''))" 2>/dev/null || echo "")"
+  DASH_LOCAL_PID="$(python3 -c "import json; d=json.load(open('$DASHBOARD_SERVICE_STATE')); print((d.get('local') or {}).get('pid','') or '')" 2>/dev/null || echo "")"
+  DASH_PUBLIC_STATUS="$(python3 -c "import json; d=json.load(open('$DASHBOARD_SERVICE_STATE')); print((d.get('public') or {}).get('status',''))" 2>/dev/null || echo "")"
+  DASH_PUBLIC_URL="$(python3 -c "import json; d=json.load(open('$DASHBOARD_SERVICE_STATE')); print((d.get('public') or {}).get('url','') or '')" 2>/dev/null || echo "")"
+  DASH_PUBLIC_PID="$(python3 -c "import json; d=json.load(open('$DASHBOARD_SERVICE_STATE')); print((d.get('public') or {}).get('pid','') or '')" 2>/dev/null || echo "")"
+
+  case "$DASH_LOCAL_STATUS" in
+    running)
+      if [ -n "$DASH_LOCAL_PID" ] && kill -0 "$DASH_LOCAL_PID" 2>/dev/null; then
+        ok "local dashboard running (pid $DASH_LOCAL_PID)"
+      else
+        warn "local dashboard state=running but PID $DASH_LOCAL_PID is not alive — run: bash scripts/dashboard-service.sh start-local"
+      fi
+      ;;
+    stopped|"")
+      warn "local dashboard stopped — run: bash scripts/dashboard-service.sh start-local"
+      ;;
+    failed|started_unverified|deps_missing)
+      fail "local dashboard status=$DASH_LOCAL_STATUS — check logs/dashboard.log"
+      ;;
+    *)
+      warn "local dashboard status=$DASH_LOCAL_STATUS"
+      ;;
+  esac
+
+  if [ "$PUBLIC_OPTED_IN" = "true" ]; then
+    case "$DASH_PUBLIC_STATUS" in
+      running)
+        if [ -n "$DASH_PUBLIC_PID" ] && kill -0 "$DASH_PUBLIC_PID" 2>/dev/null; then
+          if [ -n "$DASH_PUBLIC_URL" ]; then
+            ok "public dashboard tunnel running: $DASH_PUBLIC_URL"
+          else
+            warn "public dashboard tunnel running but URL not captured — check logs/dashboard-tunnel.log"
+          fi
+        else
+          fail "public dashboard state=running but PID $DASH_PUBLIC_PID is not alive — run: bash scripts/dashboard-service.sh start-public"
+        fi
+        ;;
+      failed)
+        fail "public dashboard tunnel failed — check logs/dashboard-tunnel.log (is cloudflared installed? brew install cloudflared)"
+        ;;
+      disabled|stopped|"")
+        warn "public dashboard opted-in but not running — run: bash scripts/dashboard-service.sh start-public"
+        ;;
+      *)
+        warn "public dashboard status=$DASH_PUBLIC_STATUS"
+        ;;
+    esac
+
+    if ! command -v cloudflared &>/dev/null; then
+      fail "cloudflared not found in PATH — required for public dashboard (brew install cloudflared)"
+    fi
+  else
+    # Public not opted in — verify state file reflects that
+    case "$DASH_PUBLIC_STATUS" in
+      disabled|"")
+        ok "public dashboard disabled (opt-in via config/agency.config.yaml dashboard.public.enabled)"
+        ;;
+      running)
+        warn "public dashboard running but config has dashboard.public.enabled=false — state drift"
+        ;;
+      *)
+        ok "public dashboard not active (status=$DASH_PUBLIC_STATUS)"
+        ;;
+    esac
+  fi
+fi
+
+echo ""
+
 # ── 5. Wiki system ──────────────────────────────────────────────────────────
 echo "5. Wiki system"
 check_dir "$WORKSPACE/wiki/concepts" "wiki/concepts/ directory"
