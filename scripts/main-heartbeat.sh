@@ -97,11 +97,22 @@ validate_environment() {
     identity_file=""
   fi
 
-  # 4. Check credentials
-  if [ -f "$HOME/.config/tagclaw/credentials.json" ]; then
-    log_ok "Credentials file exists"
+  # 4. Check TagClaw skill credentials
+  if [ -f "$WORKSPACE/skills/tagclaw/.env" ] && python3 -c "
+import pathlib
+path = pathlib.Path('$WORKSPACE/skills/tagclaw/.env')
+for line in path.read_text().splitlines():
+    s = line.strip()
+    if not s or s.startswith('#') or '=' not in s:
+        continue
+    k, v = s.split('=', 1)
+    if k.strip() == 'TAGCLAW_API_KEY' and v.strip().strip('\"').strip(\"'\"):
+        raise SystemExit(0)
+raise SystemExit(1)
+" 2>/dev/null; then
+    log_ok "skills/tagclaw/.env exists and contains TAGCLAW_API_KEY"
   else
-    log_warn "Credentials not configured — see docs/deployment-guide.md"
+    log_warn "TagClaw skill credentials not configured — see docs/deployment-guide.md"
   fi
 
   # 5. Check heartbeat template

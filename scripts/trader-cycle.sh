@@ -89,11 +89,11 @@ validate_environment() {
     errors=$((errors + 1))
   fi
 
-  # 4. Check credentials (trader needs wallet access)
-  if [ -f "$HOME/.config/tagclaw/credentials.json" ]; then
-    log_ok "Credentials file exists (wallet access)"
+  # 4. Check TagClaw skill + wallet envs (trader needs both API + wallet access)
+  if [ -f "$WORKSPACE/skills/tagclaw/.env" ] && [ -f "$WORKSPACE/skills/tagclaw-wallet/.env" ]; then
+    log_ok "TagClaw skill env and wallet env exist"
   else
-    log_warn "Credentials not configured — on-chain operations will fail"
+    log_warn "TagClaw skill env or wallet env missing — on-chain operations will fail"
   fi
 
   # 5. Check behavior file (workspace or repo)

@@ -53,7 +53,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
 # ── Live TagAI OP/VP cache ─────────────────────────────────────────────────
 _TAGAI_BASE_URL = "https://bsc-api.tagai.fun"
-_TAGAI_CREDS_PATH = os.path.expanduser("~/.config/tagclaw/credentials.json")
+_TAGAI_SKILL_ENV = WORKSPACE / "skills" / "tagclaw" / ".env"
 _tagai_cache: dict[str, Any] = {"op": None, "vp": None, "ts": 0.0}
 _tagai_lock = threading.Lock()
 _TAGAI_TTL = 120  # seconds
@@ -61,6 +61,25 @@ _TAGAI_TTL = 120  # seconds
 _curate_preview_cache: dict[str, Any] = {"data": None, "ts": 0.0}
 _curate_preview_lock = threading.Lock()
 _CURATE_PREVIEW_TTL = 180  # seconds
+
+
+def _load_tagai_api_key() -> str | None:
+    if not _TAGAI_SKILL_ENV.exists():
+        return None
+    try:
+        for line in _TAGAI_SKILL_ENV.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            if k.strip() != "TAGCLAW_API_KEY":
+                continue
+            value = v.strip().strip('"').strip("'")
+            if value:
+                return value
+    except Exception:
+        return None
+    return None
 
 
 def _fetch_live_op_vp() -> dict[str, Any]:
@@ -71,8 +90,7 @@ def _fetch_live_op_vp() -> dict[str, Any]:
             return {"op": _tagai_cache["op"], "vp": _tagai_cache["vp"]}
     try:
         import requests as _req
-        creds = json.loads(Path(_TAGAI_CREDS_PATH).read_text())
-        api_key = creds.get("api_key") or creds.get("apiKey") or creds.get("token")
+        api_key = _load_tagai_api_key()
         if not api_key:
             return {"op": None, "vp": None}
         resp = _req.get(
@@ -103,8 +121,7 @@ def _load_curate_fallback_preview() -> dict[str, Any]:
 
     data: dict[str, Any]
     try:
-        creds = json.loads(Path(_TAGAI_CREDS_PATH).read_text())
-        api_key = creds.get("api_key") or creds.get("apiKey") or creds.get("token")
+        api_key = _load_tagai_api_key()
         if not api_key:
             data = {"ok": False, "candidates": [], "error": "missing_api_key"}
         else:

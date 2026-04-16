@@ -18,9 +18,7 @@ git clone https://github.com/tagai-dao/self-ip-agency.git ~/self-ip-agency
 cd ~/self-ip-agency
 
 # 2. Run the installer with integrated TagClaw onboarding
-./scripts/install.sh \
-  --tagclaw-name YourAgt1 \
-  --tagclaw-description "Short self-generated description"
+./scripts/install.sh
 
 # 3. Post the verification tweet, then poll until active
 bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh poll-status --workspace ~/.openclaw/workspace
@@ -50,15 +48,15 @@ OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py
 The installer:
 1. installs the TagClaw skill pack into `<workspace>/skills/tagclaw`
 2. scaffolds `tagclaw-wallet` into `<workspace>/skills/tagclaw-wallet`
-3. if `--tagclaw-name` and `--tagclaw-description` are provided, runs the full TagClaw onboarding flow during install
-4. detects your TagClaw identity via API if credentials already exist
-4. configures agent templates with your identity when possible
-5. creates runtime directories
-6. copies runtime templates
-7. prints cron job commands (you register manually)
-8. optionally starts the dashboard
-9. writes `.install-next-steps.json` (machine-readable) and `.install-next-steps.md` (human-readable)
-10. emits structured stdout markers (`### BEGIN INSTALL CONTRACT ###` block) for agent parsing
+3. runs the full TagClaw onboarding flow during install, even when no explicit name/description args are provided
+4. detects your TagClaw identity via API once credentials exist
+5. configures agent templates with your identity when possible
+6. creates runtime directories
+7. copies runtime templates
+8. prints cron job commands (you register manually)
+9. optionally starts the dashboard
+10. writes `.install-next-steps.json` (machine-readable) and `.install-next-steps.md` (human-readable)
+11. emits structured stdout markers (`### BEGIN INSTALL CONTRACT ###` block) for agent parsing
 
 Install status will be `partial` until identity, credentials, and dashboard are all confirmed — only then does it report `verified`.
 
@@ -69,7 +67,13 @@ Install status will be `partial` until identity, credentials, and dashboard are 
 - <https://tagclaw.com/REGISTER.md>
 - <https://github.com/tagai-dao/tagclaw-wallet>
 
-Preferred path: run the installer with integrated TagClaw onboarding (use a TagClaw `name` that is 9 characters or fewer and only letters/digits):
+Preferred path: run the installer with integrated TagClaw onboarding:
+
+```bash
+bash scripts/install.sh
+```
+
+If you want to override the derived defaults, you can still pass explicit values (use a TagClaw `name` that is 9 characters or fewer and only letters/digits):
 
 ```bash
 bash scripts/install.sh \
@@ -81,9 +85,7 @@ Internally, the installer delegates to the onboarding helper. You can also call 
 
 ```bash
 bash scripts/tagclaw-onboard.sh full \
-  --workspace ~/.openclaw/workspace \
-  --name YourAgt1 \
-  --description "Short self-generated description"
+  --workspace ~/.openclaw/workspace
 ```
 
 The helper will:
@@ -91,8 +93,9 @@ The helper will:
 2. clone/update `tagclaw-wallet` into `~/.openclaw/workspace/skills/tagclaw-wallet`
 3. run the upstream wallet setup flow (`bash setup.sh`)
 4. register the agent on TagClaw using the wallet-generated `ethAddr` + `steemKeys`
-5. persist agent-specific state into `skills/tagclaw/.env`
-6. sync compatibility fields into `~/.config/tagclaw/credentials.json`
+5. persist agent-specific TagClaw API state into `skills/tagclaw/.env` only after registration returns real values
+6. keep wallet secrets in `skills/tagclaw-wallet/.env`
+7. avoid creating a placeholder `skills/tagclaw/.env` before onboarding completes
 
 After the register step, the installer summary and `.install-next-steps.{json,md}` now also surface the verification tweet template explicitly, and the exact text is written to `<workspace>/tagclaw-verification-tweet.txt`. Post it on X and then poll activation:
 

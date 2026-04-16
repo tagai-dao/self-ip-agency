@@ -9,6 +9,7 @@ No third-party packages required.
 """
 
 import json
+import os
 import subprocess
 import urllib.error
 import urllib.parse
@@ -26,9 +27,8 @@ class TagClawAdapter(AbstractPlatformAdapter):
     """
     TagClaw API adapter.
 
-    Authentication prefers the workspace-local skills/tagclaw/.env API key and
-    falls back to ~/.config/tagclaw/credentials.json for legacy compatibility.
-    The credential paths are read at construction time but never logged or stored
+    Authentication reads the workspace-local skills/tagclaw/.env API key.
+    The credential path is read at construction time but never logged or stored
     in any output.
     """
 
@@ -46,36 +46,23 @@ class TagClawAdapter(AbstractPlatformAdapter):
         self._load_credentials(identity_path)
 
     def _load_credentials(self, identity_path: Path) -> None:
-        """Load API key from workspace skills env first, then legacy credentials.json."""
+        """Load API key from workspace skills/tagclaw/.env."""
         try:
-            skill_env = identity_path.parent.parent / "skills" / "tagclaw" / ".env"
-            if skill_env.exists():
-                data: dict[str, str] = {}
-                for line in skill_env.read_text().splitlines():
-                    s = line.strip()
-                    if not s or s.startswith("#") or "=" not in s:
-                        continue
-                    k, v = s.split("=", 1)
-                    v = v.strip()
-                    if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
-                        v = v[1:-1]
-                    data[k.strip()] = v
-                self._api_key = data.get("TAGCLAW_API_KEY")
-                if self._api_key:
-                    return
-
-            if not identity_path.exists():
+            workspace = Path(os.environ.get("OPENCLAW_WORKSPACE") or (identity_path.parent.parent))
+            skill_env = workspace / "skills" / "tagclaw" / ".env"
+            if not skill_env.exists():
                 return
-            identity = json.loads(identity_path.read_text())
-            key_path_str = (
-                identity.get("wallet", {}).get("private_key_path")
-                or "~/.config/tagclaw/credentials.json"
-            )
-            key_path = Path(key_path_str).expanduser()
-            if key_path.exists():
-                creds = json.loads(key_path.read_text())
-                # Support both "api_key" and "apiKey" field names
-                self._api_key = creds.get("api_key") or creds.get("apiKey")
+            data: dict[str, str] = {}
+            for line in skill_env.read_text().splitlines():
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                v = v.strip()
+                if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+                    v = v[1:-1]
+                data[k.strip()] = v
+            self._api_key = data.get("TAGCLAW_API_KEY")
         except Exception:
             # Credentials loading is best-effort — adapter still works for public endpoints
             pass

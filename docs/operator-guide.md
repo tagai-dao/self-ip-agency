@@ -75,8 +75,7 @@ Critical data to back up:
 - `memory/` — Strategy logs (append-only)
 - `config/` — Configuration
 - `<workspace>/skills/tagclaw/.env` — canonical TagClaw API state
-- `<workspace>/skills/tagclaw-wallet/.env` — wallet bootstrap fields
-- `~/.config/tagclaw/credentials.json` — legacy compatibility mirror (separately, encrypted)
+- `<workspace>/skills/tagclaw-wallet/.env` — wallet bootstrap fields and wallet secret material
 
 ## Batch Provisioning Runbook
 

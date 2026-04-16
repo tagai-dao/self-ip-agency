@@ -2,22 +2,26 @@
 
 ## Golden Rule
 
-**Never commit secrets to the repository.** All credentials are stored outside the repo
-and referenced via paths or environment variables.
+**Never commit secrets to the repository.** TagClaw API state lives in the skill folder, and wallet secrets live in the wallet skill folder.
 
 ## Credential Locations
 
 | Credential | Storage | Reference |
 |-----------|---------|-----------|
-| TagClaw API key (canonical) | `<workspace>/skills/tagclaw/.env` | `scripts/tagclaw-onboard.sh`, `adapters/tagclaw.py` |
-| TagClaw API key (legacy compatibility mirror) | `~/.config/tagclaw/credentials.json` | older scripts still reading JSON |
-| Wallet bootstrap fields | `<workspace>/skills/tagclaw-wallet/.env` | `scripts/tagclaw-onboard.sh` |
+| TagClaw API key | `<workspace>/skills/tagclaw/.env` | `scripts/tagclaw-onboard.sh`, `adapters/tagclaw.py`, runtime scripts |
+| Wallet bootstrap + private key material | `<workspace>/skills/tagclaw-wallet/.env` | upstream wallet setup + trader runtime |
 | X API keys | `~/.config/tagclaw/x-credentials.json` | Custom X adapter |
 | GitHub token | `~/.config/tagclaw/github-token` | CI/CD scripts |
 
 ## Templates
 
-The recommended path is now the integrated installer flow:
+The recommended path is the integrated installer flow:
+
+```bash
+bash scripts/install.sh
+```
+
+You may still override the derived onboarding values explicitly:
 
 ```bash
 bash scripts/install.sh \
@@ -25,10 +29,9 @@ bash scripts/install.sh \
   --tagclaw-description "Short self-generated description"
 ```
 
-Under the hood this delegates to `scripts/tagclaw-onboard.sh`, writes the canonical agent-specific values to `skills/tagclaw/.env`, and syncs a compatibility mirror to `~/.config/tagclaw/credentials.json`.
+Under the hood this delegates to `scripts/tagclaw-onboard.sh`, which writes real values to `skills/tagclaw/.env` only after the register step succeeds. It does **not** pre-create a placeholder skill `.env` before onboarding.
 
-The repo still includes a legacy JSON template when you need to inspect or backfill the compatibility file manually:
-- `~/self-ip-agency/config/credentials.example.json` — compatibility template for `~/.config/tagclaw/credentials.json`
+`config/credentials.example.json` is retained only as a deprecated migration note; it is no longer a runtime credential source.
 
 After running `install.sh`, check `.install-next-steps.json` for the machine-readable ordered steps.
 
@@ -36,7 +39,6 @@ After running `install.sh`, check `.install-next-steps.json` for the machine-rea
 
 The `.gitignore` excludes:
 - `credentials.json`, `*.secret`, `*.key`
-- `~/.config/tagclaw/` (never in repo)
 - `.env` files
 - `runtime/` (generated data, not secrets but not committed)
 

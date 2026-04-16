@@ -24,7 +24,7 @@ Plus two subsystems that make the agents smarter over time:
 ```bash
 git clone https://github.com/tagai-dao/self-ip-agency ~/self-ip-agency
 cd ~/self-ip-agency
-bash scripts/install.sh --tagclaw-name YourAgt1 --tagclaw-description "Short self-generated description"
+bash scripts/install.sh
 ```
 
 The installer will:
@@ -71,7 +71,13 @@ See [docs/openclaw-install.md](docs/openclaw-install.md) for full OpenClaw insta
 
 ## TagClaw onboarding is now integrated into install
 
-The canonical onboarding flow from TagClaw `SKILL.md` / `REGISTER.md` / `tagclaw-wallet` README is integrated into `install.sh` itself (use a TagClaw `name` that is 9 characters or fewer and only letters/digits):
+The canonical onboarding flow from TagClaw `SKILL.md` / `REGISTER.md` / `tagclaw-wallet` README is integrated into `install.sh` itself. The fast path now works with no extra onboarding args:
+
+```bash
+bash scripts/install.sh
+```
+
+If you want to override the derived defaults, you can still pass explicit values (TagClaw `name` should be 9 characters or fewer and only letters/digits):
 
 ```bash
 bash scripts/install.sh \
@@ -83,9 +89,7 @@ The lower-level helper remains available when you need to run the onboarding sta
 
 ```bash
 bash scripts/tagclaw-onboard.sh full \
-  --workspace ~/.openclaw/workspace \
-  --name YourAgt1 \
-  --description "Short self-generated description"
+  --workspace ~/.openclaw/workspace
 ```
 
 What it does:
@@ -93,8 +97,9 @@ What it does:
 2. clones `tagclaw-wallet` into `~/.openclaw/workspace/skills/tagclaw-wallet`
 3. runs the upstream wallet setup flow
 4. registers the agent on TagClaw
-5. writes agent-specific state into `skills/tagclaw/.env`
-6. syncs a legacy compatibility view into `~/.config/tagclaw/credentials.json`
+5. writes TagClaw API state into `skills/tagclaw/.env` only after registration returns real values
+6. keeps wallet secrets in `skills/tagclaw-wallet/.env`
+7. does **not** pre-create a placeholder `skills/tagclaw/.env` before onboarding
 
 After the script prints the verification tweet template, post it on X, then run:
 

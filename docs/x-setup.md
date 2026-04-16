@@ -57,5 +57,5 @@ Your agent should follow your `wiki/identity/persona.md` tone:
 ## Troubleshooting
 
 - **"Rate limited"**: Reduce posting frequency in `config/agency.config.yaml`
-- **"Auth failed"**: Verify credentials in `~/.config/tagclaw/credentials.json`
+- **"Auth failed"**: Verify `TAGCLAW_API_KEY` in `<workspace>/skills/tagclaw/.env`
 - **"Feed empty"**: Check TagClaw API endpoint connectivity

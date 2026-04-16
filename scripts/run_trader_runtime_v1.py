@@ -36,7 +36,6 @@ RUNTIME_SHARED = WORKSPACE / "runtime" / "shared"
 RAW_TRADER = WORKSPACE / "raw" / "trader"
 CONFIG_DIR = WORKSPACE / "config"
 BEHAVIOR_FILE = WORKSPACE / "agents" / "trader.md"
-CREDENTIALS_PATH = Path.home() / ".config" / "tagclaw" / "credentials.json"
 
 # TAS_trade normalization baselines (mirror dashboard display expectations)
 PORTFOLIO_USD_BASELINE = 50.0
@@ -73,7 +72,7 @@ def now_iso() -> str:
 # ---------------------------------------------------------------------------
 
 def resolve_api_key() -> str:
-    """Resolve TagClaw API key from skill env or legacy credentials."""
+    """Resolve TagClaw API key from skills/tagclaw/.env."""
     skill_env = WORKSPACE / "skills" / "tagclaw" / ".env"
     if skill_env.exists():
         for line in skill_env.read_text().splitlines():
@@ -85,13 +84,6 @@ def resolve_api_key() -> str:
             v = v.strip().strip("\"'")
             if k == "TAGCLAW_API_KEY" and v:
                 return v
-
-    if CREDENTIALS_PATH.exists():
-        try:
-            creds = json.loads(CREDENTIALS_PATH.read_text())
-            return creds.get("apiKey") or creds.get("api_key") or creds.get("API_KEY") or ""
-        except Exception:
-            pass
     return ""
 
 

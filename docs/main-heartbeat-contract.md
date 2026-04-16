@@ -43,7 +43,7 @@ The heartbeat reads from these files (all optional — graceful degradation on m
 | `.installed` | Install status marker | Yes (self-check fails without it) |
 | `config/agency-identity.json` | Agent identity | Warn if missing |
 | `<workspace>/skills/tagclaw/.env` | Canonical TagClaw API credentials | Warn if missing |
-| `~/.config/tagclaw/credentials.json` | Legacy compatibility mirror | Warn if missing |
+| `<workspace>/skills/tagclaw-wallet/.env` | Wallet bootstrap / trader secret source | Warn if missing for trader paths |
 | `runtime/main/heartbeat.json` | Previous heartbeat state | No (created on first run) |
 | `runtime/shared/tas_snapshot.json` | TAS scores | No |
 | `runtime/shared/identity-strategy.json` | Strategy state | No |

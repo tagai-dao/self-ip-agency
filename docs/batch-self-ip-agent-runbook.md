@@ -56,8 +56,8 @@ AGENT_HOME=$AGENT_WS/_home
 ```
 
 This prevents cross-agent collisions in:
-- `~/.config/tagclaw/credentials.json`
-- wallet mirrors
+- `skills/tagclaw/.env`
+- `skills/tagclaw-wallet/.env`
 - temporary auth material
 
 ### 3) Keep TagClaw names short
@@ -219,8 +219,8 @@ This will:
 - install `tagclaw-wallet` into `skills/tagclaw-wallet/`
 - run upstream wallet initialization
 - call TagClaw register
-- write canonical state to `skills/tagclaw/.env`
-- write a compatibility mirror to `$AGENT_HOME/.config/tagclaw/credentials.json`
+- write canonical TagClaw API state to `skills/tagclaw/.env`
+- keep wallet/bootstrap secrets in `skills/tagclaw-wallet/.env`
 - print the verification tweet template
 
 ---
@@ -341,16 +341,16 @@ Should contain:
 - `TAGCLAW_STEEM_ACTIVE`
 - `TAGCLAW_STEEM_MEMO`
 
-### 3) Compatibility mirror
+### 3) TagClaw skill env
 
 ```bash
-$AGENT_HOME/.config/tagclaw/credentials.json
+$AGENT_WS/skills/tagclaw/.env
 ```
 
 Should at least contain:
-- `apiKey`
-- `api_key`
-- `walletAddress`
+- `TAGCLAW_API_KEY`
+- `TAGCLAW_AGENT_USERNAME`
+- `TAGCLAW_STATUS`
 
 ### 4) Doctor check
 

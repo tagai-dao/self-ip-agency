@@ -15,8 +15,8 @@
 # - https://github.com/tagai-dao/tagclaw-wallet/blob/main/README.md
 #
 # It keeps the agent-specific source of truth in <workspace>/skills/tagclaw/.env and
-# syncs a legacy compatibility view into ~/.config/tagclaw/credentials.json so existing
-# self-ip-agency scripts continue to work during the transition.
+# the wallet-generated secrets in <workspace>/skills/tagclaw-wallet/.env, matching the
+# upstream TagClaw skill storage rules.
 
 set -euo pipefail
 
@@ -60,7 +60,6 @@ SKILL_DIR="$WORKSPACE/skills/tagclaw"
 SKILL_ENV="$SKILL_DIR/.env"
 WALLET_DIR="$WORKSPACE/skills/tagclaw-wallet"
 WALLET_ENV="$WALLET_DIR/.env"
-LEGACY_CREDS="$HOME/.config/tagclaw/credentials.json"
 
 usage() {
   cat <<EOF
@@ -75,7 +74,7 @@ Commands:
   full           Run skills + wallet-install + wallet-init + register (+ optional poll)
 
 Examples:
-  bash scripts/tagclaw-onboard.sh full --workspace ~/.openclaw/workspace --name MyAgent1 --description "Autonomous IP agent on TagClaw" --poll
+  bash scripts/tagclaw-onboard.sh full --workspace ~/.openclaw/workspace --poll
   bash scripts/tagclaw-onboard.sh register --workspace ~/.openclaw/workspace --name MyAgent1 --description "Autonomous IP agent on TagClaw"
 EOF
 }
@@ -101,14 +100,13 @@ print(json.dumps(out))
 PY
 }
 
-ensure_skill_env() {
+ensure_skill_dir() {
   mkdir -p "$SKILL_DIR"
-  touch "$SKILL_ENV"
 }
 
 write_skill_env() {
   local updates_json="$1"
-  ensure_skill_env
+  ensure_skill_dir
   python3 - <<'PY' "$SKILL_ENV" "$updates_json"
 import json, pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
@@ -141,53 +139,6 @@ path.write_text(text)
 PY
 }
 
-sync_legacy_credentials() {
-  mkdir -p "$(dirname "$LEGACY_CREDS")"
-  python3 - <<'PY' "$SKILL_ENV" "$WALLET_ENV" "$LEGACY_CREDS"
-import json, pathlib, sys
-skill_env = pathlib.Path(sys.argv[1])
-wallet_env = pathlib.Path(sys.argv[2])
-out_path = pathlib.Path(sys.argv[3])
-
-def parse_env(path):
-    data = {}
-    if path.exists():
-        for line in path.read_text().splitlines():
-            s = line.strip()
-            if not s or s.startswith('#') or '=' not in s:
-                continue
-            k, v = s.split('=', 1)
-            k = k.strip(); v = v.strip()
-            if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
-                v = v[1:-1]
-            data[k] = v
-    return data
-
-skill = parse_env(skill_env)
-wallet = parse_env(wallet_env)
-try:
-    existing = json.loads(out_path.read_text()) if out_path.exists() else {}
-except Exception:
-    existing = {}
-api_key = skill.get('TAGCLAW_API_KEY') or existing.get('apiKey') or existing.get('api_key')
-wallet_address = skill.get('TAGCLAW_ETH_ADDR') or wallet.get('TAGCLAW_ETH_ADDR') or existing.get('walletAddress')
-private_key = wallet.get('TAGCLAW_EVM_PRIVATE_KEY') or wallet.get('PRIVATE_KEY') or existing.get('privateKey') or existing.get('private_key')
-out = dict(existing)
-if api_key:
-    out['apiKey'] = api_key
-    out['api_key'] = api_key
-if wallet_address:
-    out['walletAddress'] = wallet_address
-if private_key:
-    out['privateKey'] = private_key
-    out['private_key'] = private_key
-out['tagclawSkillEnv'] = str(skill_env)
-out['tagclawWalletDir'] = str(wallet_env.parent)
-out_path.write_text(json.dumps(out, indent=2) + '\n')
-PY
-  log_ok "Synced legacy credentials view: $LEGACY_CREDS"
-}
-
 install_skill_pack() {
   log_info "Installing TagClaw skill pack into $SKILL_DIR"
   mkdir -p "$SKILL_DIR"
@@ -202,7 +153,6 @@ install_skill_pack() {
 .env
 .env.*
 EOF
-  ensure_skill_env
 }
 
 install_wallet_repo() {
@@ -296,7 +246,6 @@ register_account() {
   install_skill_pack
   if registration_ready && [ "$FORCE" != "true" ]; then
     log_ok "TagClaw registration already present in $SKILL_ENV"
-    sync_legacy_credentials
     return 0
   fi
   if ! wallet_ready; then
@@ -413,7 +362,6 @@ PY
   rm -f "$body_file"
 
   write_skill_env "$parsed_json"
-  sync_legacy_credentials
   log_ok "Persisted TagClaw registration state to $SKILL_ENV"
 
   python3 - <<'PY' "$parsed_json" "$WORKSPACE"
@@ -434,7 +382,10 @@ PY
 
 poll_status() {
   install_skill_pack
-  ensure_skill_env
+  if [ ! -f "$SKILL_ENV" ]; then
+    log_err "TagClaw skill env not found at $SKILL_ENV. Run the register step first."
+    return 1
+  fi
   local skill_json api_key current_status
   skill_json="$(parse_dotenv_json "$SKILL_ENV")"
   api_key="$(python3 - <<'PY' "$skill_json"
@@ -518,7 +469,6 @@ print(json.dumps({
 }))
 PY
 )"
-      sync_legacy_credentials
     fi
 
     if [ "$new_status" = "active" ]; then

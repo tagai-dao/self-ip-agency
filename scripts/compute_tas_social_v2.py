@@ -33,7 +33,7 @@ from typing import Any
 ROOT = Path(os.environ.get("OPENCLAW_WORKSPACE") or str(Path.home() / ".openclaw" / "workspace"))
 MEMORY = ROOT / 'memory'
 RUNTIME = ROOT / 'runtime'
-CREDENTIALS = Path.home() / '.config' / 'tagclaw' / 'credentials.json'
+TAGCLAW_SKILL_ENV = ROOT / 'skills' / 'tagclaw' / '.env'
 BASE_URL = 'https://bsc-api.tagai.fun/tagclaw'
 CURATION_BASE_URL = 'https://bsc-api.tagai.fun/curation'
 
@@ -89,16 +89,19 @@ def atomic_write_json(path: Path, obj: Any) -> None:
 
 
 def load_api_key() -> str:
-    data = read_json(CREDENTIALS)
-    if not data:
-        raise RuntimeError('missing credentials')
-    for k in ('api_key', 'apiKey', 'API_KEY'):
-        if data.get(k):
-            return str(data[k]).strip()
-    for v in data.values():
-        if isinstance(v, str) and len(v) > 10:
-            return v.strip()
-    raise RuntimeError('missing api_key in credentials')
+    if not TAGCLAW_SKILL_ENV.exists():
+        raise RuntimeError('missing TagClaw skill env')
+    for line in TAGCLAW_SKILL_ENV.read_text(encoding='utf-8').splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or '=' not in s:
+            continue
+        k, v = s.split('=', 1)
+        if k.strip() != 'TAGCLAW_API_KEY':
+            continue
+        value = v.strip().strip('"').strip("'")
+        if value:
+            return value
+    raise RuntimeError('missing TAGCLAW_API_KEY in skills/tagclaw/.env')
 
 
 def api_get(api_key: str, endpoint: str, params: dict | None = None,

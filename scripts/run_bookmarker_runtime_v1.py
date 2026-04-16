@@ -76,7 +76,7 @@ def now_iso() -> str:
 # ---------------------------------------------------------------------------
 
 def resolve_api_key() -> str:
-    """Resolve TagClaw API key from skill env or legacy credentials."""
+    """Resolve TagClaw API key from skills/tagclaw/.env."""
     skill_env = WORKSPACE / "skills" / "tagclaw" / ".env"
     if skill_env.exists():
         for line in skill_env.read_text().splitlines():
@@ -88,14 +88,6 @@ def resolve_api_key() -> str:
             v = v.strip().strip("\"'")
             if k == "TAGCLAW_API_KEY" and v:
                 return v
-
-    legacy = Path.home() / ".config" / "tagclaw" / "credentials.json"
-    if legacy.exists():
-        try:
-            creds = json.loads(legacy.read_text())
-            return creds.get("apiKey") or creds.get("api_key") or creds.get("API_KEY") or ""
-        except Exception:
-            pass
     return ""
 
 

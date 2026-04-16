@@ -14,7 +14,7 @@
   "wallet": {
     "address": null,
     "chain": "BSC",
-    "private_key_path": "~/.config/tagclaw/credentials.json",
+    "private_key_path": "<workspace>/skills/tagclaw-wallet/.env",
     "tagclaw_wallet_cmd": null
   },
   "binding": {

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # install.sh — Self-IP Agency idempotent installer
 # Usage: bash scripts/install.sh [--dry-run] [--tagclaw-name NAME] [--tagclaw-description TEXT] [--tagclaw-poll] [--skip-tagclaw-onboarding]
+# Quick install: bash scripts/install.sh
 #
 # Installs the self-ip-agency into an existing OpenClaw workspace:
 #   1. load_tagclaw_skill    — install TagClaw skill pack + wallet repo scaffold
@@ -106,35 +107,24 @@ load_tagclaw_skill() {
 resolve_tagclaw_api_key() {
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
-  python3 - <<'PY' "$workspace" "$HOME/.config/tagclaw/credentials.json"
-import json, pathlib, sys
+  python3 - <<'PY' "$workspace"
+import pathlib, sys
 workspace = pathlib.Path(sys.argv[1])
-legacy = pathlib.Path(sys.argv[2]).expanduser()
 skill_env = workspace / 'skills' / 'tagclaw' / '.env'
-
-def parse_env(path):
-    data = {}
-    if path.exists():
-        for line in path.read_text().splitlines():
-            s = line.strip()
-            if not s or s.startswith('#') or '=' not in s:
-                continue
-            k, v = s.split('=', 1)
-            k = k.strip(); v = v.strip()
-            if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
-                v = v[1:-1]
-            data[k] = v
-    return data
-
-skill = parse_env(skill_env)
-api_key = skill.get('TAGCLAW_API_KEY')
-if not api_key and legacy.exists():
-    try:
-        creds = json.loads(legacy.read_text())
-        api_key = creds.get('apiKey') or creds.get('api_key') or creds.get('API_KEY')
-    except Exception:
-        api_key = ''
-print(api_key or '')
+api_key = ''
+if skill_env.exists():
+    for line in skill_env.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or '=' not in s:
+            continue
+        k, v = s.split('=', 1)
+        k = k.strip(); v = v.strip()
+        if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+            v = v[1:-1]
+        if k == 'TAGCLAW_API_KEY' and v:
+            api_key = v
+            break
+print(api_key)
 PY
 }
 
@@ -189,31 +179,40 @@ run_auto_tagclaw_onboarding() {
     return 0
   fi
 
-  if [ -n "$TAGCLAW_ONBOARD_NAME" ] && [ -n "$TAGCLAW_ONBOARD_DESCRIPTION" ]; then
-    if [ "$DRY_RUN" = "true" ]; then
-      TAGCLAW_ONBOARD_STATUS="dry-run"
-      log_info "[DRY RUN] Would run TagClaw onboarding with name=$TAGCLAW_ONBOARD_NAME"
-      return 0
+  if [ "$DRY_RUN" = "true" ]; then
+    TAGCLAW_ONBOARD_STATUS="dry-run"
+    log_info "[DRY RUN] Would run integrated TagClaw onboarding"
+    if [ -z "$TAGCLAW_ONBOARD_NAME" ]; then
+      log_info "[DRY RUN] No --tagclaw-name supplied; helper will derive a default name"
     fi
-    log_info "Running integrated TagClaw onboarding via install.sh"
-    local -a cmd=(bash "$AGENCY_DIR/scripts/tagclaw-onboard.sh" full --workspace="$workspace" --name "$TAGCLAW_ONBOARD_NAME" --description "$TAGCLAW_ONBOARD_DESCRIPTION")
-    if [ "$TAGCLAW_ONBOARD_POLL" = "true" ]; then
-      cmd+=(--poll)
-    fi
-    "${cmd[@]}"
-    TAGCLAW_ONBOARD_STATUS="completed"
-    if has_tagclaw_credentials; then
-      TAGCLAW_JOINED=true
+    if [ -z "$TAGCLAW_ONBOARD_DESCRIPTION" ]; then
+      log_info "[DRY RUN] No --tagclaw-description supplied; helper will use a default description"
     fi
     return 0
   fi
 
-  if [ -n "$TAGCLAW_ONBOARD_NAME" ] || [ -n "$TAGCLAW_ONBOARD_DESCRIPTION" ]; then
-    TAGCLAW_ONBOARD_STATUS="missing-args"
-    log_warn "To auto-run TagClaw onboarding during install, provide both --tagclaw-name and --tagclaw-description"
-  else
-    TAGCLAW_ONBOARD_STATUS="awaiting-args"
-    log_info "TagClaw onboarding args not provided — scaffold installed only"
+  log_info "Running integrated TagClaw onboarding via install.sh"
+  if [ -z "$TAGCLAW_ONBOARD_NAME" ]; then
+    log_warn "No --tagclaw-name supplied. Using helper-derived default name."
+  fi
+  if [ -z "$TAGCLAW_ONBOARD_DESCRIPTION" ]; then
+    log_warn "No --tagclaw-description supplied. Using helper default description."
+  fi
+
+  local -a cmd=(bash "$AGENCY_DIR/scripts/tagclaw-onboard.sh" full --workspace="$workspace")
+  if [ -n "$TAGCLAW_ONBOARD_NAME" ]; then
+    cmd+=(--name "$TAGCLAW_ONBOARD_NAME")
+  fi
+  if [ -n "$TAGCLAW_ONBOARD_DESCRIPTION" ]; then
+    cmd+=(--description "$TAGCLAW_ONBOARD_DESCRIPTION")
+  fi
+  if [ "$TAGCLAW_ONBOARD_POLL" = "true" ]; then
+    cmd+=(--poll)
+  fi
+  "${cmd[@]}"
+  TAGCLAW_ONBOARD_STATUS="completed"
+  if has_tagclaw_credentials; then
+    TAGCLAW_JOINED=true
   fi
 }
 
@@ -272,7 +271,8 @@ detect_identity() {
   fi
 
   # Write identity atomically
-  local identity_json
+  local workspace identity_json
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
   identity_json="$(python3 -c "
 import json
 d = {
@@ -291,7 +291,7 @@ d = {
     'wallet': {
         'address': '$eth_addr',
         'chain': 'BSC',
-        'private_key_path': '~/.config/tagclaw/credentials.json',
+        'private_key_path': '$workspace/skills/tagclaw-wallet/.env',
         'tagclaw_wallet_cmd': '$wallet_cmd'
     },
     'binding': {
@@ -726,14 +726,12 @@ main() {
       dry-run)
         echo "  ╔══════════════════════════════════════════════════════════════════════════════╗"
         echo "  ║  DRY RUN: install would execute integrated TagClaw onboarding next.        ║"
-        echo "  ║  Name: ${TAGCLAW_ONBOARD_NAME:-<missing>}                                       ║"
         echo "  ║  Workspace: $workspace_hint"
         echo "  ╚══════════════════════════════════════════════════════════════════════════════╝"
         ;;
-      awaiting-args|missing-args|skipped|helper-missing)
+      skipped|helper-missing)
         echo "  ╔══════════════════════════════════════════════════════════════════════════════╗"
         echo "  ║  ACTION REQUIRED: Complete TagClaw onboarding in the installer flow.       ║"
-        echo "  ║  Preferred: re-run install with --tagclaw-name and --tagclaw-description   ║"
         echo "  ║  Fallback after install: use $workspace_hint/scripts/tagclaw-onboard.sh    ║"
         echo "  ╚══════════════════════════════════════════════════════════════════════════════╝"
         ;;
@@ -779,12 +777,12 @@ main() {
     TAGCLAW_PROFILE_URL="$(resolve_tagclaw_skill_env_field "TAGCLAW_PROFILE_URL" "$workspace")"
 
     if [ "$CREDENTIALS_EXIST" != "true" ]; then
-      # Step 1: rerun installer with integrated TagClaw onboarding args, or call the helper directly.
+      # Step 1: rerun installer or call the helper directly; both now work without explicit name/description.
       step_num=$((step_num + 1))
-      NEXT_STEPS+=("Re-run install with onboarding args: bash scripts/install.sh --tagclaw-name <9-char-agent-name> --tagclaw-description <short-agent-description>")
+      NEXT_STEPS+=("Re-run install to complete TagClaw onboarding: bash scripts/install.sh")
 
       step_num=$((step_num + 1))
-      NEXT_STEPS+=("Or run helper directly: bash $workspace/scripts/tagclaw-onboard.sh full --workspace $workspace --name <9-char-agent-name> --description <short-agent-description>")
+      NEXT_STEPS+=("Or run helper directly: bash $workspace/scripts/tagclaw-onboard.sh full --workspace $workspace")
     fi
 
     if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
@@ -803,7 +801,7 @@ main() {
 
     if [ "$CREDENTIALS_EXIST" = "true" ]; then
       step_num=$((step_num + 1))
-      NEXT_STEPS+=("Verify $workspace/skills/tagclaw/.env and ~/.config/tagclaw/credentials.json are in sync")
+      NEXT_STEPS+=("Verify $workspace/skills/tagclaw/.env contains TAGCLAW_API_KEY and $workspace/skills/tagclaw-wallet/.env contains the wallet bootstrap fields")
     fi
 
     step_num=$((step_num + 1))

@@ -13,6 +13,7 @@ from typing import Any
 ROOT = Path(os.environ.get("OPENCLAW_WORKSPACE") or str(Path.home() / ".openclaw" / "workspace"))
 RUNTIME = ROOT / 'runtime'
 MEMORY = ROOT / 'memory'
+TAGCLAW_SKILL_ENV = ROOT / 'skills' / 'tagclaw' / '.env'
 
 
 def now_iso() -> str:
@@ -116,10 +117,20 @@ def derive_wallet_state(wallet_snapshot: dict[str, Any] | None) -> str | None:
 def fetch_live_op_vp() -> tuple[float | None, float | None]:
     """Fetch real-time OP/VP from TagClaw API."""
     import subprocess
-    credentials = read_json(Path.home() / '.config' / 'tagclaw' / 'credentials.json')
-    if not credentials or not credentials.get('api_key'):
+    api_key = None
+    if TAGCLAW_SKILL_ENV.exists():
+        for line in TAGCLAW_SKILL_ENV.read_text(encoding='utf-8').splitlines():
+            s = line.strip()
+            if not s or s.startswith('#') or '=' not in s:
+                continue
+            k, v = s.split('=', 1)
+            if k.strip() == 'TAGCLAW_API_KEY':
+                value = v.strip().strip('"').strip("'")
+                if value:
+                    api_key = value
+                    break
+    if not api_key:
         return None, None
-    api_key = str(credentials['api_key']).strip()
     try:
         proc = subprocess.run(
             ['curl', '-sS', 'https://bsc-api.tagai.fun/tagclaw/me',

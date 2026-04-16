@@ -85,7 +85,6 @@ echo ""
 
 # ── 3. Credentials + TagClaw onboarding ────────────────────────────────────
 echo "3. Credentials + TagClaw onboarding"
-CREDS_FILE="$HOME/.config/tagclaw/credentials.json"
 SKILL_ENV="$WORKSPACE/skills/tagclaw/.env"
 WALLET_DIR="$WORKSPACE/skills/tagclaw-wallet"
 WALLET_ENV="$WALLET_DIR/.env"
@@ -114,7 +113,7 @@ print('ok' if data.get('TAGCLAW_API_KEY') else 'missing')
     warn "skills/tagclaw/.env exists but TAGCLAW_API_KEY is missing"
   fi
 else
-  warn "skills/tagclaw/.env missing — run: bash $WORKSPACE/scripts/tagclaw-onboard.sh full --workspace $WORKSPACE --name <9-char-agent-name> --description \"Short agent description\""
+  warn "skills/tagclaw/.env missing — run: bash $WORKSPACE/scripts/tagclaw-onboard.sh full --workspace $WORKSPACE"
 fi
 
 if [ -d "$WALLET_DIR/.git" ]; then
@@ -146,18 +145,10 @@ else
   warn "skills/tagclaw-wallet/.env missing — run: bash $WORKSPACE/scripts/tagclaw-onboard.sh wallet-init --workspace $WORKSPACE"
 fi
 
-if [ -f "$CREDS_FILE" ]; then
-  if python3 -c "
-import json
-creds = json.load(open('$CREDS_FILE'))
-print('ok' if (creds.get('api_key') or creds.get('apiKey')) else 'missing')
-" 2>/dev/null | grep -q "ok"; then
-    ok "legacy credentials.json exists and contains API key"
-  else
-    warn "legacy credentials.json exists but API key is missing"
-  fi
+if [ -f "$SKILL_ENV" ]; then
+  ok "TagClaw API credentials are sourced from skills/tagclaw/.env only"
 else
-  warn "legacy credentials.json missing — it will be auto-synced after TagClaw registration"
+  warn "TagClaw API credentials missing — complete TagClaw onboarding first"
 fi
 
 echo ""
