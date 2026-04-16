@@ -82,9 +82,13 @@ check_agency_installed() {
 # Resolve path to an agent behavior file (agents/NAME.md)
 resolve_agent_file() {
   local agent_name="${1:?agent name required}"
-  # Workspace-deployed copy takes priority
+  # Workspace-deployed copy takes priority (.md then .md.tmpl)
   if [ -f "$WORKSPACE/agents/${agent_name}.md" ]; then
     echo "$WORKSPACE/agents/${agent_name}.md"
+    return 0
+  fi
+  if [ -f "$WORKSPACE/agents/${agent_name}.md.tmpl" ]; then
+    echo "$WORKSPACE/agents/${agent_name}.md.tmpl"
     return 0
   fi
   # Fallback to repo

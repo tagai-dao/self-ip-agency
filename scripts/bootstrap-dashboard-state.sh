@@ -211,6 +211,21 @@ write_if_missing "$RUNTIME/bookmarker/topic-heatmap.json" '{
   "heatmap": {}
 }'
 
+write_if_missing "$RUNTIME/bookmarker/tas-social.json" '{
+  "schema": "bookmarker.tas-social.v1",
+  "bootstrap": true,
+  "value": null,
+  "status": "bootstrap",
+  "inputs": {}
+}'
+
+write_if_missing "$RUNTIME/bookmarker/x-trend-latest.json" '{
+  "schema": "bookmarker.x-trend-latest.v1",
+  "bootstrap": true,
+  "keywords": [],
+  "high_signal_count": 0
+}'
+
 # ── Trader agent artifacts ──────────────────────────────────────────────────
 
 write_if_missing "$RUNTIME/trader/wallet-snapshot.json" '{

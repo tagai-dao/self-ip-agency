@@ -278,7 +278,123 @@ def run_curation_cycle() -> dict:
         "actions_failed": len(actions_taken) - len(ok_actions),
         "errors": errors,
         "execution_backend": "native-python",
+        # Internal: pass scored posts for canonical output publishing
+        "_scored_posts": scored,
     }
+
+
+# ---------------------------------------------------------------------------
+# Canonical runtime output publishers
+# ---------------------------------------------------------------------------
+
+def publish_bookmarker_canonical(result: dict, ts_now: str) -> None:
+    """Publish canonical runtime JSON files that dashboard and input-packet read.
+
+    Files: topic-brief, source-health, content-candidates, social-drafts,
+           autonomy-intent.  Written after every cycle so dashboard never
+    shows stale bootstrap/null data.
+    """
+    status = result.get("status", "blocked")
+    scored = result.get("_scored_posts", [])
+    actions = result.get("actions_taken", [])
+    errors = result.get("errors", [])
+
+    # ── topic-brief.json ─────────────────────────────────────────────────
+    # Extract topic keywords from scored post content
+    word_freq: dict[str, int] = {}
+    for _, post in scored:
+        content = (post.get("content") or "").lower()
+        for word in content.split():
+            word = word.strip(".,!?#@()[]{}<>\"'")
+            if len(word) >= 4 and word.isalpha():
+                word_freq[word] = word_freq.get(word, 0) + 1
+    top_keywords = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    high_signal = sum(1 for s, _ in scored if s >= 5.0)
+    urgency = "high" if high_signal >= 3 else ("medium" if high_signal >= 1 else "low")
+
+    topic_brief = {
+        "schema": "bookmarker.topic-brief.v1",
+        "generated_at": ts_now,
+        "updated_at": ts_now,
+        "status": status,
+        "keywords": [{"term": w, "count": c} for w, c in top_keywords],
+        "high_signal_count": high_signal,
+        "content_urgency": urgency,
+        "summary": f"Feed scan: {len(scored)} posts scored, {high_signal} high-signal",
+        "topics": [w for w, _ in top_keywords[:5]],
+    }
+    atomic_write_json(RUNTIME_BOOKMARKER / "topic-brief.json", topic_brief)
+
+    # ── source-health.json ───────────────────────────────────────────────
+    api_ok = status != "blocked"
+    source_health = {
+        "schema": "bookmarker.source-health.v1",
+        "generated_at": ts_now,
+        "updated_at": ts_now,
+        "status": "ok" if api_ok and not errors else ("degraded" if api_ok else "blocked"),
+        "bird": "ok" if api_ok else "unavailable",
+        "browser_relay": None,
+        "xurl": None,
+        "mismatch": None,
+        "sources": [
+            {"name": "tagclaw-feed", "status": "ok" if api_ok else "blocked",
+             "last_check": ts_now}
+        ],
+        "source_class": "native-runtime",
+    }
+    atomic_write_json(RUNTIME_BOOKMARKER / "source-health.json", source_health)
+
+    # ── content-candidates.json ──────────────────────────────────────────
+    items = []
+    for score_val, post in scored[:20]:  # top 20 candidates
+        items.append({
+            "post_id": str(post.get("id") or post.get("postId") or ""),
+            "score": round(score_val, 2),
+            "content_preview": (post.get("content") or "")[:120],
+            "author": post.get("author") or post.get("username") or "",
+        })
+    content_candidates = {
+        "schema": "bookmarker.content-candidates.v1",
+        "generated_at": ts_now,
+        "updated_at": ts_now,
+        "status": status,
+        "items": items,
+        "total_scored": len(scored),
+    }
+    atomic_write_json(RUNTIME_BOOKMARKER / "content-candidates.json", content_candidates)
+
+    # ── social-drafts.json ───────────────────────────────────────────────
+    drafts = []
+    for action in actions:
+        if action.get("status") == "ok":
+            drafts.append({
+                "post_id": action.get("post_id", ""),
+                "action": action.get("action", "curate"),
+                "score": action.get("score", 0),
+            })
+    social_drafts = {
+        "schema": "bookmarker.social-drafts.v1",
+        "generated_at": ts_now,
+        "updated_at": ts_now,
+        "status": status,
+        "drafts": drafts,
+    }
+    atomic_write_json(RUNTIME_BOOKMARKER / "social-drafts.json", social_drafts)
+
+    # ── autonomy-intent.json ─────────────────────────────────────────────
+    autonomy_intent = {
+        "schema": "bookmarker.autonomy-intent.v1",
+        "generated_at": ts_now,
+        "updated_at": ts_now,
+        "intent": "curate" if actions else "observe",
+        "mode": "native-auto",
+        "actions_planned": len(actions),
+        "actions_executed": len([a for a in actions if a.get("status") == "ok"]),
+    }
+    atomic_write_json(RUNTIME_BOOKMARKER / "autonomy-intent.json", autonomy_intent)
+
+    print(f"[bookmarker-runtime] Published canonical outputs: topic-brief, source-health, content-candidates, social-drafts, autonomy-intent")
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +422,10 @@ def main() -> int:
     print(f"[bookmarker-runtime] Wrote result.json (status={result['status']})")
 
     # Write latest.json
+    ts_now = now_iso()
     latest = {
         "schema": "bookmarker.latest.v1",
-        "generated_at": now_iso(),
+        "generated_at": ts_now,
         "status": result["status"],
         "source": "run_bookmarker_runtime_v1.py",
         "actions_ok": result.get("actions_ok", 0),
@@ -317,6 +434,9 @@ def main() -> int:
     atomic_write_json(RUNTIME_BOOKMARKER / "latest.json", latest)
     print(f"[bookmarker-runtime] Wrote latest.json")
 
+    # ── Publish canonical runtime outputs for dashboard/input-packet ──────
+    publish_bookmarker_canonical(result, ts_now)
+
     # Update shared runtime-status
     rs_path = RUNTIME_SHARED / "runtime-status.json"
     try:
@@ -324,7 +444,7 @@ def main() -> int:
     except Exception:
         rs = {}
     rs.setdefault("schema", "runtime-status.v1")
-    rs["bookmarker"] = {"status": result["status"], "updated_at": now_iso()}
+    rs["bookmarker"] = {"status": result["status"], "updated_at": ts_now}
     rs.pop("bootstrap", None)
     atomic_write_json(rs_path, rs)
 

@@ -252,7 +252,115 @@ def run_trader_cycle() -> dict:
         "trades_ok": sum(1 for t in trades_executed if t["status"] == "ok"),
         "errors": errors,
         "execution_backend": "native-python",
+        # Internal: pass raw data for canonical output publishing
+        "_balance_data": signal_assessment.get("balance"),
+        "_signals": signal_assessment.get("signals", []),
     }
+
+
+# ---------------------------------------------------------------------------
+# Canonical runtime output publishers
+# ---------------------------------------------------------------------------
+
+def publish_trader_canonical(result: dict, ts_now: str, bundle_ts: str) -> None:
+    """Publish canonical runtime JSON files that dashboard and input-packet read.
+
+    Files: tas-trade, reward-status, wallet-snapshot, risk-status.
+    Written after every cycle so dashboard never shows stale bootstrap/null data.
+    """
+    status = result.get("status", "blocked")
+    has_credentials = result.get("has_credentials", False)
+    wallet_status = result.get("wallet_status", "unknown")
+    balance_data = result.get("_balance_data")
+    signals = result.get("_signals", [])
+    decisions = result.get("decisions", [])
+
+    # ── wallet-snapshot.json ─────────────────────────────────────────────
+    wallet_snapshot: dict[str, Any] = {
+        "schema": "trader.wallet-snapshot.v1",
+        "generated_at": ts_now,
+        "updated_at": ts_now,
+        "bundle_ts": bundle_ts,
+        "status": "ok" if wallet_status == "ok" else ("blocked" if not has_credentials else "degraded"),
+    }
+    if isinstance(balance_data, dict):
+        wallet_snapshot["wallet_address"] = balance_data.get("address") or balance_data.get("wallet") or None
+        wallet_snapshot["balances"] = {
+            k: v for k, v in balance_data.items()
+            if k not in ("address", "wallet", "status")
+        }
+    else:
+        wallet_snapshot["wallet_address"] = None
+        wallet_snapshot["balances"] = {}
+    atomic_write_json(RUNTIME_TRADER / "wallet-snapshot.json", wallet_snapshot)
+
+    # ── reward-status.json ───────────────────────────────────────────────
+    reward_status: dict[str, Any] = {
+        "schema": "trader.reward-status.v1",
+        "generated_at": ts_now,
+        "updated_at": ts_now,
+        "checked_at": ts_now,
+        "bundle_ts": bundle_ts,
+        "status": status,
+        "claimable": [],
+        "claimable_usd_total": 0,
+    }
+    # If we have balance data, try to extract reward info
+    if isinstance(balance_data, dict):
+        rewards = balance_data.get("rewards") or balance_data.get("claimable")
+        if isinstance(rewards, list):
+            reward_status["claimable"] = rewards
+            total = 0.0
+            for r in rewards:
+                if isinstance(r, dict):
+                    try:
+                        total += float(r.get("reward_value_usd") or r.get("usd_value") or 0)
+                    except (ValueError, TypeError):
+                        pass
+            reward_status["claimable_usd_total"] = round(total, 4)
+    atomic_write_json(RUNTIME_TRADER / "reward-status.json", reward_status)
+
+    # ── tas-trade.json ───────────────────────────────────────────────────
+    # Native runtime provides observe-only signals; value is null until
+    # a proper measurement pipeline is in place.
+    tas_trade: dict[str, Any] = {
+        "schema": "trader.tas-trade.v1",
+        "generated_at": ts_now,
+        "updated_at": ts_now,
+        "bundle_ts": bundle_ts,
+        "status": "ok" if has_credentials and wallet_status == "ok" else ("partial" if has_credentials else "blocked"),
+        "value": None,  # native runtime does not compute TAS — deferred to measurement pipeline
+        "portfolio_usd_raw": None,
+        "risk_flags": [],
+        "autonomy_mode": "observe-only",
+        "signals_evaluated": len(signals),
+        "decisions_count": len(decisions),
+        "measurement_quality": {
+            "overall_status": "pending",
+            "price_visibility": "unknown",
+        },
+    }
+    atomic_write_json(RUNTIME_TRADER / "tas-trade.json", tas_trade)
+
+    # ── risk-status.json ─────────────────────────────────────────────────
+    risk_flags: list[str] = []
+    if not has_credentials:
+        risk_flags.append("no_credentials")
+    if wallet_status != "ok":
+        risk_flags.append("wallet_unavailable")
+
+    risk_status: dict[str, Any] = {
+        "schema": "trader.risk-status.v1",
+        "generated_at": ts_now,
+        "updated_at": ts_now,
+        "bundle_ts": bundle_ts,
+        "status": "ok" if not risk_flags else "flagged",
+        "risk_flags": risk_flags,
+        "flags": risk_flags,
+    }
+    atomic_write_json(RUNTIME_TRADER / "risk-status.json", risk_status)
+
+    print(f"[trader-runtime] Published canonical outputs: wallet-snapshot, reward-status, tas-trade, risk-status")
 
 
 # ---------------------------------------------------------------------------
@@ -280,9 +388,12 @@ def main() -> int:
     print(f"[trader-runtime] Wrote result.json (status={result['status']})")
 
     # Write latest.json
+    ts_now = now_iso()
+    bundle_ts = ts_now  # coherent bundle timestamp for all trader artifacts
     latest = {
         "schema": "trader.latest.v1",
-        "generated_at": now_iso(),
+        "generated_at": ts_now,
+        "bundle_ts": bundle_ts,
         "status": result["status"],
         "source": "run_trader_runtime_v1.py",
         "signals_evaluated": result.get("signals_evaluated", 0),
@@ -292,6 +403,9 @@ def main() -> int:
     atomic_write_json(RUNTIME_TRADER / "latest.json", latest)
     print(f"[trader-runtime] Wrote latest.json")
 
+    # ── Publish canonical runtime outputs for dashboard/input-packet ──────
+    publish_trader_canonical(result, ts_now, bundle_ts)
+
     # Update shared runtime-status
     rs_path = RUNTIME_SHARED / "runtime-status.json"
     try:
@@ -299,7 +413,7 @@ def main() -> int:
     except Exception:
         rs = {}
     rs.setdefault("schema", "runtime-status.v1")
-    rs["trader"] = {"status": result["status"], "updated_at": now_iso()}
+    rs["trader"] = {"status": result["status"], "updated_at": ts_now}
     rs.pop("bootstrap", None)
     atomic_write_json(rs_path, rs)
 

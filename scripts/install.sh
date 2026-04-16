@@ -814,6 +814,30 @@ main() {
       NEXT_STEPS+=("Install dashboard deps: pip3 install -r dashboard/requirements.txt")
     fi
 
+    # ── Write .installed marker atomically ──────────────────────────────────
+    # IMPORTANT: Write BEFORE self-checks so that cycle --self-check sees
+    # the .agency-installed marker and does not false-negative on readiness.
+    local installed_json
+    installed_json="$(python3 -c "
+import json
+from datetime import datetime, timezone
+d = {
+    'version': '$AGENCY_VERSION',
+    'installed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'install_status': '$INSTALL_STATUS',
+    'dashboard_status': '$DASHBOARD_STATUS',
+    'tagclaw_onboard_status': '$TAGCLAW_ONBOARD_STATUS',
+    'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
+    'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
+    'schema': 'installed.v2'
+}
+print(json.dumps(d, indent=2))
+")"
+    atomic_write_json "$INSTALLED_FILE" "$installed_json"
+
+    # Also write workspace-local installed marker (deployed scripts check this)
+    atomic_write_json "$workspace/.agency-installed" "$installed_json"
+
     # ── Post-install self-checks: run each cycle's --self-check ─────────
     local MAIN_READY=false BOOKMARKER_READY=false TRADER_READY=false
     log_info "Running post-install self-checks..."
@@ -840,28 +864,6 @@ main() {
     fi
 
     local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Crons: manual. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}."
-
-    # ── Write .installed marker atomically ──────────────────────────────────
-    local installed_json
-    installed_json="$(python3 -c "
-import json
-from datetime import datetime, timezone
-d = {
-    'version': '$AGENCY_VERSION',
-    'installed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-    'install_status': '$INSTALL_STATUS',
-    'dashboard_status': '$DASHBOARD_STATUS',
-    'tagclaw_onboard_status': '$TAGCLAW_ONBOARD_STATUS',
-    'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
-    'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
-    'schema': 'installed.v2'
-}
-print(json.dumps(d, indent=2))
-")"
-    atomic_write_json "$INSTALLED_FILE" "$installed_json"
-
-    # Also write workspace-local installed marker (deployed scripts check this)
-    atomic_write_json "$workspace/.agency-installed" "$installed_json"
 
     # ── P0-A: Write .install-next-steps.json ────────────────────────────────
     local next_steps_json
