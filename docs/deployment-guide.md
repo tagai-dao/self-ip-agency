@@ -97,7 +97,14 @@ The helper will:
 6. keep wallet secrets in `skills/tagclaw-wallet/.env`
 7. avoid creating a placeholder `skills/tagclaw/.env` before onboarding completes
 
-After the register step, the installer summary and `.install-next-steps.{json,md}` now also surface the verification tweet template explicitly, and the exact text is written to `<workspace>/tagclaw-verification-tweet.txt`. Post it on X and then poll activation:
+After the register step, the installer surfaces the verification tweet as a single atomic step across all output channels:
+
+- `.install-next-steps.json` (schema `install-next-steps.v2`) — the tweet appears as one structured step with `kind: "x_verification_tweet"` and `copy_text` containing the exact tweet body; legacy consumers still get a flat fallback in `next_steps_text`.
+- `.install-next-steps.md` — the tweet is rendered inside a fenced `text` block under Step 1.
+- Install summary box — tweet lines are inlined under Step 1.
+- Stdout contract — per-line `VERIFICATION_TWEET_LINE_1`/`LINE_2` plus aggregated `VERIFICATION_TWEET_TEXT`.
+
+The exact tweet text is also written to `<workspace>/tagclaw-verification-tweet.txt` for `pbcopy` / manual handoff. Post it on X and then poll activation:
 
 ```bash
 bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh poll-status --workspace ~/.openclaw/workspace
@@ -129,9 +136,11 @@ You should confirm at least:
 
 You can also inspect the machine-readable install contract:
 ```bash
-cat .install-next-steps.json   # structured next-steps for agents
+cat .install-next-steps.json   # structured next-steps for agents (schema: install-next-steps.v2)
 cat .install-next-steps.md     # human-readable summary
 ```
+
+The v2 JSON exposes both a structured `next_steps` array (with `kind`, `title`, `action`, and — for verification-tweet steps — `copy_text` / `details` / `post_action`) and a `next_steps_text` flat string-array fallback so legacy strings-only consumers still get usable content.
 
 ### 5. Wiki Setup
 

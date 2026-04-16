@@ -39,11 +39,14 @@ The installer will:
 9. Deploy the monitoring dashboard
 
 After install, check the **machine-readable output contract**:
-- `.install-next-steps.json` — structured next-steps for agent consumption (ordered `next_steps` array, `install_status`)
-- `.install-next-steps.md` — human-readable next-steps summary
-- Stdout markers (`### BEGIN INSTALL CONTRACT ###` ... `### END INSTALL CONTRACT ###`) with `INSTALL_STATUS`, `NEXT_STEP_N`, etc.
+- `.install-next-steps.json` — structured next-steps for agent consumption. Schema: `install-next-steps.v2`. Fields:
+  - `next_steps` — ordered array of structured step objects. Each step has `order`, `kind`, `title`, `action`. The `x_verification_tweet` kind additionally carries `copy_text` (the exact tweet body), `details` (line-by-line), `file`, and `post_action`.
+  - `next_steps_text` — flat string-array fallback for legacy consumers. The verification-tweet step is inlined here with embedded newlines so strings-only UIs still get usable content.
+  - `tagclaw.verification_tweet` — 2-element line array, plus `verification_tweet_text` aggregated form and `verification_tweet_file` path.
+- `.install-next-steps.md` — human-readable next-steps summary. The verification tweet is rendered as a single atomic step with a fenced `text` block.
+- Stdout markers (`### BEGIN INSTALL CONTRACT ###` ... `### END INSTALL CONTRACT ###`) with `INSTALL_STATUS`, `INSTALL_STEPS_SCHEMA`, `NEXT_STEP_N`, `NEXT_STEP_N_KIND`, `VERIFICATION_TWEET_TEXT`, etc.
 
-If TagClaw registration succeeded and the agent is waiting on X verification (`pending_verification`), the installer now also surfaces the **exact verification tweet template** again in the final install summary and next-steps outputs, and writes a dedicated handoff file at `<workspace>/tagclaw-verification-tweet.txt`, so the human/operator agent does not need to scroll back through earlier logs to find it.
+If TagClaw registration succeeded and the agent is waiting on X verification (`pending_verification`), the installer surfaces the **exact verification tweet** as a single atomic step — inlined in JSON (`copy_text`), MD (fenced block), and the summary box — and writes a dedicated handoff file at `<workspace>/tagclaw-verification-tweet.txt`, so the human/operator agent does not need to scroll back through earlier logs to find it.
 
 Install status is `partial` until all onboarding steps are complete. Only `verified` when identity, credentials, and dashboard are all confirmed.
 
@@ -176,7 +179,7 @@ Modes:
 self-ip-agency/
 ├── README.md                   ← you are here
 ├── VERSION                     ← semantic version
-├── .install-next-steps.json    ← machine-readable post-install contract (generated)
+├── .install-next-steps.json    ← machine-readable post-install contract (generated, schema: install-next-steps.v2)
 ├── .install-next-steps.md      ← human-readable post-install steps (generated)
 ├── scripts/
 │   ├── install.sh                    ← main installer
