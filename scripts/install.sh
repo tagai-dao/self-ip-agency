@@ -26,6 +26,8 @@ TAGCLAW_API="https://bsc-api.tagai.fun/tagclaw"
 DASHBOARD_PORT="${VIZ_PORT:-7890}"
 DRY_RUN=false
 DASHBOARD_STATUS="not_attempted"
+DASHBOARD_PUBLIC_STATUS="disabled"
+DASHBOARD_PUBLIC_URL=""
 TAGCLAW_ONBOARD_NAME="${TAGCLAW_AGENT_NAME:-}"
 TAGCLAW_ONBOARD_DESCRIPTION="${TAGCLAW_AGENT_DESCRIPTION:-}"
 TAGCLAW_ONBOARD_POLL=false
@@ -631,6 +633,34 @@ register_crons() {
 # 8. install_dashboard
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Read `dashboard.public.enabled` from config/agency.config.yaml.
+# Prints "true" or "false". Default is "false" (opt-in gate is safe-by-default).
+# Requires PyYAML (yaml.safe_load) which is used elsewhere in the runtime.
+_read_dashboard_public_enabled() {
+  local yaml_path="$AGENCY_DIR/config/agency.config.yaml"
+  if [ ! -f "$yaml_path" ]; then
+    echo "false"
+    return 0
+  fi
+  python3 - "$yaml_path" <<'PY' 2>/dev/null || echo "false"
+import sys
+try:
+    import yaml
+except ImportError:
+    print("false")
+    sys.exit(0)
+try:
+    with open(sys.argv[1]) as f:
+        data = yaml.safe_load(f) or {}
+except Exception:
+    print("false")
+    sys.exit(0)
+dash = (data.get("dashboard") or {})
+pub = (dash.get("public") or {})
+print("true" if bool(pub.get("enabled")) else "false")
+PY
+}
+
 install_dashboard() {
   log_info "Step 8: Installing dashboard..."
 
@@ -640,65 +670,77 @@ install_dashboard() {
 
   if [ "$DRY_RUN" = "true" ]; then
     log_info "[DRY RUN] Would install dashboard to: $dashboard_dst"
+    log_info "[DRY RUN] Would delegate lifecycle to scripts/dashboard-service.sh"
     return 0
   fi
 
+  # 1. Install phase: ensure dashboard files are deployed. The detailed
+  #    lifecycle (deps validation, local start, health check, public tunnel)
+  #    is owned by scripts/dashboard-service.sh — this function only preps
+  #    the filesystem and delegates.
   mkdir -p "$dashboard_dst"
-
-  # Copy dashboard files
   if [ -d "$AGENCY_DIR/dashboard" ]; then
     cp -r "$AGENCY_DIR/dashboard/." "$dashboard_dst/"
     log_ok "Dashboard files installed at: $dashboard_dst"
   fi
 
-  # Validate dashboard dependencies
-  local deps_missing=""
-  for dep in fastapi uvicorn requests; do
-    if ! python3 -c "import $dep" 2>/dev/null; then
-      deps_missing="$deps_missing $dep"
-    fi
-  done
-
-  if [ -n "$deps_missing" ]; then
-    log_warn "Dashboard dependencies missing:$deps_missing"
-    log_warn "Install them:  pip3 install -r $dashboard_dst/requirements.txt"
-    log_warn "Then start:    OPENCLAW_WORKSPACE=$workspace python3 $dashboard_dst/server.py"
-    DASHBOARD_STATUS="deps_missing"
+  # 2. Lifecycle phase: delegate to the canonical owner.
+  local svc="$AGENCY_DIR/scripts/dashboard-service.sh"
+  if [ ! -x "$svc" ]; then
+    log_warn "scripts/dashboard-service.sh not found or not executable — cannot manage dashboard lifecycle"
+    DASHBOARD_STATUS="failed"
     return 0
   fi
 
-  # Start dashboard
-  mkdir -p "$workspace/logs"
-  log_info "Starting dashboard on port $DASHBOARD_PORT..."
-  OPENCLAW_WORKSPACE="$workspace" \
-    nohup python3 "$dashboard_dst/server.py" \
-    > "$workspace/logs/dashboard.log" 2>&1 &
-  local dashboard_pid=$!
+  VIZ_PORT="$DASHBOARD_PORT" "$svc" start-local \
+    --port "$DASHBOARD_PORT" --workspace "$workspace" || true
 
-  # Real health check: wait for HTTP 200 from /api/health (up to 8 seconds)
-  local health_ok=false
-  for _i in 1 2 3 4 5 6 7 8; do
-    sleep 1
-    if curl -sf "http://localhost:${DASHBOARD_PORT}/api/health" >/dev/null 2>&1; then
-      health_ok=true
-      break
-    fi
-    # If process died, stop waiting
-    if ! kill -0 "$dashboard_pid" 2>/dev/null; then
-      break
-    fi
-  done
-
-  if [ "$health_ok" = "true" ]; then
-    log_ok "Dashboard verified at http://localhost:${DASHBOARD_PORT} (PID: $dashboard_pid, /api/health OK)"
-    DASHBOARD_STATUS="running"
-  elif kill -0 "$dashboard_pid" 2>/dev/null; then
-    log_warn "Dashboard process started (PID: $dashboard_pid) but /api/health did not respond"
-    log_warn "Check $workspace/logs/dashboard.log for errors"
-    DASHBOARD_STATUS="started_unverified"
+  # 3. Read back status from the state file (the service wrote it atomically).
+  local state_file="$workspace/runtime/shared/dashboard-service.json"
+  if [ -f "$state_file" ]; then
+    DASHBOARD_STATUS="$(python3 -c "
+import json
+try:
+    d = json.load(open('$state_file'))
+    print(d.get('local', {}).get('status') or 'unknown')
+except Exception:
+    print('unknown')
+" 2>/dev/null || echo "unknown")"
   else
-    log_warn "Dashboard failed to start — check $workspace/logs/dashboard.log"
-    DASHBOARD_STATUS="failed"
+    log_warn "Expected state file missing: $state_file"
+    DASHBOARD_STATUS="unknown"
+  fi
+
+  # 4. Opt-in public exposure. Default is false (safe-by-default).
+  local public_enabled
+  public_enabled="$(_read_dashboard_public_enabled)"
+  if [ "$public_enabled" = "true" ] && [ "$DASHBOARD_STATUS" = "running" ]; then
+    log_info "dashboard.public.enabled=true → starting public tunnel..."
+    "$svc" start-public --port "$DASHBOARD_PORT" --workspace "$workspace" || true
+
+    if [ -f "$state_file" ]; then
+      DASHBOARD_PUBLIC_STATUS="$(python3 -c "
+import json
+try:
+    d = json.load(open('$state_file'))
+    print(d.get('public', {}).get('status') or 'unknown')
+except Exception:
+    print('unknown')
+" 2>/dev/null || echo "unknown")"
+      DASHBOARD_PUBLIC_URL="$(python3 -c "
+import json
+try:
+    d = json.load(open('$state_file'))
+    print(d.get('public', {}).get('url') or '')
+except Exception:
+    print('')
+" 2>/dev/null || echo "")"
+    fi
+  elif [ "$public_enabled" = "true" ]; then
+    log_warn "dashboard.public.enabled=true but local dashboard is not running — skipping public tunnel"
+    DASHBOARD_PUBLIC_STATUS="failed"
+  else
+    DASHBOARD_PUBLIC_STATUS="disabled"
   fi
 }
 
@@ -861,6 +903,11 @@ print(json.dumps({
         "Install dashboard deps: pip3 install -r dashboard/requirements.txt"
     fi
 
+    if [ "$DASHBOARD_PUBLIC_STATUS" = "failed" ]; then
+      _emit_step_simple "install_cloudflared" \
+        "Public dashboard tunnel failed to start. Install cloudflared (brew install cloudflared) then run: bash $workspace/scripts/dashboard-service.sh start-public"
+    fi
+
     # ── Write .installed marker atomically ──────────────────────────────────
     # IMPORTANT: Write BEFORE self-checks so that cycle --self-check sees
     # the .agency-installed marker and does not false-negative on readiness.
@@ -873,6 +920,9 @@ d = {
     'installed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'install_status': '$INSTALL_STATUS',
     'dashboard_status': '$DASHBOARD_STATUS',
+    'dashboard_local_status': '$DASHBOARD_STATUS',
+    'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',
+    'dashboard_public_url': '$DASHBOARD_PUBLIC_URL',
     'tagclaw_onboard_status': '$TAGCLAW_ONBOARD_STATUS',
     'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
     'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
@@ -910,7 +960,11 @@ print(json.dumps(d, indent=2))
       log_warn "trader-cycle --self-check FAILED — trader not yet runnable"
     fi
 
-    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Crons: manual. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}."
+    local _public_summary="${DASHBOARD_PUBLIC_STATUS}"
+    if [ -n "$DASHBOARD_PUBLIC_URL" ]; then
+      _public_summary="${DASHBOARD_PUBLIC_STATUS} (${DASHBOARD_PUBLIC_URL})"
+    fi
+    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: manual. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}."
 
     # ── Dedicated verification tweet handoff artifact ──────────────────────
     # VERIFICATION_TWEET_FILE was declared earlier (before the structured
@@ -1034,7 +1088,12 @@ print(json.dumps(d, indent=2))
       echo "| Identity resolved | ${IDENTITY_RESOLVED} |"
       echo "| TagClaw onboarding | ${TAGCLAW_ONBOARD_STATUS} |"
       echo "| TagClaw credentials ready | ${CREDENTIALS_EXIST} |"
-      echo "| Dashboard | ${DASHBOARD_STATUS} |"
+      echo "| Dashboard (local) | ${DASHBOARD_STATUS} |"
+      if [ -n "$DASHBOARD_PUBLIC_URL" ]; then
+        echo "| Dashboard (public) | ${DASHBOARD_PUBLIC_STATUS} — ${DASHBOARD_PUBLIC_URL} |"
+      else
+        echo "| Dashboard (public) | ${DASHBOARD_PUBLIC_STATUS} |"
+      fi
       echo "| Cron jobs | manual (not auto-registered) |"
       echo ""
       echo "---"
@@ -1069,6 +1128,26 @@ print(json.dumps(d, indent=2))
         ;;
       *)
         echo "  ║    ⚠ Dashboard not attempted"
+        ;;
+    esac
+
+    case "$DASHBOARD_PUBLIC_STATUS" in
+      running)
+        if [ -n "$DASHBOARD_PUBLIC_URL" ]; then
+          echo "  ║    - Public dashboard URL: $DASHBOARD_PUBLIC_URL"
+        else
+          echo "  ║    - Public dashboard tunnel running (URL pending in logs/dashboard-tunnel.log)"
+        fi
+        ;;
+      failed)
+        echo "  ║    ⚠ Public dashboard tunnel failed — check logs/dashboard-tunnel.log (cloudflared required)"
+        ;;
+      disabled|"")
+        # Quiet: opt-in feature, default off
+        :
+        ;;
+      *)
+        echo "  ║    ⚠ Public dashboard status: $DASHBOARD_PUBLIC_STATUS"
         ;;
     esac
 
@@ -1190,6 +1269,9 @@ print(json.dumps(d, indent=2))
     echo "BOOKMARKER_READY=\"${BOOKMARKER_READY}\""
     echo "TRADER_READY=\"${TRADER_READY}\""
     echo "DASHBOARD_STATUS=\"${DASHBOARD_STATUS}\""
+    echo "DASHBOARD_LOCAL_STATUS=\"${DASHBOARD_STATUS}\""
+    echo "DASHBOARD_PUBLIC_STATUS=\"${DASHBOARD_PUBLIC_STATUS}\""
+    echo "DASHBOARD_PUBLIC_URL=\"${DASHBOARD_PUBLIC_URL}\""
     echo "CRONS_REGISTERED=\"false\""
     echo "INSTALL_SUMMARY=\"${INSTALL_SUMMARY}\""
     echo "### END INSTALL CONTRACT ###"

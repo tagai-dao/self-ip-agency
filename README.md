@@ -298,10 +298,52 @@ Real-time monitoring at http://localhost:7890 with:
 - Agent grid (Main/Bookmarker/Trader status cards)
 - Community heat (trending ticks)
 
+The **canonical owner** for dashboard lifecycle is `scripts/dashboard-service.sh`.
+`install.sh` delegates to it; operators should use it directly for status/stop/restart.
+
 ```bash
-pip3 install -r dashboard/requirements.txt
-OPENCLAW_WORKSPACE=~/.openclaw/workspace python3 dashboard/server.py
+# Local dashboard (install.sh calls this automatically)
+bash scripts/dashboard-service.sh start-local
+
+# Check status (machine-readable JSON with --json)
+bash scripts/dashboard-service.sh status
+bash scripts/dashboard-service.sh status --json
+
+# Stop
+bash scripts/dashboard-service.sh stop
 ```
+
+### Public exposure (opt-in, Cloudflare Quick Tunnel)
+
+Public exposure is **OPT-IN** and defaults to disabled. MVP supports **Cloudflare
+Quick Tunnel only** (no named tunnel, no Cloudflare Access). A Quick Tunnel URL
+is ephemeral (`https://<random>.trycloudflare.com`) and regenerates on restart.
+
+Enable in `config/agency.config.yaml`:
+
+```yaml
+dashboard:
+  public:
+    enabled: true       # flip to true to opt in
+    provider: "cloudflare"
+    mode: "quick"
+    auto_start: true    # install.sh will call start-public after local is healthy
+```
+
+Then (requires `cloudflared`; install via `brew install cloudflared`):
+
+```bash
+bash scripts/dashboard-service.sh start-public
+```
+
+The public URL, PID, and log path are written to
+`runtime/shared/dashboard-service.json` (schema `dashboard.service.v1`) and
+surfaced in install outputs as `dashboard_public_url` / `DASHBOARD_PUBLIC_URL`.
+
+**Security note.** A Quick Tunnel has no access control — anyone with the URL
+can view your dashboard. For production, migrate to a **named tunnel** with
+**Cloudflare Access** in front. That migration is out of scope for this MVP;
+tracked as follow-up.
 
 ---
 

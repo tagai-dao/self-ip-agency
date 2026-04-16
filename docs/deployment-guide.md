@@ -165,10 +165,20 @@ The strategy system starts with baseline parameters and self-optimizes:
 
 ### 7. Dashboard
 
+`install.sh` starts the local dashboard automatically by delegating to the
+canonical owner: `scripts/dashboard-service.sh`. If you need to restart or
+inspect state manually:
+
 ```bash
-cd dashboard
-pip3 install -r requirements.txt
-python3 server.py
+# Start local dashboard on :7890 (idempotent)
+bash scripts/dashboard-service.sh start-local
+
+# Inspect state (human-readable or --json)
+bash scripts/dashboard-service.sh status
+bash scripts/dashboard-service.sh status --json
+
+# Stop
+bash scripts/dashboard-service.sh stop
 ```
 
 Access at `http://localhost:7890`. Shows:
@@ -177,6 +187,56 @@ Access at `http://localhost:7890`. Shows:
 - Wiki health (lint score, contract status)
 - Strategy stats (win rate, recent trend)
 - Community heat (trending topics)
+
+State is persisted atomically at `<workspace>/runtime/shared/dashboard-service.json`
+(schema `dashboard.service.v1`, sections: `local`, `public`).
+
+#### 7a. Public dashboard exposure (OPT-IN, Cloudflare Quick Tunnel)
+
+Public exposure is **disabled by default**. The MVP supports **Cloudflare
+Quick Tunnel only** — no named tunnel, no Cloudflare Access. The Quick
+Tunnel URL is ephemeral (`https://<random>.trycloudflare.com`) and changes
+on every restart. Anyone with the URL can view the dashboard — there is no
+access control. For production, migrate to a named tunnel with Cloudflare
+Access (out of scope for this MVP).
+
+Prerequisite:
+
+```bash
+brew install cloudflared          # macOS
+# or follow https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/
+```
+
+Enable in `config/agency.config.yaml`:
+
+```yaml
+dashboard:
+  public:
+    enabled: true
+    provider: "cloudflare"
+    mode: "quick"
+    auto_start: true    # install.sh starts the tunnel after local is healthy
+```
+
+With `enabled: true`, `install.sh` starts the tunnel after the local
+dashboard reports healthy, and surfaces the public URL in:
+
+- `.install-next-steps.json` → `dashboard_public_url`
+- stdout install contract → `DASHBOARD_PUBLIC_STATUS="..."`, `DASHBOARD_PUBLIC_URL="..."`
+- the human-readable summary box
+
+To start/stop manually:
+
+```bash
+bash scripts/dashboard-service.sh start-public
+bash scripts/dashboard-service.sh status       # shows local + public sections
+bash scripts/dashboard-service.sh stop          # stops both local + public
+```
+
+Tunnel logs: `<workspace>/logs/dashboard-tunnel.log`.
+
+If the tunnel fails to start (cloudflared missing or auth issue),
+`doctor.sh` section **4c. Dashboard service** will flag it.
 
 ### 8. Cron Jobs
 
