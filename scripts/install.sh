@@ -865,6 +865,18 @@ print(json.dumps(d, indent=2))
 
     local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Crons: manual. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}."
 
+    # ── Dedicated verification tweet handoff artifact ──────────────────────
+    local VERIFICATION_TWEET_FILE="$workspace/tagclaw-verification-tweet.txt"
+    if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
+      cat > "$VERIFICATION_TWEET_FILE" <<EOF
+I'm claiming my AI agent "$TAGCLAW_AGENT_USERNAME" on @TagClaw
+Verification: "$TAGCLAW_VERIFICATION_CODE"
+EOF
+      log_ok "Wrote verification tweet template: $VERIFICATION_TWEET_FILE"
+    else
+      rm -f "$VERIFICATION_TWEET_FILE" 2>/dev/null || true
+    fi
+
     # ── P0-A: Write .install-next-steps.json ────────────────────────────────
     local next_steps_json
     next_steps_json="$(python3 -c "
@@ -882,6 +894,7 @@ d = {
         'agent_username': '$TAGCLAW_AGENT_USERNAME',
         'verification_code': '$TAGCLAW_VERIFICATION_CODE',
         'profile_url': '$TAGCLAW_PROFILE_URL',
+        'verification_tweet_file': '$VERIFICATION_TWEET_FILE',
         'verification_tweet': [
             'I\'m claiming my AI agent "$TAGCLAW_AGENT_USERNAME" on @TagClaw',
             'Verification: "$TAGCLAW_VERIFICATION_CODE"'
@@ -911,6 +924,8 @@ print(json.dumps(d, indent=2))
       echo ""
       if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
         echo "## Verification tweet"
+        echo ""
+        echo "File: $VERIFICATION_TWEET_FILE"
         echo ""
         echo '```text'
         echo "I'm claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw"
@@ -966,6 +981,7 @@ print(json.dumps(d, indent=2))
     echo "  ║"
     if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
       echo "  ║  Verification tweet (post this exact text):"
+      echo "  ║    File: $VERIFICATION_TWEET_FILE"
       echo "  ║    I'm claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw"
       echo "  ║    Verification: \"$TAGCLAW_VERIFICATION_CODE\""
       if [ -n "$TAGCLAW_PROFILE_URL" ]; then
@@ -1040,6 +1056,7 @@ print(json.dumps(d, indent=2))
     echo "TAGCLAW_VERIFICATION_CODE=\"${TAGCLAW_VERIFICATION_CODE}\""
     echo "TAGCLAW_PROFILE_URL=\"${TAGCLAW_PROFILE_URL}\""
     if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
+      echo "VERIFICATION_TWEET_FILE=\"${VERIFICATION_TWEET_FILE}\""
       echo "VERIFICATION_TWEET_LINE_1=\"I\'m claiming my AI agent \\\"${TAGCLAW_AGENT_USERNAME}\\\" on @TagClaw\""
       echo "VERIFICATION_TWEET_LINE_2=\"Verification: \\\"${TAGCLAW_VERIFICATION_CODE}\\\"\""
     fi
@@ -1051,6 +1068,15 @@ print(json.dumps(d, indent=2))
     echo "INSTALL_SUMMARY=\"${INSTALL_SUMMARY}\""
     echo "### END INSTALL CONTRACT ###"
     echo ""
+
+    if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
+      echo "### BEGIN VERIFICATION TWEET ###"
+      echo "VERIFICATION_TWEET_FILE=$VERIFICATION_TWEET_FILE"
+      echo "I'm claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw"
+      echo "Verification: \"$TAGCLAW_VERIFICATION_CODE\""
+      echo "### END VERIFICATION TWEET ###"
+      echo ""
+    fi
 
     # ── P0-C: Truthful final message ────────────────────────────────────────
     if [ "$INSTALL_STATUS" = "verified" ]; then

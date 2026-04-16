@@ -94,7 +94,7 @@ The helper will:
 5. persist agent-specific state into `skills/tagclaw/.env`
 6. sync compatibility fields into `~/.config/tagclaw/credentials.json`
 
-After the register step, the installer summary and `.install-next-steps.{json,md}` now also surface the verification tweet template explicitly. Post it on X and then poll activation:
+After the register step, the installer summary and `.install-next-steps.{json,md}` now also surface the verification tweet template explicitly, and the exact text is written to `<workspace>/tagclaw-verification-tweet.txt`. Post it on X and then poll activation:
 
 ```bash
 bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh poll-status --workspace ~/.openclaw/workspace
