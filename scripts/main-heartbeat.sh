@@ -232,6 +232,33 @@ print('Updated runtime-status.json')
 " 2>&1
 }
 
+update_runtime_status_post_cycle() {
+  local RUNTIME_SHARED="$WORKSPACE/runtime/shared"
+  mkdir -p "$RUNTIME_SHARED"
+  python3 -c "
+import json
+from datetime import datetime, timezone
+
+now = datetime.now(timezone.utc)
+ts = now.isoformat()
+rs_path = '$RUNTIME_SHARED/runtime-status.json'
+try:
+    rs = json.load(open(rs_path))
+except Exception:
+    rs = {}
+rs.setdefault('schema', 'runtime-status.v1')
+rs['main'] = {
+    'status': 'completed',
+    'updated_at': ts,
+    'last_heartbeat': ts,
+}
+rs.pop('bootstrap', None)
+with open(rs_path, 'w') as f:
+    json.dump(rs, f, indent=2)
+print('Updated runtime-status.json (main=completed)')
+" 2>&1
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 main() {
@@ -267,6 +294,7 @@ main() {
   # Full heartbeat cycle
   build_input_packet
   run_main_runtime
+  update_runtime_status_post_cycle
 
   log_ok "Main heartbeat cycle complete"
 
