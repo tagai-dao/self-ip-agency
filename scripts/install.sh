@@ -768,48 +768,97 @@ main() {
     fi
 
     # ── Build ordered next-steps list ───────────────────────────────────────
-    local -a NEXT_STEPS=()
-    local step_num=0
+    # Schema v2: structured steps (one object per atomic step) with a parallel
+    # flat-text fallback for legacy consumers. The verification tweet is modeled
+    # as ONE atomic step (not 3 split strings) so operator UIs that only render
+    # the first entry still see the full tweet body inline.
+    #
+    # Parallel arrays indexed by step position:
+    #   NEXT_STEPS_TEXT  — flat string per step (may contain embedded newlines)
+    #   STEP_KINDS       — kind tag (e.g. "x_verification_tweet") for custom render
+    #   STEP_PAYLOADS    — JSON string: the full structured step object
+    local -a NEXT_STEPS_TEXT=() STEP_KINDS=() STEP_PAYLOADS=()
     local TAGCLAW_STATUS TAGCLAW_AGENT_USERNAME TAGCLAW_VERIFICATION_CODE TAGCLAW_PROFILE_URL
     TAGCLAW_STATUS="$(resolve_tagclaw_skill_env_field "TAGCLAW_STATUS" "$workspace")"
     TAGCLAW_AGENT_USERNAME="$(resolve_tagclaw_skill_env_field "TAGCLAW_AGENT_USERNAME" "$workspace")"
     TAGCLAW_VERIFICATION_CODE="$(resolve_tagclaw_skill_env_field "TAGCLAW_VERIFICATION_CODE" "$workspace")"
     TAGCLAW_PROFILE_URL="$(resolve_tagclaw_skill_env_field "TAGCLAW_PROFILE_URL" "$workspace")"
 
-    if [ "$CREDENTIALS_EXIST" != "true" ]; then
-      # Step 1: rerun installer or call the helper directly; both now work without explicit name/description.
-      step_num=$((step_num + 1))
-      NEXT_STEPS+=("Re-run install to complete TagClaw onboarding: bash scripts/install.sh")
+    # Verification-tweet artifact path (used by both the structured step and
+    # the dedicated file handoff written further down).
+    local VERIFICATION_TWEET_FILE="$workspace/tagclaw-verification-tweet.txt"
 
-      step_num=$((step_num + 1))
-      NEXT_STEPS+=("Or run helper directly: bash $workspace/scripts/tagclaw-onboard.sh full --workspace $workspace")
+    # Helper: emit a "simple" structured step (kind + action only)
+    _emit_step_simple() {
+      local _kind="$1" _text="$2"
+      NEXT_STEPS_TEXT+=("$_text")
+      STEP_KINDS+=("$_kind")
+      STEP_PAYLOADS+=("$(python3 -c '
+import json, sys
+print(json.dumps({"kind": sys.argv[1], "title": sys.argv[2], "action": sys.argv[2]}))
+' "$_kind" "$_text")")
+    }
+
+    # Helper: emit the x_verification_tweet step — the copy_text and details
+    # fields carry the full tweet body so Step 1 can render atomically.
+    _emit_step_verification_tweet() {
+      local _agent="$1" _code="$2" _vfile="$3" _poll="$4"
+      local _line1 _line2 _copy _flat
+      _line1="I'm claiming my AI agent \"$_agent\" on @TagClaw"
+      _line2="Verification: \"$_code\""
+      _copy="$(printf '%s\n%s' "$_line1" "$_line2")"
+      _flat="$(printf 'Post this verification tweet on X:\n%s\n%s' "$_line1" "$_line2")"
+      NEXT_STEPS_TEXT+=("$_flat")
+      STEP_KINDS+=("x_verification_tweet")
+      STEP_PAYLOADS+=("$(python3 -c '
+import json, sys
+agent, code, vfile, poll = sys.argv[1:]
+line1 = f"I\u0027m claiming my AI agent \"{agent}\" on @TagClaw"
+line2 = f"Verification: \"{code}\""
+print(json.dumps({
+    "kind": "x_verification_tweet",
+    "title": "Post verification tweet on X",
+    "action": "Post this exact verification tweet on X",
+    "copy_text": f"{line1}\n{line2}",
+    "details": [line1, line2],
+    "file": vfile,
+    "post_action": f"After the tweet is live, run: {poll}",
+}))
+' "$_agent" "$_code" "$_vfile" "$_poll")")
+    }
+
+    if [ "$CREDENTIALS_EXIST" != "true" ]; then
+      _emit_step_simple "rerun_install" \
+        "Re-run install to complete TagClaw onboarding: bash scripts/install.sh"
+      _emit_step_simple "run_onboard_helper" \
+        "Or run helper directly: bash $workspace/scripts/tagclaw-onboard.sh full --workspace $workspace"
     fi
 
     if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
-      step_num=$((step_num + 1))
-      NEXT_STEPS+=("Post this exact verification tweet:")
-      step_num=$((step_num + 1))
-      NEXT_STEPS+=("I'm claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw")
-      step_num=$((step_num + 1))
-      NEXT_STEPS+=("Verification: \"$TAGCLAW_VERIFICATION_CODE\"")
-      step_num=$((step_num + 1))
-      NEXT_STEPS+=("After the tweet is live, run: bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace")
+      local _POLL_CMD="bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace"
+      _emit_step_verification_tweet \
+        "$TAGCLAW_AGENT_USERNAME" \
+        "$TAGCLAW_VERIFICATION_CODE" \
+        "$VERIFICATION_TWEET_FILE" \
+        "$_POLL_CMD"
+      _emit_step_simple "poll_tagclaw_status" \
+        "After the tweet is live, run: $_POLL_CMD"
     elif [ "$TAGCLAW_STATUS" != "active" ]; then
-      step_num=$((step_num + 1))
-      NEXT_STEPS+=("After posting the verification tweet, run: bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace")
+      _emit_step_simple "poll_tagclaw_status" \
+        "After posting the verification tweet, run: bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace"
     fi
 
     if [ "$CREDENTIALS_EXIST" = "true" ]; then
-      step_num=$((step_num + 1))
-      NEXT_STEPS+=("Verify $workspace/skills/tagclaw/.env contains TAGCLAW_API_KEY and $workspace/skills/tagclaw-wallet/.env contains the wallet bootstrap fields")
+      _emit_step_simple "verify_env_files" \
+        "Verify $workspace/skills/tagclaw/.env contains TAGCLAW_API_KEY and $workspace/skills/tagclaw-wallet/.env contains the wallet bootstrap fields"
     fi
 
-    step_num=$((step_num + 1))
-    NEXT_STEPS+=("Register cron jobs (see commands printed in Step 7 above)")
+    _emit_step_simple "register_crons" \
+      "Register cron jobs (see commands printed in Step 7 above)"
 
     if [ "$DASHBOARD_STATUS" = "deps_missing" ]; then
-      step_num=$((step_num + 1))
-      NEXT_STEPS+=("Install dashboard deps: pip3 install -r dashboard/requirements.txt")
+      _emit_step_simple "install_dashboard_deps" \
+        "Install dashboard deps: pip3 install -r dashboard/requirements.txt"
     fi
 
     # ── Write .installed marker atomically ──────────────────────────────────
@@ -864,7 +913,8 @@ print(json.dumps(d, indent=2))
     local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Crons: manual. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}."
 
     # ── Dedicated verification tweet handoff artifact ──────────────────────
-    local VERIFICATION_TWEET_FILE="$workspace/tagclaw-verification-tweet.txt"
+    # VERIFICATION_TWEET_FILE was declared earlier (before the structured
+    # next-steps builder) so the x_verification_tweet step could reference it.
     if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
       cat > "$VERIFICATION_TWEET_FILE" <<EOF
 I'm claiming my AI agent "$TAGCLAW_AGENT_USERNAME" on @TagClaw
@@ -875,17 +925,47 @@ EOF
       rm -f "$VERIFICATION_TWEET_FILE" 2>/dev/null || true
     fi
 
-    # ── P0-A: Write .install-next-steps.json ────────────────────────────────
+    # ── P0-A: Write .install-next-steps.json (schema v2) ────────────────────
+    # v2 changes (2026-04-17):
+    #   - `next_steps` is now a structured array (one object per atomic step).
+    #   - `next_steps_text` is the flat-string fallback for legacy consumers.
+    #   - The verification tweet ships as ONE step (kind=x_verification_tweet)
+    #     carrying `copy_text`, `details`, `file`, and `post_action` so UIs can
+    #     render the full tweet inline instead of splitting it across steps.
+    #
+    # Assemble the structured + flat arrays into a single JSON blob in an
+    # intermediate python3 step. We pass STEP_PAYLOADS (already JSON-encoded
+    # objects) and NEXT_STEPS_TEXT (flat strings, may contain embedded
+    # newlines) through argv so neither bash word-splitting nor double-quoted
+    # interpolation can lose data.
+    local _arrays_json _struct_count="${#STEP_PAYLOADS[@]}"
+    _arrays_json="$(python3 -c '
+import json, sys
+n = int(sys.argv[1])
+structured = [json.loads(x) for x in sys.argv[2:2 + n]]
+flat = list(sys.argv[2 + n:])
+for i, s in enumerate(structured, 1):
+    s["order"] = i
+print(json.dumps({"next_steps": structured, "next_steps_text": flat}))
+' "$_struct_count" "${STEP_PAYLOADS[@]}" "${NEXT_STEPS_TEXT[@]}")"
+
     local next_steps_json
-    next_steps_json="$(python3 -c "
-import json
+    # The arrays JSON is piped via stdin (NOT interpolated into the Python
+    # source) so Python's string-literal escape processing cannot mangle
+    # embedded newlines or quote characters in the step content.
+    next_steps_json="$(printf '%s' "$_arrays_json" | python3 -c "
+import json, sys
 from datetime import datetime, timezone
-steps = $(printf '%s\n' "${NEXT_STEPS[@]}" | python3 -c "import sys,json; print(json.dumps([l.rstrip() for l in sys.stdin]))")
+_arrays = json.load(sys.stdin)
+_tw_active = '$TAGCLAW_STATUS' == 'pending_verification' and bool('$TAGCLAW_AGENT_USERNAME') and bool('$TAGCLAW_VERIFICATION_CODE')
+_tw_line1 = 'I\\'m claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw' if _tw_active else ''
+_tw_line2 = 'Verification: \"$TAGCLAW_VERIFICATION_CODE\"' if _tw_active else ''
 d = {
-    'schema': 'install-next-steps.v1',
+    'schema': 'install-next-steps.v2',
     'install_status': '$INSTALL_STATUS',
     'summary': '$INSTALL_SUMMARY',
-    'next_steps': [{'order': i+1, 'action': s} for i, s in enumerate(steps)],
+    'next_steps': _arrays['next_steps'],
+    'next_steps_text': _arrays['next_steps_text'],
     'tagclaw': {
         'onboard_status': '$TAGCLAW_ONBOARD_STATUS',
         'status': '$TAGCLAW_STATUS',
@@ -893,10 +973,8 @@ d = {
         'verification_code': '$TAGCLAW_VERIFICATION_CODE',
         'profile_url': '$TAGCLAW_PROFILE_URL',
         'verification_tweet_file': '$VERIFICATION_TWEET_FILE',
-        'verification_tweet': [
-            'I\'m claiming my AI agent "$TAGCLAW_AGENT_USERNAME" on @TagClaw',
-            'Verification: "$TAGCLAW_VERIFICATION_CODE"'
-        ] if '$TAGCLAW_STATUS' == 'pending_verification' and '$TAGCLAW_AGENT_USERNAME' and '$TAGCLAW_VERIFICATION_CODE' else []
+        'verification_tweet': [_tw_line1, _tw_line2] if _tw_active else [],
+        'verification_tweet_text': (_tw_line1 + '\\n' + _tw_line2) if _tw_active else ''
     },
     'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'version': '$AGENCY_VERSION'
@@ -906,6 +984,8 @@ print(json.dumps(d, indent=2))
     atomic_write_json "$AGENCY_DIR/.install-next-steps.json" "$next_steps_json"
 
     # ── P1-B: Write .install-next-steps.md ──────────────────────────────────
+    # Kind-based rendering: the x_verification_tweet step renders with the
+    # tweet body inline in a fenced text block so Step 1 is atomic.
     {
       echo "# Install Next Steps"
       echo ""
@@ -914,20 +994,36 @@ print(json.dumps(d, indent=2))
       echo ""
       echo "## Required actions (in order)"
       echo ""
-      local md_i=0
-      for step in "${NEXT_STEPS[@]}"; do
-        md_i=$((md_i + 1))
-        echo "${md_i}. ${step}"
+      local md_i=0 _k _tw_line1 _tw_line2
+      _tw_line1="I'm claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw"
+      _tw_line2="Verification: \"$TAGCLAW_VERIFICATION_CODE\""
+      for md_i in "${!NEXT_STEPS_TEXT[@]}"; do
+        _k="${STEP_KINDS[$md_i]}"
+        if [ "$_k" = "x_verification_tweet" ]; then
+          echo "$((md_i + 1)). **Post verification tweet on X** — post this exact tweet:"
+          echo ""
+          echo '   ```text'
+          echo "   ${_tw_line1}"
+          echo "   ${_tw_line2}"
+          echo '   ```'
+          echo ""
+          echo "   File (for convenience): \`$VERIFICATION_TWEET_FILE\`"
+          echo "   After the tweet is live, run: \`bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace\`"
+        else
+          echo "$((md_i + 1)). ${NEXT_STEPS_TEXT[$md_i]}"
+        fi
       done
       echo ""
       if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
-        echo "## Verification tweet"
+        # Keep the dedicated section as a redundant convenience reference
+        # (the primary inline copy is above in Step 1).
+        echo "## Verification tweet (reference copy)"
         echo ""
         echo "File: $VERIFICATION_TWEET_FILE"
         echo ""
         echo '```text'
-        echo "I'm claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw"
-        echo "Verification: \"$TAGCLAW_VERIFICATION_CODE\""
+        echo "${_tw_line1}"
+        echo "${_tw_line2}"
         echo '```'
         echo ""
       fi
@@ -942,7 +1038,7 @@ print(json.dumps(d, indent=2))
       echo "| Cron jobs | manual (not auto-registered) |"
       echo ""
       echo "---"
-      echo "_Generated by install.sh v${AGENCY_VERSION}_"
+      echo "_Generated by install.sh v${AGENCY_VERSION} (schema: install-next-steps.v2)_"
     } > "$AGENCY_DIR/.install-next-steps.md"
     log_ok "Wrote $AGENCY_DIR/.install-next-steps.md"
 
@@ -994,10 +1090,29 @@ print(json.dumps(d, indent=2))
       echo "  ║"
     fi
     echo "  ║  Manual steps required:"
-    local box_i=0
-    for step in "${NEXT_STEPS[@]}"; do
-      box_i=$((box_i + 1))
-      echo "  ║    ${box_i}. ${step}"
+    # Kind-based render: x_verification_tweet inlines the full tweet body so
+    # operators reading only the summary box still see the exact text to post.
+    local box_i _bk
+    for box_i in "${!NEXT_STEPS_TEXT[@]}"; do
+      _bk="${STEP_KINDS[$box_i]}"
+      if [ "$_bk" = "x_verification_tweet" ]; then
+        echo "  ║    $((box_i + 1)). Post this verification tweet on X:"
+        echo "  ║         I'm claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw"
+        echo "  ║         Verification: \"$TAGCLAW_VERIFICATION_CODE\""
+        echo "  ║         (file: $VERIFICATION_TWEET_FILE)"
+      else
+        # Flat strings may contain embedded newlines (e.g. the consolidated
+        # fallback): render each physical line with the box gutter preserved.
+        local _first=1 _line
+        while IFS= read -r _line; do
+          if [ "$_first" = "1" ]; then
+            echo "  ║    $((box_i + 1)). ${_line}"
+            _first=0
+          else
+            echo "  ║       ${_line}"
+          fi
+        done <<< "${NEXT_STEPS_TEXT[$box_i]}"
+      fi
     done
     echo "  ║"
     echo "  ║  Cycle readiness (post-install self-check):"
@@ -1033,18 +1148,27 @@ print(json.dumps(d, indent=2))
     # Deterministic key=value lines for external agent parsing
     echo ""
     echo "### BEGIN INSTALL CONTRACT ###"
+    echo "INSTALL_STEPS_SCHEMA=\"install-next-steps.v2\""
     echo "INSTALL_STATUS=\"${INSTALL_STATUS}\""
     echo "MAIN_HEARTBEAT_ENTRYPOINT=\"$workspace/scripts/main-heartbeat.sh\""
     echo "BOOKMARKER_CYCLE_ENTRYPOINT=\"$workspace/scripts/bookmarker-cycle.sh\""
     echo "TRADER_CYCLE_ENTRYPOINT=\"$workspace/scripts/trader-cycle.sh\""
     echo "HEARTBEAT_CONTRACT_PATH=\"$workspace/HEARTBEAT.md\""
+    # NEXT_STEP_N markers carry the flat fallback text. For the consolidated
+    # x_verification_tweet step the value spans multiple logical lines; we
+    # escape embedded newlines as the two-character sequence \n so naive
+    # line-based parsers still see one NEXT_STEP_N per physical output line.
     local marker_i=0
     local step_escaped
-    for step in "${NEXT_STEPS[@]}"; do
+    for step in "${NEXT_STEPS_TEXT[@]}"; do
       marker_i=$((marker_i + 1))
       step_escaped="${step//\\/\\\\}"
       step_escaped="${step_escaped//\"/\\\"}"
+      # Convert real newlines → literal \n for single-line key=value output.
+      step_escaped="${step_escaped//$'\n'/\\n}"
       echo "NEXT_STEP_${marker_i}=\"${step_escaped}\""
+      # Emit a kind tag so new parsers can detect the verification step.
+      echo "NEXT_STEP_${marker_i}_KIND=\"${STEP_KINDS[$((marker_i - 1))]}\""
     done
     echo "IDENTITY_RESOLVED=\"${IDENTITY_RESOLVED}\""
     echo "CREDENTIALS_EXIST=\"${CREDENTIALS_EXIST}\""
@@ -1055,8 +1179,12 @@ print(json.dumps(d, indent=2))
     echo "TAGCLAW_PROFILE_URL=\"${TAGCLAW_PROFILE_URL}\""
     if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
       echo "VERIFICATION_TWEET_FILE=\"${VERIFICATION_TWEET_FILE}\""
+      # Per-line fields — kept for backward compatibility.
       echo "VERIFICATION_TWEET_LINE_1=\"I\'m claiming my AI agent \\\"${TAGCLAW_AGENT_USERNAME}\\\" on @TagClaw\""
       echo "VERIFICATION_TWEET_LINE_2=\"Verification: \\\"${TAGCLAW_VERIFICATION_CODE}\\\"\""
+      # Aggregated field — newlines escaped as \n so parsers do not need to
+      # reconstruct the tweet from line 1 + line 2.
+      echo "VERIFICATION_TWEET_TEXT=\"I\'m claiming my AI agent \\\"${TAGCLAW_AGENT_USERNAME}\\\" on @TagClaw\\nVerification: \\\"${TAGCLAW_VERIFICATION_CODE}\\\"\""
     fi
     echo "MAIN_READY=\"${MAIN_READY}\""
     echo "BOOKMARKER_READY=\"${BOOKMARKER_READY}\""
