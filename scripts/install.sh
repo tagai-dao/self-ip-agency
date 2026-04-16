@@ -841,8 +841,12 @@ print(json.dumps({"kind": sys.argv[1], "title": sys.argv[2], "action": sys.argv[
 ' "$_kind" "$_text")")
     }
 
-    # Helper: emit the x_verification_tweet step — the copy_text and details
-    # fields carry the full tweet body so Step 1 can render atomically.
+    # Helper: emit the x_verification_tweet step — the `action` field inlines
+    # the full tweet body (matching the flat-text fallback) so naive consumers
+    # that render only top-level common fields (title/action/file) still see
+    # the exact tweet text under Step 1 and do not have to open the
+    # verification-tweet file. `copy_text` / `details` remain the canonical
+    # clipboard/per-line fields for kind-aware consumers.
     _emit_step_verification_tweet() {
       local _agent="$1" _code="$2" _vfile="$3" _poll="$4"
       local _line1 _line2 _copy _flat
@@ -857,11 +861,12 @@ import json, sys
 agent, code, vfile, poll = sys.argv[1:]
 line1 = f"I\u0027m claiming my AI agent \"{agent}\" on @TagClaw"
 line2 = f"Verification: \"{code}\""
+body = f"{line1}\n{line2}"
 print(json.dumps({
     "kind": "x_verification_tweet",
     "title": "Post verification tweet on X",
-    "action": "Post this exact verification tweet on X",
-    "copy_text": f"{line1}\n{line2}",
+    "action": f"Post this verification tweet on X:\n{line1}\n{line2}",
+    "copy_text": body,
     "details": [line1, line2],
     "file": vfile,
     "post_action": f"After the tweet is live, run: {poll}",
