@@ -379,6 +379,38 @@ def main() -> int:
 
     out = RUNTIME / 'main' / 'input-packet.json'
     atomic_write_json(out, packet)
+
+    # ── Raw panel snapshot ─────────────────────────────────────────────
+    # Write a minimal, truthful raw artifact to raw/main/ so the dashboard
+    # raw panel has a main-side entry reflecting packet-build inputs.
+    raw_snapshot = {
+        "schema": "raw.main.packet-snapshot.v1",
+        "generated_at": now_iso(),
+        "packet_status": packet.get('status'),
+        "cycle_id": packet.get('cycle_id'),
+        "inputs_present": {
+            "bookmarker_latest": bool(bookmarker_latest),
+            "trader_latest": bool(trader_latest),
+            "bookmarker_tas_social": bool(bookmarker_tas_social),
+            "tas_trade": bool(tas_trade),
+            "wallet_snapshot": bool(wallet_snapshot),
+            "reward_status": bool(reward_status),
+            "source_health": bool(source_health),
+            "topic_brief": bool(topic_brief),
+            "content_candidates": bool(content_candidates),
+        },
+        "component_status": {
+            "bookmarker": bookmarker_latest.get('status') if bookmarker_latest else None,
+            "trader": trader_latest.get('status') if trader_latest else None,
+            "tas_social": bookmarker_tas_social.get('status') if bookmarker_tas_social else None,
+            "tas_trade": tas_trade.get('status') if tas_trade else None,
+        },
+        "blockers": [b.get('code') for b in blockers],
+        "warnings": [w.get('code') for w in warnings],
+        "packet_ref": "runtime/main/input-packet.json",
+    }
+    atomic_write_json(ROOT / 'raw' / 'main' / 'latest-packet-snapshot.json', raw_snapshot)
+
     print(json.dumps({"status": packet['status'], "path": str(out)}, ensure_ascii=False, indent=2))
     return 0
 

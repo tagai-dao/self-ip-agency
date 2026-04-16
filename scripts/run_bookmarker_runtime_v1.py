@@ -22,7 +22,7 @@ import os
 import sys
 import tempfile
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +33,19 @@ from typing import Any
 WORKSPACE = Path(os.environ.get("OPENCLAW_WORKSPACE", Path.home() / ".openclaw" / "workspace"))
 RUNTIME_BOOKMARKER = WORKSPACE / "runtime" / "bookmarker"
 RUNTIME_SHARED = WORKSPACE / "runtime" / "shared"
+RAW_BOOKMARKER = WORKSPACE / "raw" / "bookmarker"
 CONFIG_DIR = WORKSPACE / "config"
 BEHAVIOR_FILE = WORKSPACE / "agents" / "bookmarker.md"
+
+# TAS_social weights — mirror compute_tas_social_v2.py so operator-facing
+# semantics stay stable across execution backends.
+ALIGN_WEIGHTS = {"like": 1, "curation": 3, "comment": 5, "retweet": 3}
+ALIGN_NORMALIZE = 4.0
+ALIGN_CAP = 5.0
+COMMUNITY_NORMALIZE = 20.0
+COMMUNITY_CAP = 5.0
+WEIGHT_ALIGN = 0.7
+WEIGHT_COMMUNITY = 0.3
 
 
 def atomic_write_json(path: Path, obj: Any) -> None:
@@ -88,12 +99,16 @@ def resolve_api_key() -> str:
     return ""
 
 
-def tagclaw_get(endpoint: str, api_key: str) -> dict | list | None:
-    """HTTP GET against TagClaw API. Returns parsed JSON or None."""
+def tagclaw_get(endpoint: str, api_key: str,
+                base_url: str = "https://bsc-api.tagai.fun/tagclaw") -> dict | list | None:
+    """HTTP GET against TagClaw API. Returns parsed JSON or None.
+
+    ``base_url`` may be overridden to reach sibling namespaces on the same
+    host (e.g. the ``/curation`` endpoints).
+    """
     import urllib.request
     import urllib.error
 
-    base_url = "https://bsc-api.tagai.fun/tagclaw"
     url = f"{base_url}{endpoint}"
     req = urllib.request.Request(url)
     if api_key:
@@ -349,6 +364,36 @@ def score_post(post: dict) -> float:
     return max(score, 0.0)
 
 
+def load_agency_identity() -> dict:
+    """Load agency-identity.json from the workspace (agent/owner handles).
+
+    Returns an empty dict when the file is missing or malformed so callers
+    can proceed with defaults. Never raises.
+    """
+    path = CONFIG_DIR / "agency-identity.json"
+    data = read_json(path) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            ts = float(value)
+            if ts > 1e12:
+                ts = ts / 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except Exception:
+            return None
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    return None
+
+
 def run_curation_cycle() -> dict:
     """Execute one bookmarker curation cycle. Returns result dict."""
     ts_start = now_iso()
@@ -358,12 +403,15 @@ def run_curation_cycle() -> dict:
     feed_size = 0
 
     # 1. Fetch feed
-    feed = tagclaw_get("/feed", api_key)
-    if feed is None:
+    feed_raw = tagclaw_get("/feed", api_key)
+    feed_fetch_ok = feed_raw is not None
+    if not feed_fetch_ok:
         errors.append("Failed to fetch feed from TagClaw API")
         feed = []
-    elif isinstance(feed, dict):
-        feed = feed.get("posts") or feed.get("items") or feed.get("data") or []
+    elif isinstance(feed_raw, dict):
+        feed = feed_raw.get("posts") or feed_raw.get("items") or feed_raw.get("data") or []
+    else:
+        feed = feed_raw if isinstance(feed_raw, list) else []
     feed_size = len(feed)
 
     # 2. Score and rank posts
@@ -435,8 +483,329 @@ def run_curation_cycle() -> dict:
         "config_warnings": config_warnings,
         "curation_vp_pct": curation_vp_pct,
         "execution_backend": "native-python",
-        # Internal: pass scored posts for canonical output publishing
+        # Internal: pass raw data for canonical output publishing
         "_scored_posts": scored,
+        "_feed_fetch_ok": feed_fetch_ok,
+        "_feed_raw_sample": feed[:10] if isinstance(feed, list) else [],
+        "_api_key_present": bool(api_key),
+    }
+
+
+# ---------------------------------------------------------------------------
+# TAS_social native publisher — bookmarker is sole owner (2026-03-25)
+# ---------------------------------------------------------------------------
+
+def _fetch_own_posts_24h(api_key: str, own_username: str) -> tuple[list[dict], str, str | None]:
+    """Fetch this agent's own posts in the last 24h.
+
+    Tries authenticated /feed/me first (returns participation flags). Falls
+    back to public /feed filtered by username. Returns (posts, source, error).
+    """
+    if not own_username:
+        return [], "unknown", "agency-identity missing agent username"
+
+    now_dt = datetime.now(timezone.utc)
+    window_start = now_dt - timedelta(hours=24)
+    own_username_lc = str(own_username).lower()
+
+    def _coerce(resp: Any) -> list:
+        if resp is None:
+            return []
+        if isinstance(resp, list):
+            return resp
+        if isinstance(resp, dict):
+            for key in ("posts", "tweets", "items", "data"):
+                val = resp.get(key)
+                if isinstance(val, list):
+                    return val
+        return []
+
+    def _filter(posts: list) -> list[dict]:
+        eligible: list[dict] = []
+        for t in posts:
+            if not isinstance(t, dict):
+                continue
+            username = str(t.get("twitterUsername") or t.get("username") or t.get("author") or "").lower()
+            if own_username_lc and username and username != own_username_lc:
+                continue
+            ts = _parse_ts(t.get("tweetTime") or t.get("createdAt") or t.get("created_at"))
+            if ts and ts < window_start:
+                continue
+            tid = t.get("tweetId") or t.get("id") or t.get("postId")
+            if not tid:
+                continue
+            eligible.append({
+                "id": str(tid),
+                "created_at": ts.strftime("%Y-%m-%dT%H:%M:%SZ") if ts else None,
+                "content": str(t.get("content") or "")[:160],
+                "likes": int(t.get("likeCount") or t.get("likes") or 0),
+                "retweets": int(t.get("retweetCount") or t.get("retweets") or 0),
+                "replies": int(t.get("replyCount") or t.get("replies") or 0),
+                "tick": t.get("tick") or "",
+            })
+        return eligible
+
+    # Preferred: authenticated /feed/me
+    resp = tagclaw_get("/feed/me?pages=0&limit=50", api_key) if api_key else None
+    posts = _coerce(resp)
+    if posts:
+        return _filter(posts), "/feed/me", None
+
+    # Fallback: public /feed filtered by username
+    resp = tagclaw_get("/feed", api_key)
+    posts = _coerce(resp)
+    if posts:
+        return _filter(posts), "/feed", None
+
+    return [], "unavailable", "could not fetch /feed/me or /feed"
+
+
+def _compute_align_via_api(api_key: str, post_ids: list[str],
+                           owner_twitter_id: str, owner_username: str
+                           ) -> tuple[dict[str, int] | None, str]:
+    """Check owner interactions across the given post IDs via curation endpoints.
+
+    Returns (signals_dict, source_label). signals_dict is None when the
+    curation endpoints are all unreachable. Probes at most 5 posts to keep
+    the cycle cheap.
+    """
+    if not api_key or not post_ids:
+        return None, "skipped"
+    if not owner_twitter_id and not owner_username:
+        return None, "no-owner-binding"
+
+    signals = {k: 0 for k in ALIGN_WEIGHTS}
+    any_success = False
+    owner_username_lc = str(owner_username or "").lower()
+    owner_twitter_id_s = str(owner_twitter_id or "")
+
+    curation_base = "https://bsc-api.tagai.fun/curation"
+    for post_id in post_ids[:5]:
+        # Curators (likes / curations)
+        curate_resp = tagclaw_get(
+            f"/tweetCurateList?tweetId={post_id}", api_key, base_url=curation_base
+        )
+        if isinstance(curate_resp, dict):
+            curate_list = (
+                curate_resp.get("data") or curate_resp.get("curateList")
+                or curate_resp.get("list") or curate_resp.get("curations") or []
+            )
+            if isinstance(curate_list, list):
+                any_success = True
+                for entry in curate_list:
+                    if not isinstance(entry, dict):
+                        continue
+                    tid = str(entry.get("twitterId") or entry.get("userId") or "")
+                    uname = str(entry.get("twitterUsername") or "").lower()
+                    if (owner_twitter_id_s and tid == owner_twitter_id_s) or \
+                       (owner_username_lc and uname == owner_username_lc):
+                        signals["like"] += 1
+
+        # Replies
+        reply_resp = tagclaw_get(
+            f"/getReplyOfTweet?tweetId={post_id}&pages=0", api_key, base_url=curation_base
+        )
+        if isinstance(reply_resp, dict):
+            reply_list = (
+                reply_resp.get("tweets") or reply_resp.get("data")
+                or reply_resp.get("list") or reply_resp.get("replies") or []
+            )
+            if isinstance(reply_list, list):
+                any_success = True
+                for entry in reply_list:
+                    if not isinstance(entry, dict):
+                        continue
+                    tid = str(entry.get("twitterId") or entry.get("userId") or "")
+                    uname = str(entry.get("twitterUsername") or "").lower()
+                    if (owner_twitter_id_s and tid == owner_twitter_id_s) or \
+                       (owner_username_lc and uname == owner_username_lc):
+                        signals["comment"] += 1
+
+    return (signals, "curation-endpoints") if any_success else (None, "inconclusive")
+
+
+def compute_native_tas_social(api_key: str, identity: dict,
+                              api_key_present: bool) -> dict:
+    """Compute a conservative, native TAS_social for the bookmarker runtime.
+
+    Uses /feed/me (preferred) or /feed to gather this agent's own posts in
+    the rolling 24h window, computes a Track B (community) score from
+    aggregate engagement, and opportunistically probes curation endpoints
+    for Track A (owner interactions). When the computation is blocked at
+    any step, returns an explicit blocked payload with ``null_reason`` so
+    downstream aggregation can display something more useful than a bare
+    dash.
+    """
+    now_dt = datetime.now(timezone.utc)
+    ts_now = now_iso()
+    window_start = now_dt - timedelta(hours=24)
+
+    agent = identity.get("agent") if isinstance(identity, dict) else None
+    owner = identity.get("owner") if isinstance(identity, dict) else None
+    own_username = ""
+    if isinstance(agent, dict):
+        own_username = str(agent.get("username") or "").strip()
+    owner_twitter_id = ""
+    owner_username = ""
+    if isinstance(owner, dict):
+        owner_twitter_id = str(owner.get("twitter_id") or "").strip()
+        owner_username = str(owner.get("twitter_handle") or "").strip().lstrip("@")
+
+    if not api_key_present:
+        return {
+            "schema": "bookmarker.tas-social.v1",
+            "status": "blocked",
+            "generated_at": ts_now,
+            "updated_at": ts_now,
+            "value": None,
+            "align_score": None,
+            "community_score": None,
+            "null_reason": "blocked: no TagClaw API key configured",
+            "display_status": "blocked",
+            "source_class": "bookmarker-native",
+            "execution_backend": "native-python",
+            "formula": f"TAS_social = min(5.0, {WEIGHT_ALIGN}×align_score + {WEIGHT_COMMUNITY}×community_score)",
+            "window": {"start": window_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                       "end": ts_now, "hours": 24},
+            "inputs": {
+                "own_username": own_username or None,
+                "owner_username": owner_username or None,
+            },
+            "errors": ["missing_api_key"],
+        }
+
+    if not own_username:
+        return {
+            "schema": "bookmarker.tas-social.v1",
+            "status": "blocked",
+            "generated_at": ts_now,
+            "updated_at": ts_now,
+            "value": None,
+            "align_score": None,
+            "community_score": None,
+            "null_reason": "blocked: agency-identity.json missing agent.username",
+            "display_status": "blocked",
+            "source_class": "bookmarker-native",
+            "execution_backend": "native-python",
+            "formula": f"TAS_social = min(5.0, {WEIGHT_ALIGN}×align_score + {WEIGHT_COMMUNITY}×community_score)",
+            "window": {"start": window_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                       "end": ts_now, "hours": 24},
+            "inputs": {"own_username": None, "owner_username": owner_username or None},
+            "errors": ["missing_agent_identity"],
+        }
+
+    eligible, feed_source, feed_error = _fetch_own_posts_24h(api_key, own_username)
+
+    if feed_error and not eligible:
+        return {
+            "schema": "bookmarker.tas-social.v1",
+            "status": "blocked",
+            "generated_at": ts_now,
+            "updated_at": ts_now,
+            "value": None,
+            "align_score": None,
+            "community_score": None,
+            "null_reason": f"blocked: {feed_error}",
+            "display_status": "blocked",
+            "source_class": "bookmarker-native",
+            "execution_backend": "native-python",
+            "feed_source": feed_source,
+            "formula": f"TAS_social = min(5.0, {WEIGHT_ALIGN}×align_score + {WEIGHT_COMMUNITY}×community_score)",
+            "window": {"start": window_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                       "end": ts_now, "hours": 24},
+            "inputs": {"own_username": own_username, "owner_username": owner_username or None},
+            "errors": [feed_error],
+        }
+
+    # Track B — community (aggregate engagement on our own posts in 24h window)
+    total_likes = sum(p.get("likes", 0) for p in eligible)
+    total_retweets = sum(p.get("retweets", 0) for p in eligible)
+    total_replies = sum(p.get("replies", 0) for p in eligible)
+    total_community = total_likes + total_retweets + total_replies
+    community_score = min(COMMUNITY_CAP, (total_community / COMMUNITY_NORMALIZE) * COMMUNITY_CAP)
+
+    # Track A — owner alignment via curation endpoints (opportunistic)
+    post_ids = [str(p.get("id")) for p in eligible if p.get("id")]
+    align_signals, align_source = _compute_align_via_api(
+        api_key, post_ids, owner_twitter_id, owner_username
+    )
+    if align_signals is not None:
+        raw_align = sum(align_signals.get(k, 0) * ALIGN_WEIGHTS[k] for k in ALIGN_WEIGHTS)
+        align_score = min(ALIGN_CAP, raw_align / ALIGN_NORMALIZE) if raw_align > 0 else 0.0
+        align_track_status = "ok"
+    else:
+        # Preserve conservative behavior from compute_tas_social_v2.py: align=0
+        # when owner interactions cannot be observed (no prior-TAS leakage).
+        raw_align = 0
+        align_score = 0.0
+        align_track_status = "inconclusive"
+
+    tas_social = min(5.0, WEIGHT_ALIGN * align_score + WEIGHT_COMMUNITY * community_score)
+
+    if not eligible:
+        status = "partial"
+        null_reason = "partial: no own posts in 24h window — TAS_social reflects blank window"
+    elif align_track_status != "ok":
+        status = "partial"
+        null_reason = "partial: align track inconclusive (curation endpoints unreachable)"
+    else:
+        status = "ok"
+        null_reason = None
+
+    return {
+        "schema": "bookmarker.tas-social.v1",
+        "status": status,
+        "generated_at": ts_now,
+        "updated_at": ts_now,
+        "value": round(tas_social, 4),
+        "align_score": round(align_score, 4),
+        "community_score": round(community_score, 4),
+        "display_status": status,
+        "null_reason": null_reason,
+        "source_class": "bookmarker-native",
+        "execution_backend": "native-python",
+        "feed_source": feed_source,
+        "formula": f"TAS_social = min(5.0, {WEIGHT_ALIGN}×align_score + {WEIGHT_COMMUNITY}×community_score)",
+        "window": {
+            "start": window_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": ts_now,
+            "hours": 24,
+        },
+        "community_signals": {
+            "total_likes": total_likes,
+            "total_retweets": total_retweets,
+            "total_replies": total_replies,
+            "total_interactions": total_community,
+        },
+        "community_source": feed_source,
+        "track_a_detail": {
+            "scorer": f"@{owner_username}" if owner_username else None,
+            "target": f"@{own_username} posts",
+            "window_hours": 24,
+            "raw_align": raw_align,
+            "signals": align_signals or {k: 0 for k in ALIGN_WEIGHTS},
+            "source": align_source,
+            "status": align_track_status,
+            "fallback_rule": "align_score=0 when no in-window owner interaction (no prior-TAS leakage)",
+        },
+        "track_b_detail": {
+            "post_count": len(eligible),
+            "post_ids": post_ids[:10],
+            "source": feed_source,
+        },
+        "inputs": {
+            "own_username": own_username,
+            "owner_username": owner_username or None,
+            "eligible_posts": eligible[:10],
+        },
+        "normalization": {
+            "align": f"raw_align / {ALIGN_NORMALIZE} capped at {ALIGN_CAP}",
+            "community": f"total_interactions / {COMMUNITY_NORMALIZE} × {COMMUNITY_CAP} capped at {COMMUNITY_CAP}",
+        },
+        "notes": [
+            "native bookmarker-owned TAS_social (2026-04-16)",
+            "owner alignment is opportunistic; align=0 on inconclusive endpoints",
+        ],
     }
 
 
@@ -564,7 +933,71 @@ def publish_bookmarker_canonical(result: dict, ts_now: str) -> None:
     }
     atomic_write_json(RUNTIME_BOOKMARKER / "autonomy-intent.json", autonomy_intent)
 
-    print(f"[bookmarker-runtime] Published canonical outputs: topic-brief, source-health, content-candidates, social-drafts, autonomy-intent")
+    # ── tas-social.json ──────────────────────────────────────────────────
+    # Bookmarker is the sole owner of TAS_social (2026-03-25). Publish on
+    # every cycle — either a lightweight native score or an explicit
+    # blocked/partial payload with ``null_reason`` so the aggregator can
+    # surface a meaningful status instead of a bare null.
+    try:
+        identity = load_agency_identity()
+        api_key = resolve_api_key()
+        tas_social = compute_native_tas_social(
+            api_key=api_key,
+            identity=identity,
+            api_key_present=bool(result.get("_api_key_present")),
+        )
+    except Exception as exc:
+        tas_social = {
+            "schema": "bookmarker.tas-social.v1",
+            "status": "blocked",
+            "generated_at": ts_now,
+            "updated_at": ts_now,
+            "value": None,
+            "align_score": None,
+            "community_score": None,
+            "null_reason": f"blocked: tas-social computation raised {type(exc).__name__}",
+            "display_status": "blocked",
+            "source_class": "bookmarker-native",
+            "execution_backend": "native-python",
+            "errors": [str(exc)[:200]],
+        }
+    atomic_write_json(RUNTIME_BOOKMARKER / "tas-social.json", tas_social)
+
+    # ── raw ingest snapshot (P3) ─────────────────────────────────────────
+    # Truthful, minimal artifact so operators see something under raw/
+    # instead of a blank panel on a fresh install.
+    try:
+        publish_bookmarker_raw(result, tas_social, ts_now)
+    except Exception as exc:
+        print(f"[bookmarker-runtime] raw snapshot publisher skipped: {exc}")
+
+    print(f"[bookmarker-runtime] Published canonical outputs: topic-brief, source-health, content-candidates, social-drafts, autonomy-intent, tas-social")
+
+
+def publish_bookmarker_raw(result: dict, tas_social: dict, ts_now: str) -> None:
+    """Write a minimal raw snapshot for dashboard raw panel visibility.
+
+    Not a full ingest pipeline — just a truthful, lightweight artifact
+    summarising the feed fetch so operators can see what came in.
+    """
+    RAW_BOOKMARKER.mkdir(parents=True, exist_ok=True)
+    feed_sample = result.get("_feed_raw_sample") or []
+    snapshot = {
+        "schema": "raw.bookmarker.feed-snapshot.v1",
+        "generated_at": ts_now,
+        "source": "/feed (TagClaw API)",
+        "fetch_ok": bool(result.get("_feed_fetch_ok")),
+        "feed_size": result.get("feed_size", 0),
+        "scored_count": result.get("candidates_scored", 0),
+        "tas_social_status": tas_social.get("status"),
+        "tas_social_value": tas_social.get("value"),
+        "errors": result.get("errors", []),
+        "sample_post_ids": [
+            str(p.get("id") or p.get("postId") or p.get("tweetId") or "")
+            for p in feed_sample if isinstance(p, dict)
+        ],
+    }
+    atomic_write_json(RAW_BOOKMARKER / "latest-feed-snapshot.json", snapshot)
 
 
 # ---------------------------------------------------------------------------

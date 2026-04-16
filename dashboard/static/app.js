@@ -1289,11 +1289,35 @@ function renderTasCommandCenter(data) {
   // Previous values from history
   const prev = history.length >= 2 ? history[history.length - 2] : {};
 
+  // Fallback-label helpers — when a TAS component is null we still want to
+  // explain *why* rather than render a bare em dash.
+  const socialObj = (data.bookmarker || {}).tas_social_detail || {};
+  const socialSrc = (data.bookmarker && data.bookmarker.tas_social_detail) || {};
+  // tas_latest doesn't carry null_reason — fall back to the per-agent
+  // canonical runtime payloads for explanatory labels.
+  function tasFallbackLabel(numValue, srcObj, kind) {
+    if (numValue !== null) return null;
+    const reason = (srcObj && (srcObj.null_reason || srcObj.display_status || srcObj.status)) || null;
+    if (reason) return String(reason);
+    // Generic labels when no payload at all
+    if (kind === 'total') return 'pending';
+    return 'pending';
+  }
+
   // Center column
   const ccTotal = $('cc-tas-total');
   if (ccTotal) {
-    ccTotal.textContent = total !== null ? fmt(total) : '—';
-    ccTotal.className = 'big-num jumbo ' + (total >= 1.5 ? 'clr-ok' : total >= 0.8 ? 'clr-warn' : 'clr-error');
+    if (total !== null) {
+      ccTotal.textContent = fmt(total);
+      ccTotal.className = 'big-num jumbo ' + (total >= 1.5 ? 'clr-ok' : total >= 0.8 ? 'clr-warn' : 'clr-error');
+    } else {
+      // Aggregate is blocked when either component is blocked — surface that.
+      const lbl = (socialSrc.null_reason || socialSrc.status === 'blocked' ? 'social blocked' : null)
+        || ((tradeD || {}).null_reason || ((tradeD || {}).status === 'blocked' ? 'trade blocked' : null))
+        || 'pending';
+      ccTotal.textContent = lbl;
+      ccTotal.className = 'big-num jumbo clr-bootstrap';
+    }
   }
   const trendT = trendArrow(total, numericOrNull(prev.tas_total));
   const trendTEl = $('cc-tas-total-trend');
@@ -1337,8 +1361,13 @@ function renderTasCommandCenter(data) {
   // Bookmarker column (left)
   const ccSocial = $('cc-tas-social');
   if (ccSocial) {
-    ccSocial.textContent = social !== null ? fmt(social) : '—';
-    ccSocial.className = 'big-num ' + (social >= 1.5 ? 'clr-ok' : social >= 0.8 ? 'clr-warn' : 'clr-error');
+    if (social !== null) {
+      ccSocial.textContent = fmt(social);
+      ccSocial.className = 'big-num ' + (social >= 1.5 ? 'clr-ok' : social >= 0.8 ? 'clr-warn' : 'clr-error');
+    } else {
+      ccSocial.textContent = tasFallbackLabel(social, socialSrc, 'social') || 'pending';
+      ccSocial.className = 'big-num clr-bootstrap';
+    }
   }
   const trendS = trendArrow(social, numericOrNull(prev.tas_social));
   const trendSEl = $('cc-tas-social-trend');
@@ -1389,8 +1418,13 @@ function renderTasCommandCenter(data) {
     || ((tradeD.measurement_quality || {}).overall_status && (tradeD.measurement_quality || {}).overall_status !== 'ok');
   const ccTrade = $('cc-tas-trade');
   if (ccTrade) {
-    ccTrade.textContent = trade !== null ? (fmt(trade) + (_tradeIsDegraded ? ' ⚠' : '')) : '—';
-    ccTrade.className = 'big-num ' + (trade >= 1.5 ? 'clr-ok' : trade >= 0.8 ? 'clr-warn' : 'clr-error') + (_tradeIsDegraded ? ' degraded' : '');
+    if (trade !== null) {
+      ccTrade.textContent = fmt(trade) + (_tradeIsDegraded ? ' ⚠' : '');
+      ccTrade.className = 'big-num ' + (trade >= 1.5 ? 'clr-ok' : trade >= 0.8 ? 'clr-warn' : 'clr-error') + (_tradeIsDegraded ? ' degraded' : '');
+    } else {
+      ccTrade.textContent = tasFallbackLabel(trade, tradeD, 'trade') || 'pending';
+      ccTrade.className = 'big-num clr-bootstrap';
+    }
   }
   const trendTr = trendArrow(trade, numericOrNull(prev.tas_trade));
   const trendTrEl = $('cc-tas-trade-trend');
