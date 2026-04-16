@@ -321,15 +321,28 @@ def publish_trader_canonical(result: dict, ts_now: str, bundle_ts: str) -> None:
     atomic_write_json(RUNTIME_TRADER / "reward-status.json", reward_status)
 
     # ── tas-trade.json ───────────────────────────────────────────────────
-    # Native runtime provides observe-only signals; value is null until
-    # a proper measurement pipeline is in place.
+    # Native runtime provides observe-only signals; when no numeric TAS
+    # can be computed yet, publish an explicit null_reason/display_status
+    # so dashboard can render something more useful than a bare em dash.
+    tas_status = "ok" if has_credentials and wallet_status == "ok" else ("partial" if has_credentials else "blocked")
+    null_reason = None
+    if not has_credentials:
+        null_reason = "blocked: credentials not configured"
+    elif wallet_status != "ok":
+        null_reason = "blocked: wallet unavailable"
+    else:
+        null_reason = "observe-only: TAS measurement pending"
+
     tas_trade: dict[str, Any] = {
         "schema": "trader.tas-trade.v1",
         "generated_at": ts_now,
         "updated_at": ts_now,
         "bundle_ts": bundle_ts,
-        "status": "ok" if has_credentials and wallet_status == "ok" else ("partial" if has_credentials else "blocked"),
-        "value": None,  # native runtime does not compute TAS — deferred to measurement pipeline
+        "status": tas_status,
+        "value": None,  # numeric TAS deferred to measurement pipeline
+        "score": None,
+        "display_status": tas_status,
+        "null_reason": null_reason,
         "portfolio_usd_raw": None,
         "risk_flags": [],
         "autonomy_mode": "observe-only",

@@ -1715,7 +1715,8 @@ function renderTraderTab(trader) {
   const risk = trader.risk_status || {};
   const onchain = trader.onchain_positions || {};
 
-  setText('trader-tas', fmt(tasT.value ?? tasT.score ?? tasT.tas_trade));
+  const tradeMetric = numericOrNull(tasT.value ?? tasT.score ?? tasT.tas_trade);
+  setText('trader-tas', tradeMetric === null ? (tasT.null_reason || tasT.display_status || tasT.status || '—') : fmt(tradeMetric));
   const trMode = tasT.autonomy_mode || '—';
   setBadge('trader-mode-badge', trMode, trMode.toLowerCase().replace(/[^a-z-]/g, ''));
   const riskLvl = risk.level || risk.status || (risk.risk_flags?.length ? 'partial' : 'ok') || '—';

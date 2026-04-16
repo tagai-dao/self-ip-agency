@@ -387,8 +387,10 @@ def publish_bookmarker_canonical(result: dict, ts_now: str) -> None:
         "schema": "bookmarker.autonomy-intent.v1",
         "generated_at": ts_now,
         "updated_at": ts_now,
+        "status": status,
         "intent": "curate" if actions else "observe",
         "mode": "native-auto",
+        "autonomy_mode": "native-auto",
         "actions_planned": len(actions),
         "actions_executed": len([a for a in actions if a.get("status") == "ok"]),
     }

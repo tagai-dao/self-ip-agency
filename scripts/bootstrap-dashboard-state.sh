@@ -183,7 +183,10 @@ write_if_missing "$RUNTIME/bookmarker/topic-performance.json" '{
 write_if_missing "$RUNTIME/bookmarker/autonomy-intent.json" '{
   "schema": "bookmarker.autonomy-intent.v1",
   "bootstrap": true,
-  "intent": null
+  "status": "bootstrap",
+  "intent": null,
+  "mode": "bootstrap",
+  "autonomy_mode": "bootstrap"
 }'
 
 write_if_missing "$RUNTIME/bookmarker/social-drafts.json" '{
@@ -250,6 +253,11 @@ write_if_missing "$RUNTIME/trader/risk-status.json" '{
 write_if_missing "$RUNTIME/trader/tas-trade.json" '{
   "schema": "trader.tas-trade.v1",
   "bootstrap": true,
+  "status": "bootstrap",
+  "value": null,
+  "score": null,
+  "null_reason": "bootstrap: awaiting first trader cycle",
+  "display_status": "bootstrap",
   "tas_trade": null,
   "updated_at": null,
   "risk_flags": [],
