@@ -1018,6 +1018,9 @@ d = {
     'schema': 'install-next-steps.v2',
     'install_status': '$INSTALL_STATUS',
     'summary': '$INSTALL_SUMMARY',
+    'dashboard_local_status': '$DASHBOARD_STATUS',
+    'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',
+    'dashboard_public_url': '$DASHBOARD_PUBLIC_URL',
     'next_steps': _arrays['next_steps'],
     'next_steps_text': _arrays['next_steps_text'],
     'tagclaw': {
