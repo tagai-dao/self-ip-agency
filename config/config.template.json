@@ -40,10 +40,17 @@
   },
 
   "dashboard": {
-    "_comment": "Dashboard server settings.",
+    "_comment": "Dashboard server settings. Local dashboard is always enabled. Public exposure is OPT-IN via `public.enabled`.",
     "port": 7890,
     "host": "0.0.0.0",
-    "auto_refresh_seconds": 30
+    "auto_refresh_seconds": 30,
+    "public": {
+      "_comment": "Opt-in public exposure of the dashboard. Default is DISABLED. MVP only supports Cloudflare Quick Tunnel.",
+      "enabled": false,
+      "provider": "cloudflare",
+      "mode": "quick",
+      "auto_start": true
+    }
   },
 
   "tas": {

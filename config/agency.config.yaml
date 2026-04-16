@@ -71,6 +71,16 @@ dashboard:
   port: 7890
   host: "0.0.0.0"
   auto_refresh_seconds: 30
+  # Public exposure is OPT-IN. Default is DISABLED.
+  # MVP supports Cloudflare Quick Tunnel only (no named tunnel, no Access).
+  # When enabled, install.sh calls `scripts/dashboard-service.sh start-public` after
+  # the local dashboard reports healthy. The public URL is written to
+  # `runtime/shared/dashboard-service.json` and surfaced in install outputs.
+  public:
+    enabled: false
+    provider: "cloudflare"
+    mode: "quick"
+    auto_start: true
 
 # Announce settings (OPTIONAL — not required for local deployments)
 # Uncomment and configure only if you want cycle results announced to a channel.
