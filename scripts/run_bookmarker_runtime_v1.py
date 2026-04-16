@@ -132,31 +132,182 @@ def tagclaw_post(endpoint: str, api_key: str, data: dict) -> dict | None:
 # Curation logic
 # ---------------------------------------------------------------------------
 
+def _strip_inline_comment(value: str) -> str:
+    """Strip a trailing ``# ...`` comment from a YAML scalar value.
+
+    Respects single and double quoted strings so that ``#`` inside quotes
+    is preserved.  Returns the trimmed string.
+    """
+    in_single = False
+    in_double = False
+    for i, ch in enumerate(value):
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "#" and not in_single and not in_double:
+            # Only treat ``#`` as a comment marker when preceded by whitespace
+            # or at the start of the value; this avoids stripping ``#tag`` in
+            # an unquoted scalar (YAML allows it, but conventionally we quote).
+            if i == 0 or value[i - 1].isspace():
+                return value[:i].rstrip()
+    return value.rstrip()
+
+
+def _coerce_scalar(value: str) -> Any:
+    """Coerce a raw YAML scalar string into a Python typed value."""
+    if value == "" or value.lower() in ("null", "~"):
+        return None
+    low = value.lower()
+    if low in ("true", "yes", "on"):
+        return True
+    if low in ("false", "no", "off"):
+        return False
+    # Numeric coercion — try int first, then float.
+    try:
+        if value.startswith(("0x", "-0x", "+0x", "0X", "-0X", "+0X")):
+            return int(value, 16)
+        if "." in value or "e" in value.lower():
+            return float(value)
+        return int(value)
+    except ValueError:
+        pass
+    # Quoted string
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _fallback_yaml_load(text: str) -> dict:
+    """Minimal indentation-aware YAML loader for nested mappings.
+
+    Supports the subset used by agency.config.yaml: nested mappings, scalar
+    values with optional inline ``#`` comments, and quoted strings.  Lists
+    are not supported — callers should prefer ``yaml.safe_load`` when
+    available.  Returns ``{}`` on unrecoverable parse failure.
+    """
+    root: dict[str, Any] = {}
+    # Stack of (indent, container).  Root container lives at indent -1.
+    stack: list[tuple[int, dict]] = [(-1, root)]
+
+    for raw_line in text.splitlines():
+        # Drop full-line comments and blanks.
+        stripped_full = raw_line.strip()
+        if not stripped_full or stripped_full.startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        # Unindent to the enclosing container.
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        if not stack:
+            # Corrupt indentation — bail out so caller can use defaults.
+            return root
+        parent = stack[-1][1]
+
+        line = raw_line.strip()
+        if ":" not in line:
+            # Unsupported construct (e.g. list item) — skip rather than crash.
+            continue
+        key, _, rest = line.partition(":")
+        key = key.strip()
+        rest = _strip_inline_comment(rest.strip())
+        if rest == "":
+            # Opens a nested mapping.
+            child: dict[str, Any] = {}
+            parent[key] = child
+            stack.append((indent, child))
+        else:
+            parent[key] = _coerce_scalar(rest)
+    return root
+
+
 def load_config() -> dict:
-    """Load agency config for social settings."""
+    """Load agency config for social settings.
+
+    Uses ``yaml.safe_load`` when PyYAML is available, otherwise falls back
+    to a minimal indentation-aware parser.  Inline ``#`` comments and
+    nested mappings are handled correctly in both paths.  Always returns a
+    dict (empty on failure) so callers can proceed with defaults.
+    """
     config_path = CONFIG_DIR / "agency.config.yaml"
     if not config_path.exists():
         return {}
     try:
-        # Parse YAML minimally without PyYAML dependency
-        text = config_path.read_text()
-        # Extract key social settings via simple parsing
-        config: dict[str, Any] = {}
-        for line in text.splitlines():
-            s = line.strip()
-            if s.startswith("#") or ":" not in s:
-                continue
-            k, v = s.split(":", 1)
-            k = k.strip()
-            v = v.strip().strip('"').strip("'")
-            if v:
-                try:
-                    config[k] = float(v) if "." in v else int(v)
-                except ValueError:
-                    config[k] = v
-        return config
+        text = config_path.read_text(encoding="utf-8")
     except Exception:
         return {}
+
+    try:
+        import yaml  # type: ignore
+        loaded = yaml.safe_load(text)
+        if isinstance(loaded, dict):
+            return loaded
+        return {}
+    except ImportError:
+        pass
+    except Exception:
+        # PyYAML present but config malformed — fall back to best effort.
+        pass
+
+    try:
+        return _fallback_yaml_load(text)
+    except Exception:
+        return {}
+
+
+def _coerce_pct(value: Any, default: float = 0.6) -> float:
+    """Coerce a config percentage into a float clamped to [0.0, 1.0].
+
+    Handles dirty strings (e.g. ``'0.60 # 60%'``) left over from legacy
+    parsers, as well as ints, floats, and None.  Never raises.
+    """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        out = float(value)
+    elif isinstance(value, str):
+        candidate = _strip_inline_comment(value).strip().strip("'\"")
+        try:
+            out = float(candidate)
+        except (ValueError, TypeError):
+            return max(0.0, min(1.0, default))
+    else:
+        return max(0.0, min(1.0, default))
+    if out != out or out in (float("inf"), float("-inf")):  # NaN / inf
+        return max(0.0, min(1.0, default))
+    return max(0.0, min(1.0, out))
+
+
+def resolve_curation_vp_pct(config: dict, default: float = 0.6) -> tuple[float, str | None]:
+    """Resolve ``curation_vp_pct`` from nested or flat config.
+
+    Returns (value, warning).  ``warning`` is ``None`` on clean reads; a
+    short human-readable string when the raw value was missing, malformed,
+    or clamped — so operators can see *why* the runtime fell back to the
+    default.
+    """
+    raw: Any = None
+    source = "default"
+    social = config.get("social")
+    if isinstance(social, dict) and "curation_vp_pct" in social:
+        raw = social["curation_vp_pct"]
+        source = "social.curation_vp_pct"
+    elif "curation_vp_pct" in config:
+        raw = config["curation_vp_pct"]
+        source = "curation_vp_pct (flat)"
+
+    if raw is None:
+        return (default, f"config fallback: curation_vp_pct missing, using default={default}")
+
+    coerced = _coerce_pct(raw, default=default)
+    # Compare against the "clean" float interpretation of raw to detect
+    # whether we had to repair a dirty value.
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        if abs(float(raw) - coerced) < 1e-9:
+            return (coerced, None)
+        return (coerced, f"config clamp: {source}={raw!r} clamped to {coerced}")
+    # Everything else (strings, unknown types) counts as a repair.
+    return (coerced, f"config repair: {source}={raw!r} coerced to {coerced}")
 
 
 def score_post(post: dict) -> float:
@@ -226,7 +377,11 @@ def run_curation_cycle() -> dict:
 
     # 3. Select top candidates for curation (conservative: max 3 per cycle)
     config = load_config()
-    max_curations = min(int(config.get("curation_vp_pct", 0.6) * 5), 3)
+    config_warnings: list[str] = []
+    curation_vp_pct, warn = resolve_curation_vp_pct(config, default=0.6)
+    if warn:
+        config_warnings.append(warn)
+    max_curations = min(int(curation_vp_pct * 5), 3)
     candidates = scored[:max_curations]
 
     # 4. Execute curation actions
@@ -277,6 +432,8 @@ def run_curation_cycle() -> dict:
         "actions_ok": len(ok_actions),
         "actions_failed": len(actions_taken) - len(ok_actions),
         "errors": errors,
+        "config_warnings": config_warnings,
+        "curation_vp_pct": curation_vp_pct,
         "execution_backend": "native-python",
         # Internal: pass scored posts for canonical output publishing
         "_scored_posts": scored,
@@ -298,6 +455,7 @@ def publish_bookmarker_canonical(result: dict, ts_now: str) -> None:
     scored = result.get("_scored_posts", [])
     actions = result.get("actions_taken", [])
     errors = result.get("errors", [])
+    config_warnings = result.get("config_warnings") or []
 
     # ── topic-brief.json ─────────────────────────────────────────────────
     # Extract topic keywords from scored post content
@@ -328,11 +486,19 @@ def publish_bookmarker_canonical(result: dict, ts_now: str) -> None:
 
     # ── source-health.json ───────────────────────────────────────────────
     api_ok = status != "blocked"
+    # A config-fallback warning should make source-health at least ``degraded``
+    # even if the feed itself is healthy, so operators notice it in the dashboard.
+    if not api_ok:
+        sh_status = "blocked"
+    elif errors or config_warnings:
+        sh_status = "degraded"
+    else:
+        sh_status = "ok"
     source_health = {
         "schema": "bookmarker.source-health.v1",
         "generated_at": ts_now,
         "updated_at": ts_now,
-        "status": "ok" if api_ok and not errors else ("degraded" if api_ok else "blocked"),
+        "status": sh_status,
         "bird": "ok" if api_ok else "unavailable",
         "browser_relay": None,
         "xurl": None,
@@ -342,6 +508,7 @@ def publish_bookmarker_canonical(result: dict, ts_now: str) -> None:
              "last_check": ts_now}
         ],
         "source_class": "native-runtime",
+        "warnings": list(config_warnings),
     }
     atomic_write_json(RUNTIME_BOOKMARKER / "source-health.json", source_health)
 
@@ -393,6 +560,7 @@ def publish_bookmarker_canonical(result: dict, ts_now: str) -> None:
         "autonomy_mode": "native-auto",
         "actions_planned": len(actions),
         "actions_executed": len([a for a in actions if a.get("status") == "ok"]),
+        "warnings": list(config_warnings),
     }
     atomic_write_json(RUNTIME_BOOKMARKER / "autonomy-intent.json", autonomy_intent)
 
@@ -432,6 +600,7 @@ def main() -> int:
         "source": "run_bookmarker_runtime_v1.py",
         "actions_ok": result.get("actions_ok", 0),
         "feed_size": result.get("feed_size", 0),
+        "config_warnings": result.get("config_warnings") or [],
     }
     atomic_write_json(RUNTIME_BOOKMARKER / "latest.json", latest)
     print(f"[bookmarker-runtime] Wrote latest.json")
