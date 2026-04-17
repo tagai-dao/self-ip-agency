@@ -296,13 +296,13 @@ else
     # Public not opted in — verify state file reflects that
     case "$DASH_PUBLIC_STATUS" in
       disabled|"")
-        ok "public dashboard disabled (opt-in via config/agency.config.yaml dashboard.public.enabled)"
+        warn "public dashboard not configured for external access — to enable, set dashboard.public.enabled: true in config/agency.config.yaml (see docs/openclaw-install.md)"
         ;;
       running)
         warn "public dashboard running but config has dashboard.public.enabled=false — state drift"
         ;;
       *)
-        ok "public dashboard not active (status=$DASH_PUBLIC_STATUS)"
+        warn "public dashboard not active (status=$DASH_PUBLIC_STATUS) — see docs/openclaw-install.md to configure public exposure"
         ;;
     esac
   fi

@@ -53,6 +53,12 @@
     }
   },
 
+  "dashboard_public_exposure": {
+    "_comment": "Public tunnel configuration for external dashboard access. Set tunnel_provider to 'cloudflared' or 'ngrok' to enable; leave 'none' for local-only. public_url captures a pre-known static URL (e.g. ngrok paid domain); leave empty for ephemeral Quick Tunnels.",
+    "tunnel_provider": "none",
+    "public_url": ""
+  },
+
   "tas": {
     "_comment": "TAS composite score formula. TAS = social_weight×TAS_social + trade_weight×TAS_trade",
     "social_weight": 0.7,
