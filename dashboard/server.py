@@ -1772,6 +1772,22 @@ def api_explainability():
     })
 
 
+def _timeline_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        parts = [str(v).strip() for v in value if str(v).strip()]
+        return " · ".join(parts)
+    if isinstance(value, dict):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            return str(value)
+    return str(value).strip()
+
+
 @app.get("/api/timeline")
 def api_timeline():
     """Merge social history + trader executions (last 3 days), 30 most recent."""
@@ -1792,7 +1808,7 @@ def api_timeline():
         # Build a readable note: type + target tweet id + optional note
         req = ev.get("request") or {}
         vp = req.get("vp")
-        note_str = ev.get("note") or ""
+        note_str = _timeline_text(ev.get("note"))
         if not note_str and target:
             tid = target.split(":")[-1] if ":" in target else target
             note_str = f"{tid[:12]}"
@@ -1844,7 +1860,7 @@ def api_timeline():
             "source": "bookmarker",
             "type":   ev.get("type", "?"),
             "status": ev.get("result_status", "ok"),
-            "note":   ev.get("note") or ev.get("target_key", ""),
+            "note":   _timeline_text(ev.get("note") or ev.get("target_key", "")),
             "detail": ev,
         })
     # Bookmarker exec cycle — only if summary.succeeded > 0
@@ -1861,7 +1877,7 @@ def api_timeline():
                 "source": "bookmarker",
                 "type":   "exec_cycle",
                 "status": bm_exec.get("status", ""),
-                "note":   bm_exec.get("notes") or str(summary),
+                "note":   _timeline_text(bm_exec.get("notes") or summary),
                 "detail": {k: v for k, v in bm_exec.items() if k != "results"},
             })
 
@@ -1887,7 +1903,7 @@ def api_timeline():
             "source": "main",
             "type":   "decision",
             "status": "",
-            "note":   main_dec.get("reason") or f"social:{social} treasury:{treasury}",
+            "note":   _timeline_text(main_dec.get("reason")) or f"social:{social} treasury:{treasury}",
             "detail": main_dec,
         })
 

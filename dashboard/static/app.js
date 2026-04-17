@@ -878,10 +878,27 @@ function escHtml(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+function normalizeSummaryText(text) {
+  if (text == null || text === '') return '—';
+  if (Array.isArray(text)) {
+    const parts = text.filter(v => v != null && String(v).trim() !== '').map(v => String(v).trim());
+    return parts.length ? parts.join(' · ') : '—';
+  }
+  if (typeof text === 'object') {
+    try {
+      return JSON.stringify(text);
+    } catch (_) {
+      return String(text);
+    }
+  }
+  return String(text);
+}
+
 // ── cleanSummary: replace technical jargon in timeline notes ──────────────
 function cleanSummary(text) {
-  if (!text) return '—';
-  return text
+  const normalized = normalizeSummaryText(text);
+  if (!normalized || normalized === '—') return '—';
+  return normalized
     .replace(/conservative_explore/g, langText('保守探索', 'Conservative Explore'))
     .replace(/reinforce_previous_strategy/g, langText('延续策略', 'Reinforce Strategy'))
     .replace(/discard_previous_strategy/g, langText('切换策略', 'Switch Strategy'))
@@ -2682,10 +2699,21 @@ function renderActionRequired(controlTower, agentHealth) {
 // ══════════════════════════════════════════════════════════════════════════
 // V2: Control Tower Render
 // ══════════════════════════════════════════════════════════════════════════
+function _setInlineMetric(id, value, fallback='—') {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = value == null || value === '' ? fallback : String(value);
+}
+
 function renderControlTower(data) {
   if (!data) return;
 
-  // Mission Status Bar slots removed (SYSTEM MODE, PRIMARY BOTTLENECK, HIGHEST PRIORITY, TAS LEVER, CONFIDENCE)
+  // Mission Status summary slots
+  _setInlineMetric('ct-system-mode', operatorLang(data.system_mode || 'normal'));
+  _setInlineMetric('ct-primary-bottleneck', data.primary_bottleneck || langText('无明确瓶颈', 'no explicit bottleneck'));
+  _setInlineMetric('ct-highest-priority', operatorLang(data.highest_priority_action || '—'));
+  _setInlineMetric('ct-tas-lever', operatorLang(data.expected_tas_lever || '—'));
+  _setInlineMetric('ct-confidence', operatorLang(data.confidence || '—'));
 
   // Alerts Strip
   const alertsEl = $('alerts-strip');
@@ -2727,7 +2755,7 @@ function _addMetaBadge(parentId, info) {
 // ══════════════════════════════════════════════════════════════════════════
 function renderAgentHealth(data) {
   if (!data) return;
-  // Operator Lanes section removed from dashboard
+  renderOperatorLanes(data);
   renderAgentOperatingCards(data.agents || {});
   renderFreshnessMatrix(data.freshness_matrix || []);
 }
@@ -2788,15 +2816,21 @@ function renderAgentOperatingCards(agents) {
     const blockerCls = a.blocker ? 'aoc-blocker' : 'aoc-no-blocker';
     const roleDisplay = agentId === 'claude_dispatch' ? langText('开发执行器', 'Dispatch Executor') : (translateLiteral(a.role || '') || a.role || humanize(agentId));
     const slots = [];
-    // For bookmarker, show OP/VP first in the same row as Role/Mode/etc.
-    if (agentId === 'bookmarker' && (a.op != null || a.vp != null)) {
+    // For bookmarker, show live resource pool separately from allocated budget.
+    if (agentId === 'bookmarker' && (a.op != null || a.vp != null || a.op_budget != null || a.vp_budget != null)) {
       const opVal = a.op != null ? Number(a.op).toFixed(1) : '—';
       const vpVal = a.vp != null ? Number(a.vp).toFixed(1) : '—';
-      slots.push(`<div class="aoc-slot"><span class="aoc-label">${t('OP')}</span><span class="aoc-value">${escHtml(opVal)}</span></div>`);
-      slots.push(`<div class="aoc-slot"><span class="aoc-label">${t('VP')}</span><span class="aoc-value">${escHtml(vpVal)}</span></div>`);
-      el.classList.add('aoc-7col');
+      const opBudget = a.op_budget != null ? Number(a.op_budget).toFixed(1) : '—';
+      const vpBudget = a.vp_budget != null ? Number(a.vp_budget).toFixed(1) : '—';
+      slots.push(`<div class="aoc-slot"><span class="aoc-label">${langText('OP（实时）', 'OP (live)')}</span><span class="aoc-value">${escHtml(opVal)}</span></div>`);
+      slots.push(`<div class="aoc-slot"><span class="aoc-label">${langText('VP（实时）', 'VP (live)')}</span><span class="aoc-value">${escHtml(vpVal)}</span></div>`);
+      slots.push(`<div class="aoc-slot"><span class="aoc-label">${langText('OP 预算', 'OP budget')}</span><span class="aoc-value">${escHtml(opBudget)}</span></div>`);
+      slots.push(`<div class="aoc-slot"><span class="aoc-label">${langText('VP 预算', 'VP budget')}</span><span class="aoc-value">${escHtml(vpBudget)}</span></div>`);
+      el.classList.remove('aoc-7col');
+      el.classList.add('aoc-9col');
     } else {
       el.classList.remove('aoc-7col');
+      el.classList.remove('aoc-9col');
     }
     slots.push(
       `<div class="aoc-slot"><span class="aoc-label">${t('aoc-role')}</span><span class="aoc-value">${escHtml(roleDisplay)}</span></div>`,
@@ -3421,6 +3455,15 @@ function _renderExplainEvents(events) {
 // ══════════════════════════════════════════════════════════════════════════
 // Main fetch loop
 // ══════════════════════════════════════════════════════════════════════════
+function renderSafely(name, fn) {
+  try {
+    fn();
+  } catch (e) {
+    console.error(`[render:${name}]`, e);
+    showError(`${t('fetch-error')}${name}: ${e.message}`);
+  }
+}
+
 async function fetchAll() {
   try {
     const [status, timeline, autoresearch, controlTower, agentHealth, noc, explainability] = await Promise.all([
@@ -3439,23 +3482,37 @@ async function fetchAll() {
     _lastAgentHealth = agentHealth;
     _lastNoc = noc;
     _lastExplainability = explainability;
-    renderStatus(status);
-    // Bootstrap banner: show if freshly installed environment
-    const bannerEl = $('bootstrap-banner');
-    if (bannerEl) {
+
+    renderSafely('status', () => renderStatus(status));
+    renderSafely('bootstrap-banner', () => {
+      const bannerEl = $('bootstrap-banner');
+      if (!bannerEl) return;
       if (status && status.is_bootstrap) bannerEl.classList.add('visible');
       else bannerEl.classList.remove('visible');
-    }
-    renderTimeline(timeline);
-    if (timeline && timeline.summary) renderTimelineSummary(timeline.summary);
-    if (autoresearch) renderAutoResearch(autoresearch);
-    if (controlTower) renderControlTower(controlTower);
-    if (agentHealth) renderAgentHealth(agentHealth);
-    if (noc) renderNoc(noc);
-    if (explainability) renderExplainability(explainability);
-    renderHeroBar(controlTower, timeline, agentHealth, status);
-    renderNextPostPreview(status);
-    translateDomTextNodes();
+    });
+    renderSafely('timeline', () => renderTimeline(timeline));
+    renderSafely('timeline-summary', () => {
+      if (timeline && timeline.summary) renderTimelineSummary(timeline.summary);
+    });
+    renderSafely('autoresearch', () => {
+      if (autoresearch) renderAutoResearch(autoresearch);
+    });
+    renderSafely('control-tower', () => {
+      if (controlTower) renderControlTower(controlTower);
+    });
+    renderSafely('agent-health', () => {
+      if (agentHealth) renderAgentHealth(agentHealth);
+    });
+    renderSafely('action-required', () => renderActionRequired(controlTower, agentHealth));
+    renderSafely('noc', () => {
+      if (noc) renderNoc(noc);
+    });
+    renderSafely('explainability', () => {
+      if (explainability) renderExplainability(explainability);
+    });
+    renderSafely('hero-bar', () => renderHeroBar(controlTower, timeline, agentHealth, status));
+    renderSafely('next-post-preview', () => renderNextPostPreview(status));
+    renderSafely('translate-dom', () => translateDomTextNodes());
     // renderAgentQuickCards removed (cards deleted from UI)
   } catch (e) {
     showError(t('fetch-error') + e.message);

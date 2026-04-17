@@ -857,6 +857,7 @@ main { padding: 1rem 1.5rem; display: flex; flex-direction: column; gap: 1.5rem;
 
 /* Bookmarker card: 7 columns when OP/VP are present */
 .agent-operating-card.aoc-7col { grid-template-columns: repeat(7, 1fr); }
+.agent-operating-card.aoc-9col { grid-template-columns: repeat(9, 1fr); }
 
 /* ══ Timeline Summary Row ══ */
 .timeline-summary-row {
@@ -1078,6 +1079,7 @@ main { padding: 1rem 1.5rem; display: flex; flex-direction: column; gap: 1.5rem;
   .timeline-wiki-duo { grid-template-columns: 1fr; }
   .agent-operating-card { grid-template-columns: repeat(3, 1fr); }
   .agent-operating-card.aoc-7col { grid-template-columns: repeat(3, 1fr); }
+  .agent-operating-card.aoc-9col { grid-template-columns: repeat(3, 1fr); }
   .pipeline-details-row { flex-direction: column; }
   .pipeline-detail-cell { max-width: none; min-width: 0; }
   .pipeline-step-card { max-width: none; }
