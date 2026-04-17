@@ -354,26 +354,134 @@ remove_crons() {
   log_info "Stage 2: Unregistering cron jobs"
 
   local jobs=(main-heartbeat bookmarker-cycle trader-cycle)
+  local cron_list=""
 
   if ! command -v openclaw >/dev/null 2>&1; then
-    log_warn "openclaw CLI not found — remove these manually after uninstall:"
+    log_warn "openclaw CLI not found — inspect cron IDs manually after uninstall:"
     for j in "${jobs[@]}"; do
-      echo "    openclaw cron remove $j"
+      echo "    openclaw cron list    # find cron ID for $j"
+      echo "    openclaw cron remove <cron-id>"
+    done
+    bump_warn
+    return 0
+  fi
+
+  cron_list="$(openclaw cron list 2>/dev/null || true)"
+  if [ -z "$cron_list" ]; then
+    log_warn "Unable to read 'openclaw cron list' — cron IDs must be removed manually"
+    for j in "${jobs[@]}"; do
+      echo "    openclaw cron list    # find cron ID for $j"
+      echo "    openclaw cron remove <cron-id>"
     done
     bump_warn
     return 0
   fi
 
   for j in "${jobs[@]}"; do
-    if [ "$DRY_RUN" = "true" ]; then
-      log_info "[DRY] openclaw cron remove $j"
+    local script_name expected_path cron_ids cron_id found_any=false
+    case "$j" in
+      main-heartbeat)
+        script_name="main-heartbeat.sh"
+        expected_path="$WORKSPACE/scripts/main-heartbeat.sh"
+        ;;
+      bookmarker-cycle)
+        script_name="bookmarker-cycle.sh"
+        expected_path="$WORKSPACE/scripts/bookmarker-cycle.sh"
+        ;;
+      trader-cycle)
+        script_name="trader-cycle.sh"
+        expected_path="$WORKSPACE/scripts/trader-cycle.sh"
+        ;;
+      *)
+        script_name=""
+        expected_path=""
+        ;;
+    esac
+
+    cron_ids="$(CRON_JOB_NAME="$j" CRON_SCRIPT_NAME="$script_name" EXPECTED_PATH="$expected_path" python3 - <<'PY' <<< "$cron_list"
+import os
+import re
+import sys
+
+job = os.environ.get("CRON_JOB_NAME", "").strip()
+script = os.environ.get("CRON_SCRIPT_NAME", "").strip()
+expected_path = os.environ.get("EXPECTED_PATH", "").strip()
+text = sys.stdin.read()
+uuid_re = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+
+lines = text.splitlines()
+blocks = []
+current = []
+for line in lines:
+    if line.strip():
+        current.append(line)
+    elif current:
+        blocks.append("\n".join(current))
+        current = []
+if current:
+    blocks.append("\n".join(current))
+if not blocks:
+    blocks = lines
+
+matches = []
+for block in blocks:
+    hay = block.lower()
+    path_hit = expected_path and expected_path.lower() in hay
+    script_hit = script and script.lower() in hay
+    job_hit = job.lower() in hay
+    if not path_hit:
+        continue
+    if not (script_hit or job_hit):
+        continue
+    for cron_id in uuid_re.findall(block):
+        if cron_id not in matches:
+            matches.append(cron_id)
+
+if not matches:
+    for line in lines:
+        hay = line.lower()
+        path_hit = expected_path and expected_path.lower() in hay
+        script_hit = script and script.lower() in hay
+        job_hit = job.lower() in hay
+        if path_hit and (script_hit or job_hit):
+            for cron_id in uuid_re.findall(line):
+                if cron_id not in matches:
+                    matches.append(cron_id)
+
+print("\n".join(matches))
+PY
+)"
+
+    if [ -z "$cron_ids" ]; then
+      log_warn "Could not resolve cron ID for $j from 'openclaw cron list'"
+      echo "    openclaw cron list    # locate $j"
+      echo "    openclaw cron remove <cron-id>"
+      bump_warn
       continue
     fi
-    if openclaw cron remove "$j" 2>/dev/null; then
-      log_ok "Removed cron: $j"
-      REMOVED=$((REMOVED + 1))
-    else
-      log_info "Cron not registered or already removed: $j"
+
+    if [ "$DRY_RUN" = "true" ]; then
+      while IFS= read -r cron_id; do
+        [ -n "$cron_id" ] || continue
+        log_info "[DRY] openclaw cron remove $cron_id  # $j"
+      done <<< "$cron_ids"
+      continue
+    fi
+
+    while IFS= read -r cron_id; do
+      [ -n "$cron_id" ] || continue
+      if openclaw cron remove "$cron_id" 2>/dev/null; then
+        log_ok "Removed cron: $j ($cron_id)"
+        REMOVED=$((REMOVED + 1))
+        found_any=true
+      else
+        log_warn "Failed to remove cron: $j ($cron_id)"
+        bump_warn
+      fi
+    done <<< "$cron_ids"
+
+    if [ "$found_any" != "true" ]; then
+      log_info "Cron not removed: $j"
     fi
   done
 }
