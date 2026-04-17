@@ -332,6 +332,103 @@ check_file "$AGENCY_DIR/config/agency-identity.json" "agency-identity.json"
 check_file "$AGENCY_DIR/config/agency.config.yaml" "agency.config.yaml"
 check_file "$AGENCY_DIR/config/wiki_topic_registry.json" "wiki_topic_registry.json"
 
+# ── 6b. Identity freshness (install-first / onboard-second stale-shadow check) ─
+# If skills/tagclaw/.env holds real identity but agency-identity.json is still
+# null-filled, the operator installed before onboarding and the identity JSON
+# was never refreshed. Runtime reads workspace/config/agency-identity.json
+# first, so a stale workspace copy shadows a correct repo copy and vice versa.
+echo ""
+echo "6b. Identity freshness"
+
+check_identity_fresh() {
+  local label="$1" identity_path="$2" env_path="$3"
+  if [ ! -f "$identity_path" ]; then
+    warn "$label: identity JSON missing ($identity_path)"
+    return
+  fi
+  if [ ! -f "$env_path" ]; then
+    # Without onboarded .env there's no real identity to check against.
+    return
+  fi
+  local state
+  state="$(IDENTITY_PATH="$identity_path" ENV_PATH="$env_path" python3 - <<'PY'
+import json, os, pathlib
+
+identity_path = pathlib.Path(os.environ["IDENTITY_PATH"])
+env_path = pathlib.Path(os.environ["ENV_PATH"])
+
+def parse_env(path):
+    data = {}
+    if not path.exists():
+        return data
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        k = k.strip(); v = v.strip().strip('"').strip("'")
+        data[k] = v
+    return data
+
+env = parse_env(env_path)
+env_username = env.get("TAGCLAW_AGENT_USERNAME") or ""
+env_eth = env.get("TAGCLAW_ETH_ADDR") or ""
+
+try:
+    d = json.loads(identity_path.read_text())
+except Exception:
+    print("unreadable")
+    raise SystemExit(0)
+
+id_username = ((d.get("agent") or {}).get("username")) or ""
+id_eth = ((d.get("agent") or {}).get("eth_addr")) or ""
+id_wallet = ((d.get("wallet") or {}).get("address")) or ""
+
+has_env_identity = bool(env_username) and bool(env_eth)
+has_id_identity = bool(id_username) and bool(id_eth or id_wallet)
+
+if has_env_identity and not has_id_identity:
+    print("stale")
+elif has_env_identity and has_id_identity:
+    mismatch = (
+        (env_username and env_username != id_username)
+        or (env_eth and env_eth not in (id_eth, id_wallet))
+    )
+    print("mismatch" if mismatch else "fresh")
+else:
+    print("not-onboarded")
+PY
+  )"
+  case "$state" in
+    fresh)
+      ok "$label is in sync with skills/tagclaw/.env"
+      ;;
+    stale)
+      fail "$label is STALE (.env has real identity but JSON is null-filled) — run: bash scripts/refresh-agency-identity.sh --workspace $WORKSPACE"
+      ;;
+    mismatch)
+      warn "$label disagrees with skills/tagclaw/.env — run: bash scripts/refresh-agency-identity.sh --workspace $WORKSPACE"
+      ;;
+    not-onboarded)
+      # Nothing to verify yet — TagClaw onboarding still pending.
+      :
+      ;;
+    unreadable)
+      fail "$label exists but cannot be parsed as JSON"
+      ;;
+  esac
+}
+
+SKILL_ENV_FOR_ID="$WORKSPACE/skills/tagclaw/.env"
+check_identity_fresh "repo config/agency-identity.json" "$AGENCY_DIR/config/agency-identity.json" "$SKILL_ENV_FOR_ID"
+check_identity_fresh "workspace config/agency-identity.json" "$WORKSPACE/config/agency-identity.json" "$SKILL_ENV_FOR_ID"
+
+if [ -f "$AGENCY_DIR/scripts/refresh-agency-identity.sh" ] || [ -f "$WORKSPACE/scripts/refresh-agency-identity.sh" ]; then
+  ok "refresh-agency-identity.sh helper present"
+else
+  warn "refresh-agency-identity.sh helper missing — rerun install.sh"
+fi
+
 echo ""
 
 # ── 7. Cycle entrypoints ─────────────────────────────────────────────────────
