@@ -282,10 +282,49 @@ stop_dashboard() {
   fi
 
   # Fallback / belt-and-braces: kill stragglers
-  local srv_pids tun_pids
+  local srv_pids tun_pids state_file state_port port_pids filtered_port_pids pid cmd
+  state_file="$WORKSPACE/runtime/shared/dashboard-service.json"
+  state_port=""
+  if [ -f "$state_file" ]; then
+    state_port="$(python3 - "$state_file" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    port = ((data.get("local") or {}).get("port"))
+    print("" if port is None else str(port))
+except Exception:
+    print("")
+PY
+)"
+  fi
+
   srv_pids="$(pgrep -f "self-ip-dashboard/server.py" 2>/dev/null | tr '\n' ' ' || true)"
   if [ -z "$srv_pids" ]; then
     srv_pids="$(pgrep -f "server.py.*7890" 2>/dev/null | tr '\n' ' ' || true)"
+  fi
+  if [ -z "$srv_pids" ]; then
+    srv_pids="$(pgrep -f "$REPO_DIR/dashboard/server.py" 2>/dev/null | tr '\n' ' ' || true)"
+  fi
+  if [ -z "$srv_pids" ]; then
+    srv_pids="$(pgrep -f "uvicorn.*server:app" 2>/dev/null | tr '\n' ' ' || true)"
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    local probe_port="${state_port:-7890}"
+    if [ -n "$probe_port" ] && [[ "$probe_port" =~ ^[0-9]+$ ]]; then
+      port_pids="$(lsof -tiTCP:"$probe_port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ' || true)"
+      filtered_port_pids=""
+      for pid in $port_pids; do
+        cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+        case "$cmd" in
+          *self-ip-dashboard*|*dashboard/server.py*|*python3\ server.py*|*uvicorn*server:app*)
+            filtered_port_pids="$filtered_port_pids $pid"
+            ;;
+        esac
+      done
+      srv_pids="$srv_pids $filtered_port_pids"
+    fi
   fi
   kill_pids "dashboard server" $srv_pids
 
@@ -294,6 +333,18 @@ stop_dashboard() {
     tun_pids="$(pgrep -f "cloudflared.*tunnel" 2>/dev/null | tr '\n' ' ' || true)"
   fi
   kill_pids "cloudflared tunnel" $tun_pids
+
+  if command -v lsof >/dev/null 2>&1; then
+    local final_probe_port="${state_port:-7890}"
+    if [ -n "$final_probe_port" ] && [[ "$final_probe_port" =~ ^[0-9]+$ ]]; then
+      local survivors=""
+      survivors="$(lsof -tiTCP:"$final_probe_port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ' || true)"
+      if [ -n "$survivors" ]; then
+        log_warn "A process is still listening on dashboard port $final_probe_port (PIDs: $survivors)"
+        bump_warn
+      fi
+    fi
+  fi
 }
 
 stop_claw_sandbox() {
