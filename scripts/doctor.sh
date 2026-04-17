@@ -212,40 +212,45 @@ else
   fail "scripts/dashboard-service.sh missing — install.sh cannot delegate dashboard lifecycle"
 fi
 
-# Check whether public exposure is opted in via agency.config.yaml
-PUBLIC_OPTED_IN="false"
+# Read dashboard.public.{suggest_in_install,auto_start} from agency.config.yaml.
+# Both default to the safer value when the key is absent:
+#   - suggest_in_install: true  (always suggest — default ON for new operators)
+#   - auto_start:         false (never expose without explicit opt-in)
+#   - enabled is a legacy alias for auto_start
+PUBLIC_SUGGEST="true"
+PUBLIC_AUTO_START="false"
 if [ -f "$AGENCY_DIR/config/agency.config.yaml" ]; then
-  PUBLIC_OPTED_IN="$(AGENCY_CONFIG="$AGENCY_DIR/config/agency.config.yaml" python3 -c "
+  read -r PUBLIC_SUGGEST PUBLIC_AUTO_START <<<"$(AGENCY_CONFIG="$AGENCY_DIR/config/agency.config.yaml" python3 -c "
 import os, sys
 try:
     import yaml
 except ImportError:
-    print('false'); sys.exit(0)
+    print('true false'); sys.exit(0)
 try:
     with open(os.environ['AGENCY_CONFIG']) as f:
         d = yaml.safe_load(f) or {}
-    enabled = bool((d.get('dashboard') or {}).get('public', {}).get('enabled', False))
-    print('true' if enabled else 'false')
+    pub = (d.get('dashboard') or {}).get('public') or {}
+    suggest = pub.get('suggest_in_install', True)
+    auto = pub.get('auto_start', pub.get('enabled', False))
+    print(('true' if bool(suggest) else 'false') + ' ' + ('true' if bool(auto) else 'false'))
 except Exception:
-    print('false')
-" 2>/dev/null || echo "false")"
-  if [ -z "$PUBLIC_OPTED_IN" ]; then PUBLIC_OPTED_IN="false"; fi
+    print('true false')
+" 2>/dev/null || echo "true false")"
 fi
 
+# Tri-state classification uses the guide-public subcommand as the source of truth
+# when available; otherwise fall back to the raw state file.
 if [ ! -f "$DASHBOARD_SERVICE_STATE" ]; then
-  if [ "$PUBLIC_OPTED_IN" = "true" ]; then
-    warn "runtime/shared/dashboard-service.json missing — run: bash scripts/dashboard-service.sh start-local"
-  else
-    warn "runtime/shared/dashboard-service.json missing — run: bash scripts/dashboard-service.sh status"
-  fi
+  warn "runtime/shared/dashboard-service.json missing — run: bash scripts/dashboard-service.sh start-local"
 else
-  # Parse state file
   DASH_LOCAL_STATUS="$(python3 -c "import json; d=json.load(open('$DASHBOARD_SERVICE_STATE')); print((d.get('local') or {}).get('status',''))" 2>/dev/null || echo "")"
   DASH_LOCAL_PID="$(python3 -c "import json; d=json.load(open('$DASHBOARD_SERVICE_STATE')); print((d.get('local') or {}).get('pid','') or '')" 2>/dev/null || echo "")"
   DASH_PUBLIC_STATUS="$(python3 -c "import json; d=json.load(open('$DASHBOARD_SERVICE_STATE')); print((d.get('public') or {}).get('status',''))" 2>/dev/null || echo "")"
   DASH_PUBLIC_URL="$(python3 -c "import json; d=json.load(open('$DASHBOARD_SERVICE_STATE')); print((d.get('public') or {}).get('url','') or '')" 2>/dev/null || echo "")"
   DASH_PUBLIC_PID="$(python3 -c "import json; d=json.load(open('$DASHBOARD_SERVICE_STATE')); print((d.get('public') or {}).get('pid','') or '')" 2>/dev/null || echo "")"
 
+  # Tri-state A: local not healthy → fix local first (don't distract with
+  # public-exposure guidance until the underlying dashboard is up).
   case "$DASH_LOCAL_STATUS" in
     running)
       if [ -n "$DASH_LOCAL_PID" ] && kill -0 "$DASH_LOCAL_PID" 2>/dev/null; then
@@ -265,46 +270,47 @@ else
       ;;
   esac
 
-  if [ "$PUBLIC_OPTED_IN" = "true" ]; then
-    case "$DASH_PUBLIC_STATUS" in
-      running)
-        if [ -n "$DASH_PUBLIC_PID" ] && kill -0 "$DASH_PUBLIC_PID" 2>/dev/null; then
-          if [ -n "$DASH_PUBLIC_URL" ]; then
-            ok "public dashboard tunnel running: $DASH_PUBLIC_URL"
-          else
-            warn "public dashboard tunnel running but URL not captured — check logs/dashboard-tunnel.log"
-          fi
-        else
-          fail "public dashboard state=running but PID $DASH_PUBLIC_PID is not alive — run: bash scripts/dashboard-service.sh start-public"
-        fi
-        ;;
-      failed)
-        fail "public dashboard tunnel failed — check logs/dashboard-tunnel.log (is cloudflared installed? brew install cloudflared)"
-        ;;
-      disabled|stopped|"")
-        warn "public dashboard opted-in but not running — run: bash scripts/dashboard-service.sh start-public"
-        ;;
-      *)
-        warn "public dashboard status=$DASH_PUBLIC_STATUS"
-        ;;
-    esac
-
-    if ! command -v cloudflared &>/dev/null; then
-      fail "cloudflared not found in PATH — required for public dashboard (brew install cloudflared)"
+  if [ "$DASH_LOCAL_STATUS" != "running" ]; then
+    # Don't escalate public-exposure guidance while the local dashboard
+    # itself is broken — that's the first thing to fix.
+    :
+  elif [ "$DASH_PUBLIC_STATUS" = "running" ]; then
+    # Tri-state C: public running. Verify the PID + surface the URL.
+    if [ -n "$DASH_PUBLIC_PID" ] && kill -0 "$DASH_PUBLIC_PID" 2>/dev/null; then
+      if [ -n "$DASH_PUBLIC_URL" ]; then
+        ok "public dashboard tunnel running: $DASH_PUBLIC_URL"
+      else
+        warn "public dashboard tunnel running but URL not captured — check logs/dashboard-tunnel.log"
+      fi
+    else
+      fail "public dashboard state=running but PID $DASH_PUBLIC_PID is not alive — run: bash scripts/dashboard-service.sh start-public"
     fi
+  elif [ "$DASH_PUBLIC_STATUS" = "failed" ]; then
+    fail "public dashboard tunnel failed — check logs/dashboard-tunnel.log (is cloudflared installed? brew install cloudflared)"
   else
-    # Public not opted in — verify state file reflects that
-    case "$DASH_PUBLIC_STATUS" in
-      disabled|"")
-        warn "public dashboard not configured for external access — to enable, set dashboard.public.enabled: true in config/agency.config.yaml (see docs/openclaw-install.md)"
-        ;;
-      running)
-        warn "public dashboard running but config has dashboard.public.enabled=false — state drift"
-        ;;
-      *)
-        warn "public dashboard not active (status=$DASH_PUBLIC_STATUS) — see docs/openclaw-install.md to configure public exposure"
-        ;;
-    esac
+    # Tri-state B: local healthy, public not started. Decision depends on
+    # operator intent (auto_start vs suggest_in_install). In all opt-in cases
+    # we print a concrete next-step command so the operator can act without
+    # reading docs.
+    GUIDE_START="bash $AGENCY_DIR/scripts/dashboard-service.sh start-public --workspace $WORKSPACE"
+    if command -v cloudflared >/dev/null 2>&1; then
+      CF_HINT=""
+    else
+      if command -v brew >/dev/null 2>&1; then
+        CF_HINT=" (install cloudflared first: brew install cloudflared)"
+      else
+        CF_HINT=" (cloudflared not installed — see https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)"
+      fi
+    fi
+
+    if [ "$PUBLIC_AUTO_START" = "true" ]; then
+      # Operator asked for auto-start but it's not running — treat as drift.
+      fail "public dashboard auto_start=true but tunnel is not running — run: $GUIDE_START${CF_HINT}"
+    elif [ "$PUBLIC_SUGGEST" = "true" ]; then
+      info "public dashboard not started (optional). To expose a public URL, run: $GUIDE_START${CF_HINT}"
+    else
+      ok "public dashboard disabled (suggest_in_install=false in config/agency.config.yaml)"
+    fi
   fi
 fi
 

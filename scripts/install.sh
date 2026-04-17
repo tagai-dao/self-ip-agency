@@ -633,32 +633,51 @@ register_crons() {
 # 8. install_dashboard
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Read `dashboard.public.enabled` from config/agency.config.yaml.
-# Prints "true" or "false". Default is "false" (opt-in gate is safe-by-default).
-# Requires PyYAML (yaml.safe_load) which is used elsewhere in the runtime.
-_read_dashboard_public_enabled() {
+# Read a `dashboard.public.*` boolean from config/agency.config.yaml.
+# Usage: _read_dashboard_public_flag <field> <default_when_missing>
+# Prints "true" or "false".
+# `auto_start` falls back to legacy `enabled`; `suggest_in_install` defaults ON
+# (so new operators always get a pointer toward a public URL). All other fields
+# default to the supplied default. Requires PyYAML.
+_read_dashboard_public_flag() {
+  local field="$1"
+  local default_val="${2:-false}"
   local yaml_path="$AGENCY_DIR/config/agency.config.yaml"
   if [ ! -f "$yaml_path" ]; then
-    echo "false"
+    echo "$default_val"
     return 0
   fi
-  python3 - "$yaml_path" <<'PY' 2>/dev/null || echo "false"
+  python3 - "$yaml_path" "$field" "$default_val" <<'PY' 2>/dev/null || echo "$default_val"
 import sys
 try:
     import yaml
 except ImportError:
-    print("false")
+    print(sys.argv[3])
     sys.exit(0)
 try:
     with open(sys.argv[1]) as f:
         data = yaml.safe_load(f) or {}
 except Exception:
-    print("false")
+    print(sys.argv[3])
     sys.exit(0)
+field = sys.argv[2]
+default_val = sys.argv[3]
 dash = (data.get("dashboard") or {})
 pub = (dash.get("public") or {})
-print("true" if bool(pub.get("enabled")) else "false")
+val = pub.get(field)
+if val is None:
+    if field == "auto_start" and "enabled" in pub:
+        val = pub.get("enabled")
+    else:
+        val = default_val == "true"
+print("true" if bool(val) else "false")
 PY
+}
+
+# Backwards-compat shim: older call sites ask "is public enabled?" — map that
+# to the new `auto_start` semantic (does the installer launch the tunnel).
+_read_dashboard_public_enabled() {
+  _read_dashboard_public_flag auto_start false
 }
 
 install_dashboard() {
@@ -711,11 +730,34 @@ except Exception:
     DASHBOARD_STATUS="unknown"
   fi
 
-  # 4. Opt-in public exposure. Default is false (safe-by-default).
-  local public_enabled
-  public_enabled="$(_read_dashboard_public_enabled)"
-  if [ "$public_enabled" = "true" ] && [ "$DASHBOARD_STATUS" = "running" ]; then
-    log_info "dashboard.public.enabled=true → starting public tunnel..."
+  # 4. Public exposure. Two distinct knobs:
+  #     - auto_start: actually launch the tunnel during install (default OFF)
+  #     - suggest_in_install: emit guidance toward a public URL (default ON)
+  #    This function updates two globals consumed by the install-contract code:
+  #     - DASHBOARD_PUBLIC_STATUS: disabled | running | failed | not-started
+  #     - DASHBOARD_PUBLIC_GUIDE_AVAILABLE: true | false
+  local public_auto_start public_suggest
+  public_auto_start="$(_read_dashboard_public_flag auto_start false)"
+  public_suggest="$(_read_dashboard_public_flag suggest_in_install true)"
+
+  DASHBOARD_PUBLIC_STATUS="disabled"
+  DASHBOARD_PUBLIC_GUIDE_AVAILABLE="false"
+  DASHBOARD_PUBLIC_STATE_FILE="$state_file"
+  DASHBOARD_PUBLIC_START_COMMAND="bash $AGENCY_DIR/scripts/dashboard-service.sh start-public --workspace $workspace"
+  if command -v cloudflared >/dev/null 2>&1; then
+    DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="true"
+    DASHBOARD_PUBLIC_INSTALL_COMMAND=""
+  else
+    DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="false"
+    if command -v brew >/dev/null 2>&1; then
+      DASHBOARD_PUBLIC_INSTALL_COMMAND="brew install cloudflared"
+    else
+      DASHBOARD_PUBLIC_INSTALL_COMMAND="See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+    fi
+  fi
+
+  if [ "$public_auto_start" = "true" ] && [ "$DASHBOARD_STATUS" = "running" ]; then
+    log_info "dashboard.public.auto_start=true → starting public tunnel..."
     "$svc" start-public --port "$DASHBOARD_PORT" --workspace "$workspace" || true
 
     if [ -f "$state_file" ]; then
@@ -736,11 +778,39 @@ except Exception:
     print('')
 " 2>/dev/null || echo "")"
     fi
-  elif [ "$public_enabled" = "true" ]; then
-    log_warn "dashboard.public.enabled=true but local dashboard is not running — skipping public tunnel"
+  elif [ "$public_auto_start" = "true" ]; then
+    log_warn "dashboard.public.auto_start=true but local dashboard is not running — skipping public tunnel"
     DASHBOARD_PUBLIC_STATUS="failed"
   else
-    DASHBOARD_PUBLIC_STATUS="disabled"
+    # auto_start is OFF — decide whether to surface guidance.
+    if [ "$public_suggest" = "true" ] && [ "$DASHBOARD_STATUS" = "running" ]; then
+      # Don't overwrite a tunnel that's already running from a previous invocation.
+      local existing_public_status="disabled"
+      if [ -f "$state_file" ]; then
+        existing_public_status="$(python3 -c "
+import json
+try:
+    d = json.load(open('$state_file'))
+    print(d.get('public', {}).get('status') or 'disabled')
+except Exception:
+    print('disabled')
+" 2>/dev/null || echo "disabled")"
+      fi
+      if [ "$existing_public_status" = "running" ]; then
+        DASHBOARD_PUBLIC_STATUS="running"
+        DASHBOARD_PUBLIC_URL="$(python3 -c "
+import json
+try:
+    d = json.load(open('$state_file'))
+    print(d.get('public', {}).get('url') or '')
+except Exception:
+    print('')
+" 2>/dev/null || echo "")"
+      else
+        DASHBOARD_PUBLIC_STATUS="not-started"
+        DASHBOARD_PUBLIC_GUIDE_AVAILABLE="true"
+      fi
+    fi
   fi
 }
 
@@ -913,6 +983,43 @@ print(json.dumps({
         "Public dashboard tunnel failed to start. Install cloudflared (brew install cloudflared) then run: bash $workspace/scripts/dashboard-service.sh start-public"
     fi
 
+    # Public dashboard guidance: emitted when the local dashboard is running,
+    # auto_start=false (default), and no tunnel is already up. The step is
+    # structured so operator UIs can surface install_command + run_command
+    # separately and mark the whole thing `recommended: true, required: false`.
+    if [ "$DASHBOARD_PUBLIC_GUIDE_AVAILABLE" = "true" ] && [ "$DASHBOARD_PUBLIC_STATUS" = "not-started" ]; then
+      local _guide_install_cmd="$DASHBOARD_PUBLIC_INSTALL_COMMAND"
+      local _guide_start_cmd="$DASHBOARD_PUBLIC_START_COMMAND"
+      local _guide_state_file="$DASHBOARD_PUBLIC_STATE_FILE"
+      local _guide_title="Enable a public dashboard URL (optional, recommended)"
+      local _guide_action
+      if [ "$DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED" = "true" ]; then
+        _guide_action="Expose your dashboard publicly via Cloudflare Quick Tunnel. Run: ${_guide_start_cmd}"
+      else
+        _guide_action="Expose your dashboard publicly via Cloudflare Quick Tunnel. First install cloudflared (${_guide_install_cmd}), then run: ${_guide_start_cmd}"
+      fi
+      NEXT_STEPS_TEXT+=("$_guide_action")
+      STEP_KINDS+=("dashboard_public_exposure")
+      STEP_PAYLOADS+=("$(python3 -c '
+import json, sys
+(title, action, install_cmd, start_cmd, state_file, cloudflared_installed) = sys.argv[1:]
+payload = {
+    "kind": "dashboard_public_exposure",
+    "title": title,
+    "action": action,
+    "recommended": True,
+    "required": False,
+    "prerequisites": ["local_dashboard_running", "cloudflared_installed"],
+    "cloudflared_installed": cloudflared_installed == "true",
+    "install_command": install_cmd,
+    "run_command": start_cmd,
+    "state_file": state_file,
+    "result_field": "public.url",
+}
+print(json.dumps(payload))
+' "$_guide_title" "$_guide_action" "$_guide_install_cmd" "$_guide_start_cmd" "$_guide_state_file" "$DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED")")
+    fi
+
     # ── Write .installed marker atomically ──────────────────────────────────
     # IMPORTANT: Write BEFORE self-checks so that cycle --self-check sees
     # the .agency-installed marker and does not false-negative on readiness.
@@ -928,6 +1035,7 @@ d = {
     'dashboard_local_status': '$DASHBOARD_STATUS',
     'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',
     'dashboard_public_url': '$DASHBOARD_PUBLIC_URL',
+    'dashboard_public_guide_available': '$DASHBOARD_PUBLIC_GUIDE_AVAILABLE' == 'true',
     'tagclaw_onboard_status': '$TAGCLAW_ONBOARD_STATUS',
     'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
     'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
@@ -1026,6 +1134,13 @@ d = {
     'dashboard_local_status': '$DASHBOARD_STATUS',
     'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',
     'dashboard_public_url': '$DASHBOARD_PUBLIC_URL',
+    'dashboard_public_guide': {
+        'available': '$DASHBOARD_PUBLIC_GUIDE_AVAILABLE' == 'true',
+        'cloudflared_installed': '$DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED' == 'true',
+        'install_command': '$DASHBOARD_PUBLIC_INSTALL_COMMAND',
+        'run_command': '$DASHBOARD_PUBLIC_START_COMMAND',
+        'state_file': '$DASHBOARD_PUBLIC_STATE_FILE',
+    },
     'next_steps': _arrays['next_steps'],
     'next_steps_text': _arrays['next_steps_text'],
     'tagclaw': {
@@ -1071,6 +1186,24 @@ print(json.dumps(d, indent=2))
           echo ""
           echo "   File (for convenience): \`$VERIFICATION_TWEET_FILE\`"
           echo "   After the tweet is live, run: \`bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace\`"
+        elif [ "$_k" = "dashboard_public_exposure" ]; then
+          echo "$((md_i + 1)). **Enable a public dashboard URL (optional, recommended)**"
+          echo ""
+          if [ "$DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED" != "true" ]; then
+            echo "   Install cloudflared:"
+            echo ""
+            echo '   ```bash'
+            echo "   $DASHBOARD_PUBLIC_INSTALL_COMMAND"
+            echo '   ```'
+            echo ""
+          fi
+          echo "   Start the tunnel:"
+          echo ""
+          echo '   ```bash'
+          echo "   $DASHBOARD_PUBLIC_START_COMMAND"
+          echo '   ```'
+          echo ""
+          echo "   The public URL will be written to \`$DASHBOARD_PUBLIC_STATE_FILE\` under \`public.url\`."
         else
           echo "$((md_i + 1)). ${NEXT_STEPS_TEXT[$md_i]}"
         fi
@@ -1150,8 +1283,17 @@ print(json.dumps(d, indent=2))
       failed)
         echo "  ║    ⚠ Public dashboard tunnel failed — check logs/dashboard-tunnel.log (cloudflared required)"
         ;;
+      not-started)
+        echo "  ║    - Public dashboard: not started (optional)"
+        if [ "$DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED" = "true" ]; then
+          echo "  ║         run: $DASHBOARD_PUBLIC_START_COMMAND"
+        else
+          echo "  ║         install cloudflared: $DASHBOARD_PUBLIC_INSTALL_COMMAND"
+          echo "  ║         then run: $DASHBOARD_PUBLIC_START_COMMAND"
+        fi
+        ;;
       disabled|"")
-        # Quiet: opt-in feature, default off
+        # Quiet: opt-in feature, default off (suggest_in_install=false case)
         :
         ;;
       *)
@@ -1280,6 +1422,11 @@ print(json.dumps(d, indent=2))
     echo "DASHBOARD_LOCAL_STATUS=\"${DASHBOARD_STATUS}\""
     echo "DASHBOARD_PUBLIC_STATUS=\"${DASHBOARD_PUBLIC_STATUS}\""
     echo "DASHBOARD_PUBLIC_URL=\"${DASHBOARD_PUBLIC_URL}\""
+    echo "DASHBOARD_PUBLIC_GUIDE_AVAILABLE=\"${DASHBOARD_PUBLIC_GUIDE_AVAILABLE:-false}\""
+    echo "DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED=\"${DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED:-false}\""
+    echo "DASHBOARD_PUBLIC_INSTALL_COMMAND=\"${DASHBOARD_PUBLIC_INSTALL_COMMAND:-}\""
+    echo "DASHBOARD_PUBLIC_START_COMMAND=\"${DASHBOARD_PUBLIC_START_COMMAND:-}\""
+    echo "DASHBOARD_PUBLIC_STATE_FILE=\"${DASHBOARD_PUBLIC_STATE_FILE:-}\""
     echo "CRONS_REGISTERED=\"false\""
     echo "INSTALL_SUMMARY=\"${INSTALL_SUMMARY}\""
     echo "### END INSTALL CONTRACT ###"

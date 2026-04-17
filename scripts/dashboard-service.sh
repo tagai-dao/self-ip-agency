@@ -43,6 +43,7 @@ Subcommands:
   start-local    Start local dashboard (FastAPI/uvicorn on 127.0.0.1:PORT)
   start-public   Start local dashboard if needed, then Cloudflare Quick Tunnel
   status         Print current state from dashboard-service.json
+  guide-public   Emit machine-readable JSON guidance for enabling the public URL
   stop           Stop both local dashboard and cloudflared if managed by this script
 
 Options:
@@ -435,6 +436,93 @@ cmd_status() {
   return 0
 }
 
+# ── guide-public ──────────────────────────────────────────────────────────────
+# Emit machine-readable guidance for enabling the public dashboard URL.
+# Does NOT start anything. Intended for install-time operator guidance and for
+# doctor.sh / external agents to compute the next action. Always exits 0.
+cmd_guide_public() {
+  local local_status local_health local_port
+  local_status="$(_read_state_field local status)"
+  local_health="$(_read_state_field local health_url)"
+  local_port="$(_read_state_field local port)"
+  [ -z "$local_port" ] && local_port="$DASHBOARD_PORT"
+
+  local public_status public_url
+  public_status="$(_read_state_field public status)"
+  public_url="$(_read_state_field public url)"
+
+  local cloudflared_installed="false"
+  local install_command=""
+  if command -v cloudflared >/dev/null 2>&1; then
+    cloudflared_installed="true"
+  else
+    if command -v brew >/dev/null 2>&1; then
+      install_command="brew install cloudflared"
+    else
+      install_command="See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+    fi
+  fi
+
+  local start_command="bash $AGENCY_DIR/scripts/dashboard-service.sh start-public --workspace $WORKSPACE"
+  if [ -n "$local_port" ] && [ "$local_port" != "7890" ]; then
+    start_command="$start_command --port $local_port"
+  fi
+
+  # Decide readiness + recommended next action.
+  local ready="false"
+  local action="wait"
+  local reason=""
+  if [ "$local_status" != "running" ]; then
+    ready="false"
+    action="start_local"
+    reason="Local dashboard is not running. Start it first: bash $AGENCY_DIR/scripts/dashboard-service.sh start-local --workspace $WORKSPACE"
+  elif [ "$public_status" = "running" ] && [ -n "$public_url" ]; then
+    ready="true"
+    action="already_running"
+    reason="Public tunnel already running."
+  elif [ "$cloudflared_installed" != "true" ]; then
+    ready="false"
+    action="install_cloudflared"
+    reason="cloudflared is not installed. Install it with: $install_command"
+  else
+    ready="true"
+    action="start_public"
+    reason="Local dashboard is healthy and cloudflared is installed. Run: $start_command"
+  fi
+
+  python3 -c '
+import json, sys
+(ready, action, reason, local_status, local_health, local_port,
+ public_status, public_url, cloudflared_installed, install_command,
+ start_command, state_file) = sys.argv[1:13]
+out = {
+    "schema": "dashboard.public.guidance.v1",
+    "ready": ready == "true",
+    "action": action,
+    "reason": reason,
+    "local": {
+        "status": local_status,
+        "health_url": local_health,
+        "port": int(local_port) if local_port.isdigit() else None,
+    },
+    "public": {
+        "status": public_status or "disabled",
+        "url": public_url,
+    },
+    "cloudflared_installed": cloudflared_installed == "true",
+    "install_command": install_command,
+    "start_command": start_command,
+    "state_file": state_file,
+    "provider": "cloudflare",
+    "mode": "quick",
+}
+print(json.dumps(out, indent=2))
+' "$ready" "$action" "$reason" "$local_status" "$local_health" "$local_port" \
+   "$public_status" "$public_url" "$cloudflared_installed" "$install_command" \
+   "$start_command" "$STATE_FILE"
+  return 0
+}
+
 # ── stop ──────────────────────────────────────────────────────────────────────
 cmd_stop() {
   log_info "dashboard-service: stop"
@@ -482,6 +570,7 @@ case "$SUBCOMMAND" in
   start-local)   cmd_start_local ;;
   start-public)  cmd_start_public ;;
   status)        cmd_status ;;
+  guide-public)  cmd_guide_public ;;
   stop)          cmd_stop ;;
   *)
     log_err "Unknown subcommand: $SUBCOMMAND"
