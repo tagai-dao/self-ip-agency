@@ -190,6 +190,26 @@ print('' if value is None else value)
 PY
 }
 
+read_installed_field() {
+  local field="$1"
+  python3 - <<'PY' "$WORKSPACE" "$field"
+import json, pathlib, sys
+workspace = pathlib.Path(sys.argv[1])
+field = sys.argv[2]
+path = workspace / '.agency-installed'
+if not path.exists():
+    print('')
+    raise SystemExit(0)
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    print('')
+    raise SystemExit(0)
+value = data.get(field)
+print('' if value is None else value)
+PY
+}
+
 write_skill_env() {
   local updates_json="$1"
   ensure_skill_dir
@@ -613,11 +633,22 @@ PY
 
   local repo_install
   repo_install="$(resolve_repo_install_script)"
-  if [ -n "$repo_install" ]; then
-    log_info "Re-running installer to register cron jobs and deploy dashboard"
-    bash "$repo_install"
-  else
-    log_warn "Could not resolve repo install.sh from workspace metadata — continuing with dashboard direct start only"
+  if [ -z "$repo_install" ]; then
+    log_err "Could not resolve repo install.sh from workspace metadata — cannot complete cron-first finalization"
+    return 1
+  fi
+  log_info "Re-running installer to register cron jobs and deploy dashboard"
+  bash "$repo_install"
+
+  local crons_registered install_status
+  crons_registered="$(read_installed_field crons_registered)"
+  install_status="$(read_installed_field install_status)"
+  if [ "$crons_registered" != "True" ] && [ "$crons_registered" != "true" ]; then
+    log_err "Cron registration did not complete successfully — refusing to continue with dashboard setup"
+    if [ -n "$install_status" ]; then
+      log_warn "Current install status: $install_status"
+    fi
+    return 1
   fi
 
   local dashboard_service

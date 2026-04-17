@@ -563,11 +563,18 @@ register_crons() {
 
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+  local cron_log_dir="$workspace/logs"
+  local gateway_log="$cron_log_dir/openclaw-gateway-bootstrap.log"
+  local cron_log="$cron_log_dir/openclaw-cron-registration.log"
 
   if [ "$DRY_RUN" = "true" ]; then
     log_info "[DRY RUN] Would register 3 cron jobs with openclaw"
     return 0
   fi
+
+  mkdir -p "$cron_log_dir"
+  : > "$gateway_log"
+  : > "$cron_log"
 
   # Check if openclaw CLI is available
   if ! command -v openclaw >/dev/null 2>&1; then
@@ -597,7 +604,41 @@ register_crons() {
     echo ""
     echo "  ══════════════════════════════════════════════════════════"
     echo ""
-    return 0
+    return 1
+  fi
+
+  # `openclaw cron *` talks to the Gateway-backed scheduler. A present CLI is
+  # not enough; the gateway itself must be reachable first.
+  if ! openclaw health --json >"$gateway_log" 2>&1; then
+    log_warn "OpenClaw CLI found, but the Gateway scheduler is not reachable"
+    log_info "Attempting to start the OpenClaw Gateway service..."
+    if openclaw gateway start >>"$gateway_log" 2>&1; then
+      log_ok "Requested OpenClaw Gateway service start"
+    else
+      log_warn "openclaw gateway start returned non-zero"
+    fi
+
+    local gw_ready=false
+    local _gw_try
+    for _gw_try in 1 2 3 4 5 6 7 8 9 10; do
+      sleep 1
+      if openclaw health --json >>"$gateway_log" 2>&1; then
+        gw_ready=true
+        break
+      fi
+    done
+
+    if [ "$gw_ready" != "true" ]; then
+      log_warn "OpenClaw Gateway is still unavailable — skipping cron auto-registration"
+      log_warn "Cron scheduler in current OpenClaw releases is Gateway-backed; 'openclaw cron add' cannot succeed until the Gateway is healthy"
+      log_warn "See gateway bootstrap log: $gateway_log"
+      log_info "Recovery steps:"
+      echo "  1. Run: openclaw gateway status"
+      echo "  2. If needed, run: openclaw gateway start"
+      echo "  3. Re-run: bash $AGENCY_DIR/scripts/install.sh"
+      return 1
+    fi
+    log_ok "OpenClaw Gateway became healthy — proceeding with cron registration"
   fi
 
   # Auto-register cron jobs
@@ -605,7 +646,7 @@ register_crons() {
 
   # Remove existing jobs first (idempotent: ignore errors if not present)
   for job_name in main-heartbeat bookmarker-cycle trader-cycle; do
-    openclaw cron rm "$job_name" 2>/dev/null || true
+    openclaw cron rm "$job_name" >>"$cron_log" 2>&1 || true
   done
 
   log_info "Registering main-heartbeat (*/10 * * * *)..."
@@ -613,7 +654,7 @@ register_crons() {
     --name "main-heartbeat" \
     --cron "*/10 * * * *" \
     --session isolated \
-    --message "Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh" 2>&1; then
+    --message "Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh" >>"$cron_log" 2>&1; then
     log_ok "Registered cron: main-heartbeat"
   else
     log_warn "Failed to register cron: main-heartbeat"
@@ -625,7 +666,7 @@ register_crons() {
     --name "bookmarker-cycle" \
     --cron "*/30 * * * *" \
     --session isolated \
-    --message "Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh" 2>&1; then
+    --message "Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh" >>"$cron_log" 2>&1; then
     log_ok "Registered cron: bookmarker-cycle"
   else
     log_warn "Failed to register cron: bookmarker-cycle"
@@ -637,7 +678,7 @@ register_crons() {
     --name "trader-cycle" \
     --cron "0 * * * *" \
     --session isolated \
-    --message "Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh" 2>&1; then
+    --message "Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh" >>"$cron_log" 2>&1; then
     log_ok "Registered cron: trader-cycle"
   else
     log_warn "Failed to register cron: trader-cycle"
@@ -647,8 +688,11 @@ register_crons() {
   if [ "$cron_ok" = "true" ]; then
     CRONS_REGISTERED=true
     log_ok "All 3 cron jobs registered successfully"
+    return 0
   else
     log_warn "Some cron jobs failed to register — check openclaw cron list"
+    log_warn "Detailed cron registration log: $cron_log"
+    return 1
   fi
 }
 
@@ -1015,8 +1059,11 @@ main() {
   local TAGCLAW_ACTIVATED=false
   if wait_for_tagclaw_activation; then
     TAGCLAW_ACTIVATED=true
-    register_crons
-    install_dashboard
+    if register_crons; then
+      install_dashboard
+    else
+      log_warn "Skipping dashboard setup — cron registration did not complete successfully"
+    fi
   else
     log_warn "Skipping cron registration and dashboard setup — TagClaw not yet activated"
     log_info "After activation, re-run: bash scripts/install.sh"
@@ -1032,12 +1079,13 @@ main() {
     fi
 
     # ── P0-C: Compute truthful install status ───────────────────────────────
-    # "verified" requires: identity resolved + credentials exist + dashboard running
+    # "verified" requires: identity resolved + credentials exist + crons registered + dashboard running
     # "partial"  is anything less
     # "failed"   only if core install steps (runtime/wiki/autoresearch) failed
     local INSTALL_STATUS="partial"
     if [ "$IDENTITY_RESOLVED" = "true" ] && \
        [ "$CREDENTIALS_EXIST" = "true" ] && \
+       [ "$CRONS_REGISTERED" = "true" ] && \
        [ "$DASHBOARD_STATUS" = "running" ]; then
       INSTALL_STATUS="verified"
     fi
@@ -1145,7 +1193,7 @@ print(json.dumps({
         "Register cron jobs manually (openclaw CLI was not available during install)"
     fi
 
-    if [ "$DASHBOARD_STATUS" = "not_attempted" ] && [ "$TAGCLAW_STATUS" = "active" ]; then
+    if [ "$DASHBOARD_STATUS" = "not_attempted" ] && [ "$TAGCLAW_STATUS" = "active" ] && [ "$CRONS_REGISTERED" = "true" ]; then
       _emit_step_simple "start_dashboard" \
         "Or start the local dashboard directly: bash $workspace/scripts/dashboard-service.sh start-local --workspace $workspace"
     fi
@@ -1208,6 +1256,7 @@ d = {
     'version': '$AGENCY_VERSION',
     'installed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'install_status': '$INSTALL_STATUS',
+    'crons_registered': '$CRONS_REGISTERED' == 'true',
     'dashboard_status': '$DASHBOARD_STATUS',
     'dashboard_local_status': '$DASHBOARD_STATUS',
     'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',

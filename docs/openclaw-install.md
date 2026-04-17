@@ -67,10 +67,26 @@ All scripts and the dashboard respect this env var:
 export OPENCLAW_WORKSPACE="$HOME/.openclaw/workspace"
 ```
 
+## Verify OpenClaw is running
+
+`openclaw cron *` is Gateway-backed in current OpenClaw releases, so cron
+registration only works when the Gateway service is healthy first.
+
+```bash
+# Check OpenClaw / Gateway status
+openclaw status
+openclaw health
+openclaw gateway status
+
+# If the Gateway is not up yet, start it
+openclaw gateway start
+```
+
 ## Register agent cron jobs
 
-After installing, register the agent cron jobs with OpenClaw. The installer prints
-the exact commands — look for the `CRON REGISTRATION COMMANDS` block in the output.
+After the Gateway is healthy, register the agent cron jobs with OpenClaw. The
+installer prints the exact commands — look for the `CRON REGISTRATION COMMANDS`
+block in the output.
 
 Example pattern:
 ```bash
@@ -106,12 +122,9 @@ Adjust schedules to your preference. The default intervals are:
 - **Bookmarker**: every 30 minutes  
 - **Trader**: every 60 minutes
 
-## Verify OpenClaw is running
+## Verify cron registration
 
 ```bash
-# Check OpenClaw status
-openclaw status
-
 # List registered cron jobs
 openclaw cron list
 
