@@ -223,90 +223,47 @@ run_auto_tagclaw_onboarding() {
 # ──────────────────────────────────────────────────────────────────────────────
 
 detect_identity() {
-  log_info "Step 2: Detecting agent identity from TagClaw API..."
+  log_info "Step 2: Detecting agent identity..."
 
   require_python3 || return 1
   require_curl || return 1
 
-  local api_key api_response
-  api_key="$(resolve_tagclaw_api_key)"
-  if [ -n "$api_key" ]; then
-    api_response="$(curl -sf "${TAGCLAW_API}/me" -H "Authorization: Bearer ${api_key}" --max-time 15 2>/dev/null || echo "")"
-  else
-    api_response="$(curl -sf "${TAGCLAW_API}/me" --max-time 15 2>/dev/null || echo "")"
-  fi
-
-  if [ -z "$api_response" ]; then
-    log_warn "TagClaw API unreachable or credentials missing — using empty identity template"
-    log_warn "Run install.sh again after completing TagClaw onboarding"
-    return 0
-  fi
-
-  # Extract fields
-  local username eth_addr owner_twitter_id profile_url
-  username="$(echo "$api_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('username',''))" 2>/dev/null || echo "")"
-  eth_addr="$(echo "$api_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ethAddr',''))" 2>/dev/null || echo "")"
-  owner_twitter_id="$(echo "$api_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ownerTwitterId',''))" 2>/dev/null || echo "")"
-  profile_url="$(echo "$api_response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('profileUrl','https://tagclaw.com'))" 2>/dev/null || echo "")"
-
-  if [ -z "$username" ]; then
-    log_warn "API returned no username — are you registered on TagClaw?"
-    return 0
-  fi
-
-  log_ok "Detected agent: $username (wallet: $eth_addr)"
-  IDENTITY_RESOLVED=true
-
-  # Detect tagclaw-wallet path
-  local wallet_cmd
-  wallet_cmd="$(detect_tagclaw_wallet || echo "")"
-  if [ -z "$wallet_cmd" ]; then
-    log_warn "tagclaw-wallet binary not found — wallet operations will be unavailable"
-    wallet_cmd="tagclaw-wallet"
-  else
-    log_ok "tagclaw-wallet found at: $wallet_cmd"
-  fi
-
-  if [ "$DRY_RUN" = "true" ]; then
-    log_info "[DRY RUN] Would write identity: username=$username eth_addr=$eth_addr"
-    return 0
-  fi
-
-  # Write identity atomically
-  local workspace identity_json
+  local workspace refresh_helper
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
-  identity_json="$(python3 -c "
-import json
-d = {
-    'schema': 'agency.identity.v1',
-    'agent': {
-        'username': '$username',
-        'eth_addr': '$eth_addr',
-        'profile_url': '$profile_url',
-        'platform': 'TagClaw'
-    },
-    'owner': {
-        'twitter_id': '$owner_twitter_id',
-        'twitter_handle': None,
-        'platform': 'X (Twitter)'
-    },
-    'wallet': {
-        'address': '$eth_addr',
-        'chain': 'BSC',
-        'private_key_path': '$workspace/skills/tagclaw-wallet/.env',
-        'tagclaw_wallet_cmd': '$wallet_cmd'
-    },
-    'binding': {
-        'type': 'agent-owner',
-        'align_scorer': None,
-        'voice_source': 'owner twitter history'
-    }
-}
-print(json.dumps(d, indent=2))
-")"
+  refresh_helper="$AGENCY_DIR/scripts/refresh-agency-identity.sh"
 
-  atomic_write_json "$IDENTITY_FILE" "$identity_json"
-  log_ok "Identity written to $IDENTITY_FILE"
+  if [ ! -f "$refresh_helper" ]; then
+    log_warn "refresh-agency-identity.sh missing — leaving identity template untouched"
+    return 0
+  fi
+
+  # Delegate identity reconstruction to the canonical refresh helper. It reads
+  # .env sources (skill + wallet), optionally enriches from TagClaw /me, and
+  # atomically writes BOTH the repo and workspace copies of agency-identity.json
+  # so they stay in sync. Centralizing the write in one place is what fixes
+  # the install-first / onboard-second stale shadow problem.
+  local -a cmd=(bash "$refresh_helper" --workspace "$workspace" --repo-dir "$AGENCY_DIR" --verify-api)
+  if [ "$DRY_RUN" = "true" ]; then
+    cmd+=(--dry-run)
+  fi
+
+  local rc=0
+  "${cmd[@]}" || rc=$?
+
+  case "$rc" in
+    0)
+      IDENTITY_RESOLVED=true
+      log_ok "Identity resolved via refresh-agency-identity.sh"
+      ;;
+    2)
+      log_warn "Identity sources incomplete — complete TagClaw onboarding, then rerun install.sh"
+      log_warn "Or invoke the refresh helper directly: bash scripts/refresh-agency-identity.sh --workspace $workspace"
+      ;;
+    *)
+      log_warn "refresh-agency-identity.sh exited with code $rc — identity may be stale"
+      ;;
+  esac
+  return 0
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -416,7 +373,7 @@ install_runtime() {
   # Deploy all cycle entrypoints into the actual workspace.
   local scripts_dst="$workspace/scripts"
   mkdir -p "$scripts_dst"
-  for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh tagclaw-onboard.sh; do
+  for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh tagclaw-onboard.sh refresh-agency-identity.sh; do
     if [ -f "$AGENCY_DIR/scripts/$cycle_script" ]; then
       cp -f "$AGENCY_DIR/scripts/$cycle_script" "$scripts_dst/$cycle_script"
       chmod +x "$scripts_dst/$cycle_script" || true
