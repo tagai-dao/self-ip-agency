@@ -7,6 +7,7 @@
 #   bash scripts/tagclaw-onboard.sh wallet-init [--workspace PATH] [--force]
 #   bash scripts/tagclaw-onboard.sh register [--workspace PATH] [--name NAME] [--description TEXT]
 #   bash scripts/tagclaw-onboard.sh poll-status [--workspace PATH] [--timeout-seconds 3600]
+#   bash scripts/tagclaw-onboard.sh post-verify-finalize [--workspace PATH] [--timeout-seconds 3600]
 #   bash scripts/tagclaw-onboard.sh full [--workspace PATH] [--name NAME] [--description TEXT] [--poll]
 #
 # This script follows TagClaw upstream docs:
@@ -72,6 +73,7 @@ Commands:
   wallet-init    Run the upstream wallet setup.sh flow
   register       Register a TagClaw account using the current wallet .env
   poll-status    Poll TagClaw activation status and update skills/tagclaw/.env
+  post-verify-finalize  Poll until active, then finish crons + dashboard + public URL
   full           Run skills + wallet-install + wallet-init + register (+ optional poll)
 
 Examples:
@@ -124,6 +126,68 @@ refresh_identity() {
     *) log_warn "refresh-agency-identity.sh exited with code $rc — identity JSON may be stale" ;;
   esac
   return 0
+}
+
+resolve_repo_install_script() {
+  python3 - <<'PY' "$WORKSPACE"
+import json, pathlib, sys
+workspace = pathlib.Path(sys.argv[1])
+meta = workspace / '.agency-meta.json'
+if not meta.exists():
+    print('')
+    raise SystemExit(0)
+try:
+    data = json.loads(meta.read_text())
+except Exception:
+    print('')
+    raise SystemExit(0)
+repo_dir = str(data.get('repo_dir') or '').strip()
+if not repo_dir:
+    print('')
+    raise SystemExit(0)
+candidate = pathlib.Path(repo_dir) / 'scripts' / 'install.sh'
+print(str(candidate) if candidate.exists() else '')
+PY
+}
+
+resolve_dashboard_service_script() {
+  if [ -x "$WORKSPACE/scripts/dashboard-service.sh" ]; then
+    echo "$WORKSPACE/scripts/dashboard-service.sh"
+    return 0
+  fi
+  local repo_install repo_dir candidate
+  repo_install="$(resolve_repo_install_script)"
+  if [ -n "$repo_install" ]; then
+    repo_dir="$(cd "$(dirname "$repo_install")/.." && pwd)"
+    candidate="$repo_dir/scripts/dashboard-service.sh"
+    if [ -x "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  fi
+  echo ""
+  return 1
+}
+
+read_dashboard_state_field() {
+  local section="$1" field="$2"
+  python3 - <<'PY' "$WORKSPACE" "$section" "$field"
+import json, pathlib, sys
+workspace = pathlib.Path(sys.argv[1])
+section = sys.argv[2]
+field = sys.argv[3]
+path = workspace / 'runtime' / 'shared' / 'dashboard-service.json'
+if not path.exists():
+    print('')
+    raise SystemExit(0)
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    print('')
+    raise SystemExit(0)
+value = ((data.get(section) or {}).get(field))
+print('' if value is None else value)
+PY
 }
 
 write_skill_env() {
@@ -411,8 +475,7 @@ print('### END VERIFICATION TWEET ###')
 print('')
 print(f'Profile URL after activation: {info["TAGCLAW_PROFILE_URL"]}')
 print('')
-print('After the tweet is live, run:')
-print(f'bash scripts/tagclaw-onboard.sh poll-status --workspace {workspace}')
+print('After the tweet is live, tell me and I will finish the activation automatically.')
 PY
 }
 
@@ -521,6 +584,66 @@ PY
   done
 }
 
+post_verify_finalize() {
+  log_info "Running post-verification finalization flow"
+
+  poll_status
+
+  local current_status
+  current_status="$(python3 - <<'PY' "$SKILL_ENV"
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+status = ''
+if path.exists():
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or '=' not in s:
+            continue
+        k, v = s.split('=', 1)
+        if k.strip() == 'TAGCLAW_STATUS':
+            status = v.strip().strip('"').strip("'")
+            break
+print(status)
+PY
+)"
+  if [ "$current_status" != "active" ]; then
+    log_err "TagClaw status is '$current_status' — cannot finalize activation"
+    return 1
+  fi
+
+  local repo_install
+  repo_install="$(resolve_repo_install_script)"
+  if [ -n "$repo_install" ]; then
+    log_info "Re-running installer to register cron jobs and deploy dashboard"
+    bash "$repo_install"
+  else
+    log_warn "Could not resolve repo install.sh from workspace metadata — continuing with dashboard direct start only"
+  fi
+
+  local dashboard_service
+  dashboard_service="$(resolve_dashboard_service_script)"
+  if [ -z "$dashboard_service" ]; then
+    log_err "dashboard-service.sh not found — cannot finish dashboard setup"
+    return 1
+  fi
+
+  log_info "Ensuring local dashboard is running"
+  bash "$dashboard_service" start-local --workspace "$WORKSPACE"
+
+  log_info "Ensuring public Cloudflare tunnel is running"
+  bash "$dashboard_service" start-public --workspace "$WORKSPACE"
+
+  local public_status public_url
+  public_status="$(read_dashboard_state_field public status)"
+  public_url="$(read_dashboard_state_field public url)"
+  if [ "$public_status" != "running" ] || [ -z "$public_url" ]; then
+    log_err "Dashboard tunnel did not produce a usable public URL"
+    return 1
+  fi
+
+  echo "DASHBOARD_PUBLIC_URL=$public_url"
+}
+
 case "$COMMAND" in
   skills)
     install_skill_pack
@@ -536,6 +659,9 @@ case "$COMMAND" in
     ;;
   poll-status)
     poll_status
+    ;;
+  post-verify-finalize)
+    post_verify_finalize
     ;;
   full)
     install_skill_pack

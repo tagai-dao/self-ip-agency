@@ -373,7 +373,7 @@ install_runtime() {
   # Deploy all cycle entrypoints into the actual workspace.
   local scripts_dst="$workspace/scripts"
   mkdir -p "$scripts_dst"
-  for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh tagclaw-onboard.sh refresh-agency-identity.sh; do
+  for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh tagclaw-onboard.sh refresh-agency-identity.sh dashboard-service.sh start-quick-tunnel.sh; do
     if [ -f "$AGENCY_DIR/scripts/$cycle_script" ]; then
       cp -f "$AGENCY_DIR/scripts/$cycle_script" "$scripts_dst/$cycle_script"
       chmod +x "$scripts_dst/$cycle_script" || true
@@ -1079,9 +1079,11 @@ print(json.dumps({"kind": sys.argv[1], "title": sys.argv[2], "action": sys.argv[
     # that render only top-level common fields (title/action/file) still see
     # the exact tweet text under Step 1 and do not have to open the
     # verification-tweet file. `copy_text` / `details` remain the canonical
-    # clipboard/per-line fields for kind-aware consumers.
+    # clipboard/per-line fields for kind-aware consumers. Human-facing
+    # `post_action` stays intentionally simple; automation should use the
+    # explicit `agent_command`.
     _emit_step_verification_tweet() {
-      local _agent="$1" _code="$2" _vfile="$3" _poll="$4"
+      local _agent="$1" _code="$2" _vfile="$3" _agent_cmd="$4"
       local _line1 _line2 _copy _flat
       _line1="I'm claiming my AI agent \"$_agent\" on @TagClaw"
       _line2="Verification: \"$_code\""
@@ -1091,7 +1093,7 @@ print(json.dumps({"kind": sys.argv[1], "title": sys.argv[2], "action": sys.argv[
       STEP_KINDS+=("x_verification_tweet")
       STEP_PAYLOADS+=("$(python3 -c '
 import json, sys
-agent, code, vfile, poll = sys.argv[1:]
+agent, code, vfile, agent_cmd = sys.argv[1:]
 line1 = f"I\u0027m claiming my AI agent \"{agent}\" on @TagClaw"
 line2 = f"Verification: \"{code}\""
 body = f"{line1}\n{line2}"
@@ -1102,9 +1104,11 @@ print(json.dumps({
     "copy_text": body,
     "details": [line1, line2],
     "file": vfile,
-    "post_action": f"After the tweet is live, run: {poll}",
+    "post_action": "Tell me once the tweet is live.",
+    "agent_command": agent_cmd,
+    "agent_behavior": "When the user confirms the tweet is live, run agent_command silently and continue until a usable public dashboard URL is available.",
 }))
-' "$_agent" "$_code" "$_vfile" "$_poll")")
+' "$_agent" "$_code" "$_vfile" "$_agent_cmd")")
     }
 
     if [ "$CREDENTIALS_EXIST" != "true" ]; then
@@ -1115,17 +1119,20 @@ print(json.dumps({
     fi
 
     if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
-      local _POLL_CMD="bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace"
+      local _FINALIZE_CMD="bash $workspace/scripts/tagclaw-onboard.sh post-verify-finalize --workspace $workspace"
       _emit_step_verification_tweet \
         "$TAGCLAW_AGENT_USERNAME" \
         "$TAGCLAW_VERIFICATION_CODE" \
         "$VERIFICATION_TWEET_FILE" \
-        "$_POLL_CMD"
-      _emit_step_simple "poll_tagclaw_status" \
-        "After the tweet is live, run: $_POLL_CMD"
+        "$_FINALIZE_CMD"
+      _emit_step_simple "await_user_confirmation" \
+        "Tell me once the verification tweet is live."
     elif [ "$TAGCLAW_STATUS" != "active" ]; then
-      _emit_step_simple "poll_tagclaw_status" \
-        "After posting the verification tweet, run: bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace"
+      _emit_step_simple "await_user_confirmation" \
+        "Tell me once the verification tweet is live."
+    elif [ "$CRONS_REGISTERED" != "true" ] || [ "$DASHBOARD_STATUS" = "not_attempted" ]; then
+      _emit_step_simple "finalize_post_verification" \
+        "Finish cron registration and dashboard setup: bash $AGENCY_DIR/scripts/install.sh"
     fi
 
     if [ "$CREDENTIALS_EXIST" = "true" ]; then
@@ -1133,9 +1140,14 @@ print(json.dumps({
         "Verify $workspace/skills/tagclaw/.env contains TAGCLAW_API_KEY and $workspace/skills/tagclaw-wallet/.env contains the wallet bootstrap fields"
     fi
 
-    if [ "$CRONS_REGISTERED" != "true" ]; then
+    if [ "$CRONS_REGISTERED" != "true" ] && [ "$TAGCLAW_STATUS" = "active" ]; then
       _emit_step_simple "register_crons" \
         "Register cron jobs manually (openclaw CLI was not available during install)"
+    fi
+
+    if [ "$DASHBOARD_STATUS" = "not_attempted" ] && [ "$TAGCLAW_STATUS" = "active" ]; then
+      _emit_step_simple "start_dashboard" \
+        "Or start the local dashboard directly: bash $workspace/scripts/dashboard-service.sh start-local --workspace $workspace"
     fi
 
     if [ "$DASHBOARD_STATUS" = "deps_missing" ]; then
@@ -1294,6 +1306,7 @@ _arrays = json.load(sys.stdin)
 _tw_active = '$TAGCLAW_STATUS' == 'pending_verification' and bool('$TAGCLAW_AGENT_USERNAME') and bool('$TAGCLAW_VERIFICATION_CODE')
 _tw_line1 = 'I\\'m claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw' if _tw_active else ''
 _tw_line2 = 'Verification: \"$TAGCLAW_VERIFICATION_CODE\"' if _tw_active else ''
+_post_verify_command = 'bash $workspace/scripts/tagclaw-onboard.sh post-verify-finalize --workspace $workspace'
 d = {
     'schema': 'install-next-steps.v2',
     'install_status': '$INSTALL_STATUS',
@@ -1317,6 +1330,7 @@ d = {
         'agent_username': '$TAGCLAW_AGENT_USERNAME',
         'verification_code': '$TAGCLAW_VERIFICATION_CODE',
         'profile_url': '$TAGCLAW_PROFILE_URL',
+        'post_verification_command': _post_verify_command if _tw_active else '',
         'verification_tweet_file': '$VERIFICATION_TWEET_FILE',
         'verification_tweet': [_tw_line1, _tw_line2] if _tw_active else [],
         'verification_tweet_text': (_tw_line1 + '\\n' + _tw_line2) if _tw_active else ''
@@ -1353,7 +1367,7 @@ print(json.dumps(d, indent=2))
           echo '   ```'
           echo ""
           echo "   File (for convenience): \`$VERIFICATION_TWEET_FILE\`"
-          echo "   After the tweet is live, run: \`bash $workspace/scripts/tagclaw-onboard.sh poll-status --workspace $workspace\`"
+          echo "   After the tweet is live, tell me and I will finish the activation automatically."
         elif [ "$_k" = "dashboard_public_exposure" ]; then
           echo "$((md_i + 1)). **Enable a public dashboard URL (optional, recommended)**"
           echo ""
@@ -1482,6 +1496,7 @@ print(json.dumps(d, indent=2))
       if [ -n "$TAGCLAW_PROFILE_URL" ]; then
         echo "  ║    Profile: $TAGCLAW_PROFILE_URL"
       fi
+      echo "  ║    After the tweet is live, tell me and I will finish activation automatically."
       echo "  ║"
     elif [ "$TAGCLAW_STATUS" = "active" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ]; then
       echo "  ║  TagClaw account active: $TAGCLAW_AGENT_USERNAME"
@@ -1501,6 +1516,7 @@ print(json.dumps(d, indent=2))
         echo "  ║         I'm claiming my AI agent \"$TAGCLAW_AGENT_USERNAME\" on @TagClaw"
         echo "  ║         Verification: \"$TAGCLAW_VERIFICATION_CODE\""
         echo "  ║         (file: $VERIFICATION_TWEET_FILE)"
+        echo "  ║         Then tell me once the tweet is live."
       else
         # Flat strings may contain embedded newlines (e.g. the consolidated
         # fallback): render each physical line with the box gutter preserved.
