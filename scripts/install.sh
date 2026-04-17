@@ -838,6 +838,97 @@ except Exception:
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 7b. wait_for_tagclaw_activation
+# ──────────────────────────────────────────────────────────────────────────────
+
+wait_for_tagclaw_activation() {
+  log_info "Checking TagClaw activation status before registering crons..."
+
+  local workspace
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+
+  # If no credentials at all, skip — earlier steps will have warned about this
+  if ! has_tagclaw_credentials; then
+    log_warn "No TagClaw credentials found — skipping activation check"
+    return 1
+  fi
+
+  local tagclaw_status
+  tagclaw_status="$(resolve_tagclaw_skill_env_field "TAGCLAW_STATUS" "$workspace")"
+
+  if [ "$tagclaw_status" = "active" ]; then
+    log_ok "TagClaw account is already active — proceeding"
+    return 0
+  fi
+
+  if [ "$tagclaw_status" != "pending_verification" ]; then
+    log_warn "TagClaw status is '$tagclaw_status' (expected 'active' or 'pending_verification') — skipping activation wait"
+    return 1
+  fi
+
+  # Status is pending_verification — show the tweet and poll
+  local agent_username verification_code profile_url
+  agent_username="$(resolve_tagclaw_skill_env_field "TAGCLAW_AGENT_USERNAME" "$workspace")"
+  verification_code="$(resolve_tagclaw_skill_env_field "TAGCLAW_VERIFICATION_CODE" "$workspace")"
+  profile_url="$(resolve_tagclaw_skill_env_field "TAGCLAW_PROFILE_URL" "$workspace")"
+
+  echo ""
+  echo "  ╔══════════════════════════════════════════════════════════════════════╗"
+  echo "  ║  ACTION REQUIRED: Post verification tweet on X (Twitter)           ║"
+  echo "  ╠══════════════════════════════════════════════════════════════════════╣"
+  echo "  ║                                                                    ║"
+  echo "  ║  Post this exact tweet:                                            ║"
+  echo "  ║                                                                    ║"
+  echo "  ║    I'm claiming my AI agent \"$agent_username\" on @TagClaw"
+  echo "  ║    Verification: \"$verification_code\""
+  echo "  ║                                                                    ║"
+  if [ -n "$profile_url" ]; then
+    echo "  ║  Profile: $profile_url"
+  fi
+  echo "  ║                                                                    ║"
+  echo "  ║  After posting, the installer will automatically detect it and     ║"
+  echo "  ║  continue with cron registration and dashboard setup.              ║"
+  echo "  ║                                                                    ║"
+  echo "  ║  Polling every 10s (timeout: 1h). Press Ctrl+C to abort.           ║"
+  echo "  ╚══════════════════════════════════════════════════════════════════════╝"
+  echo ""
+
+  # Write the tweet to a file for convenience
+  local tweet_file="$workspace/tagclaw-verification-tweet.txt"
+  cat > "$tweet_file" <<EOF
+I'm claiming my AI agent "$agent_username" on @TagClaw
+Verification: "$verification_code"
+EOF
+  log_info "Tweet saved to: $tweet_file"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    log_info "[DRY RUN] Would poll for activation — skipping"
+    return 1
+  fi
+
+  # Use the existing poll-status helper
+  local onboard_script="$AGENCY_DIR/scripts/tagclaw-onboard.sh"
+  if [ ! -f "$onboard_script" ]; then
+    onboard_script="$workspace/scripts/tagclaw-onboard.sh"
+  fi
+
+  if [ ! -f "$onboard_script" ]; then
+    log_warn "tagclaw-onboard.sh not found — cannot auto-poll. Run manually after posting tweet:"
+    echo "  bash scripts/tagclaw-onboard.sh poll-status --workspace $workspace"
+    return 1
+  fi
+
+  log_info "Waiting for TagClaw verification (polling)..."
+  if bash "$onboard_script" poll-status --workspace "$workspace" --timeout-seconds 3600 --poll-interval 10; then
+    log_ok "TagClaw account activated! Continuing with cron and dashboard setup..."
+    return 0
+  else
+    log_warn "TagClaw activation polling ended without activation"
+    return 1
+  fi
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -879,8 +970,17 @@ main() {
   install_runtime
   install_wiki
   install_autoresearch
-  register_crons
-  install_dashboard
+
+  # ── Gate: wait for TagClaw verification before registering crons / dashboard ──
+  local TAGCLAW_ACTIVATED=false
+  if wait_for_tagclaw_activation; then
+    TAGCLAW_ACTIVATED=true
+    register_crons
+    install_dashboard
+  else
+    log_warn "Skipping cron registration and dashboard setup — TagClaw not yet activated"
+    log_info "After activation, re-run: bash scripts/install.sh"
+  fi
 
   if [ "$DRY_RUN" = "false" ]; then
     local workspace
