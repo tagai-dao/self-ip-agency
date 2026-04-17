@@ -38,7 +38,7 @@ TAGCLAW_ONBOARD_STATUS="not_requested"
 TAGCLAW_JOINED=false
 CREDENTIALS_EXIST=false
 IDENTITY_RESOLVED=false
-CRONS_REGISTERED=false  # always false — installer never auto-registers
+CRONS_REGISTERED=false
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 
@@ -559,44 +559,97 @@ install_autoresearch() {
 # ──────────────────────────────────────────────────────────────────────────────
 
 register_crons() {
-  log_info "Step 7: Cron job commands (NOT auto-registered)..."
-
-  echo ""
-  echo "  ══════════════════════════════════════════════════════════"
-  echo "  ACTION REQUIRED: Run these commands to register cron jobs."
-  echo "  The installer does NOT register them automatically."
-  echo "  NOTE: Only register crons for agents that pass --self-check."
-  echo "  ══════════════════════════════════════════════════════════"
-  echo ""
+  log_info "Step 7: Registering cron jobs..."
 
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
 
-  echo "  # Always safe to register (native Python runtime):"
-  echo "  openclaw cron add \\"
-  echo "    --name \"main-heartbeat\" \\"
-  echo "    --cron \"*/10 * * * *\" \\"
-  echo "    --session isolated \\"
-  echo "    --message \"Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh\""
-  echo ""
-  echo "  # Register only after --self-check passes:"
-  echo "  openclaw cron add \\"
-  echo "    --name \"bookmarker-cycle\" \\"
-  echo "    --cron \"*/30 * * * *\" \\"
-  echo "    --session isolated \\"
-  echo "    --message \"Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh\""
-  echo ""
-  echo "  openclaw cron add \\"
-  echo "    --name \"trader-cycle\" \\"
-  echo "    --cron \"0 * * * *\" \\"
-  echo "    --session isolated \\"
-  echo "    --message \"Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh\""
+  if [ "$DRY_RUN" = "true" ]; then
+    log_info "[DRY RUN] Would register 3 cron jobs with openclaw"
+    return 0
+  fi
 
-  echo ""
-  echo "  ══════════════════════════════════════════════════════════"
-  echo ""
+  # Check if openclaw CLI is available
+  if ! command -v openclaw >/dev/null 2>&1; then
+    log_warn "openclaw CLI not found — printing manual cron registration commands"
+    echo ""
+    echo "  ══════════════════════════════════════════════════════════"
+    echo "  ACTION REQUIRED: Run these commands to register cron jobs."
+    echo "  ══════════════════════════════════════════════════════════"
+    echo ""
+    echo "  openclaw cron add \\"
+    echo "    --name \"main-heartbeat\" \\"
+    echo "    --cron \"*/10 * * * *\" \\"
+    echo "    --session isolated \\"
+    echo "    --message \"Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh\""
+    echo ""
+    echo "  openclaw cron add \\"
+    echo "    --name \"bookmarker-cycle\" \\"
+    echo "    --cron \"*/30 * * * *\" \\"
+    echo "    --session isolated \\"
+    echo "    --message \"Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh\""
+    echo ""
+    echo "  openclaw cron add \\"
+    echo "    --name \"trader-cycle\" \\"
+    echo "    --cron \"0 * * * *\" \\"
+    echo "    --session isolated \\"
+    echo "    --message \"Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh\""
+    echo ""
+    echo "  ══════════════════════════════════════════════════════════"
+    echo ""
+    return 0
+  fi
 
-  log_info "Cron commands printed above — copy and run them manually"
+  # Auto-register cron jobs
+  local cron_ok=true
+
+  # Remove existing jobs first (idempotent: ignore errors if not present)
+  for job_name in main-heartbeat bookmarker-cycle trader-cycle; do
+    openclaw cron rm "$job_name" 2>/dev/null || true
+  done
+
+  log_info "Registering main-heartbeat (*/10 * * * *)..."
+  if openclaw cron add \
+    --name "main-heartbeat" \
+    --cron "*/10 * * * *" \
+    --session isolated \
+    --message "Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh" 2>&1; then
+    log_ok "Registered cron: main-heartbeat"
+  else
+    log_warn "Failed to register cron: main-heartbeat"
+    cron_ok=false
+  fi
+
+  log_info "Registering bookmarker-cycle (*/30 * * * *)..."
+  if openclaw cron add \
+    --name "bookmarker-cycle" \
+    --cron "*/30 * * * *" \
+    --session isolated \
+    --message "Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh" 2>&1; then
+    log_ok "Registered cron: bookmarker-cycle"
+  else
+    log_warn "Failed to register cron: bookmarker-cycle"
+    cron_ok=false
+  fi
+
+  log_info "Registering trader-cycle (0 * * * *)..."
+  if openclaw cron add \
+    --name "trader-cycle" \
+    --cron "0 * * * *" \
+    --session isolated \
+    --message "Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh" 2>&1; then
+    log_ok "Registered cron: trader-cycle"
+  else
+    log_warn "Failed to register cron: trader-cycle"
+    cron_ok=false
+  fi
+
+  if [ "$cron_ok" = "true" ]; then
+    CRONS_REGISTERED=true
+    log_ok "All 3 cron jobs registered successfully"
+  else
+    log_warn "Some cron jobs failed to register — check openclaw cron list"
+  fi
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -940,8 +993,10 @@ print(json.dumps({
         "Verify $workspace/skills/tagclaw/.env contains TAGCLAW_API_KEY and $workspace/skills/tagclaw-wallet/.env contains the wallet bootstrap fields"
     fi
 
-    _emit_step_simple "register_crons" \
-      "Register cron jobs (see commands printed in Step 7 above)"
+    if [ "$CRONS_REGISTERED" != "true" ]; then
+      _emit_step_simple "register_crons" \
+        "Register cron jobs manually (openclaw CLI was not available during install)"
+    fi
 
     if [ "$DASHBOARD_STATUS" = "deps_missing" ]; then
       _emit_step_simple "install_dashboard_deps" \
@@ -1047,7 +1102,9 @@ print(json.dumps(d, indent=2))
     if [ -n "$DASHBOARD_PUBLIC_URL" ]; then
       _public_summary="${DASHBOARD_PUBLIC_STATUS} (${DASHBOARD_PUBLIC_URL})"
     fi
-    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: manual. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}."
+    local _cron_summary="manual"
+    [ "$CRONS_REGISTERED" = "true" ] && _cron_summary="auto-registered"
+    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: ${_cron_summary}. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}."
 
     # ── Dedicated verification tweet handoff artifact ──────────────────────
     # VERIFICATION_TWEET_FILE was declared earlier (before the structured
@@ -1206,7 +1263,11 @@ print(json.dumps(d, indent=2))
       else
         echo "| Dashboard (public) | ${DASHBOARD_PUBLIC_STATUS} |"
       fi
-      echo "| Cron jobs | manual (not auto-registered) |"
+      if [ "$CRONS_REGISTERED" = "true" ]; then
+        echo "| Cron jobs | auto-registered ✓ |"
+      else
+        echo "| Cron jobs | manual (openclaw CLI not available) |"
+      fi
       echo ""
       echo "---"
       echo "_Generated by install.sh v${AGENCY_VERSION} (schema: install-next-steps.v2)_"
@@ -1398,7 +1459,7 @@ print(json.dumps(d, indent=2))
     echo "DASHBOARD_PUBLIC_INSTALL_COMMAND=\"${DASHBOARD_PUBLIC_INSTALL_COMMAND:-}\""
     echo "DASHBOARD_PUBLIC_START_COMMAND=\"${DASHBOARD_PUBLIC_START_COMMAND:-}\""
     echo "DASHBOARD_PUBLIC_STATE_FILE=\"${DASHBOARD_PUBLIC_STATE_FILE:-}\""
-    echo "CRONS_REGISTERED=\"false\""
+    echo "CRONS_REGISTERED=\"${CRONS_REGISTERED}\""
     echo "INSTALL_SUMMARY=\"${INSTALL_SUMMARY}\""
     echo "### END INSTALL CONTRACT ###"
     echo ""

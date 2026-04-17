@@ -84,8 +84,8 @@ dashboard:
   # `enabled` is retained as a legacy alias that mirrors `auto_start`.
   public:
     suggest_in_install: true
-    auto_start: false
-    enabled: false
+    auto_start: true
+    enabled: true
     provider: "cloudflare"
     mode: "quick"
 
