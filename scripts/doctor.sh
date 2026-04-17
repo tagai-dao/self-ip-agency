@@ -292,7 +292,7 @@ else
     # operator intent (auto_start vs suggest_in_install). In all opt-in cases
     # we print a concrete next-step command so the operator can act without
     # reading docs.
-    GUIDE_START="bash $AGENCY_DIR/scripts/dashboard-service.sh start-public --workspace $WORKSPACE"
+    GUIDE_START="bash $WORKSPACE/scripts/dashboard-service.sh start-public --workspace $WORKSPACE"
     if command -v cloudflared >/dev/null 2>&1; then
       CF_HINT=""
     else

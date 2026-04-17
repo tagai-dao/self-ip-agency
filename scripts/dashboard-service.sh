@@ -463,7 +463,7 @@ cmd_guide_public() {
     fi
   fi
 
-  local start_command="bash $AGENCY_DIR/scripts/dashboard-service.sh start-public --workspace $WORKSPACE"
+  local start_command="bash $WORKSPACE/scripts/dashboard-service.sh start-public --workspace $WORKSPACE"
   if [ -n "$local_port" ] && [ "$local_port" != "7890" ]; then
     start_command="$start_command --port $local_port"
   fi

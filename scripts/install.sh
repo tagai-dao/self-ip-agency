@@ -743,7 +743,7 @@ except Exception:
   DASHBOARD_PUBLIC_STATUS="disabled"
   DASHBOARD_PUBLIC_GUIDE_AVAILABLE="false"
   DASHBOARD_PUBLIC_STATE_FILE="$state_file"
-  DASHBOARD_PUBLIC_START_COMMAND="bash $AGENCY_DIR/scripts/dashboard-service.sh start-public --workspace $workspace"
+  DASHBOARD_PUBLIC_START_COMMAND="bash $workspace/scripts/dashboard-service.sh start-public --workspace $workspace"
   if command -v cloudflared >/dev/null 2>&1; then
     DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="true"
     DASHBOARD_PUBLIC_INSTALL_COMMAND=""
@@ -1134,6 +1134,7 @@ d = {
     'dashboard_local_status': '$DASHBOARD_STATUS',
     'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',
     'dashboard_public_url': '$DASHBOARD_PUBLIC_URL',
+    'dashboard_public_guide_available': '$DASHBOARD_PUBLIC_GUIDE_AVAILABLE' == 'true',
     'dashboard_public_guide': {
         'available': '$DASHBOARD_PUBLIC_GUIDE_AVAILABLE' == 'true',
         'cloudflared_installed': '$DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED' == 'true',
