@@ -380,8 +380,27 @@ tracked as follow-up.
 ## Uninstall
 
 ```bash
-bash scripts/uninstall.sh
+bash scripts/uninstall.sh            # prints plan, prompts 'yes' to confirm
+bash scripts/uninstall.sh --dry-run  # show plan only, no changes
+bash scripts/uninstall.sh --yes      # skip confirmation
+bash scripts/uninstall.sh --keep-repo # do everything except remove the repo tree
 ```
+
+Stops the dashboard + cloudflared tunnel, stops the claw-wallet sandbox (only
+if `$WALLET_DIR/.env.clay` exists), unregisters all agency cron jobs, then
+removes every path `install.sh` deployed:
+
+- `$WORKSPACE/{runtime,memory,wiki,schema,tools/self-ip-dashboard}/`
+- `$WORKSPACE/skills/tagclaw/` and `$WORKSPACE/skills/tagclaw-wallet/`
+- deployed cycle scripts + Python runtime scripts + agent behavior files
+- `$WORKSPACE/{.agency-installed, .agency-meta.json, HEARTBEAT.md}`
+- `$HOME/.config/tagclaw/`
+- repo install artifacts (`.installed`, `.install-next-steps.*`, `.cache/`)
+- the repo tree itself (unless `--keep-repo`)
+
+Parent directories under `$WORKSPACE` are only removed if empty, so other
+skills sharing the workspace are left untouched. The script is idempotent —
+a second run on an already-uninstalled workspace completes with zero errors.
 
 ---
 
