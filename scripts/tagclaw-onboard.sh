@@ -26,6 +26,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 TAGCLAW_API="https://bsc-api.tagai.fun/tagclaw"
 WALLET_REPO_URL="https://github.com/tagai-dao/tagclaw-wallet.git"
+REFRESH_IDENTITY_SCRIPT="$SCRIPT_DIR/refresh-agency-identity.sh"
 COMMAND="${1:-help}"
 if [ "$#" -gt 0 ]; then shift; fi
 
@@ -102,6 +103,27 @@ PY
 
 ensure_skill_dir() {
   mkdir -p "$SKILL_DIR"
+}
+
+# Run the canonical identity refresh helper. Non-fatal: a refresh failure
+# should not roll back register/poll state that was already written to .env.
+# Exit codes from the helper:
+#   0 — refreshed identity JSON with real values
+#   2 — sources not yet sufficient (missing username or eth_addr); expected
+#       during early onboarding steps before register returns an address.
+refresh_identity() {
+  if [ ! -f "$REFRESH_IDENTITY_SCRIPT" ]; then
+    log_warn "refresh-agency-identity.sh not found at $REFRESH_IDENTITY_SCRIPT — skipping identity refresh"
+    return 0
+  fi
+  local rc=0
+  bash "$REFRESH_IDENTITY_SCRIPT" --workspace "$WORKSPACE" || rc=$?
+  case "$rc" in
+    0) log_ok "Refreshed agency-identity.json from onboarded state" ;;
+    2) log_info "Identity sources not yet sufficient for refresh (onboarding still in progress)" ;;
+    *) log_warn "refresh-agency-identity.sh exited with code $rc — identity JSON may be stale" ;;
+  esac
+  return 0
 }
 
 write_skill_env() {
@@ -364,6 +386,10 @@ PY
   write_skill_env "$parsed_json"
   log_ok "Persisted TagClaw registration state to $SKILL_ENV"
 
+  # After register produces username + eth_addr, refresh identity JSON so
+  # downstream dashboard/runtime see the real values even if install ran first.
+  refresh_identity
+
   python3 - <<'PY' "$parsed_json" "$WORKSPACE"
 import json, sys
 info = json.loads(sys.argv[1])
@@ -469,10 +495,16 @@ print(json.dumps({
 }))
 PY
 )"
+      # Refresh identity JSON whenever poll writes new profile data — username
+      # or profile_url may transition from placeholder to real values here.
+      refresh_identity
     fi
 
     if [ "$new_status" = "active" ]; then
       log_ok "TagClaw account is active"
+      # Final refresh once account is active so identity JSON reflects the
+      # fully-verified state (in case earlier refreshes ran before activation).
+      refresh_identity
       return 0
     fi
     sleep "$POLL_INTERVAL_SECONDS"
