@@ -105,6 +105,81 @@ openclaw cron list
 bash scripts/doctor.sh
 ```
 
+## Expose the Dashboard Publicly (Optional)
+
+By default, the dashboard is only accessible at `localhost:7890`. To monitor it
+remotely or share it with a collaborator, expose it via a tunnel.
+
+### Option A — Cloudflare Quick Tunnel (recommended)
+
+1. **Install cloudflared:**
+   ```bash
+   brew install cloudflared   # macOS
+   # Linux: see https://developers.cloudflare.com/cloudflared/install/
+   ```
+
+2. **Enable public exposure in `config/agency.config.yaml`:**
+   ```yaml
+   dashboard:
+     public:
+       enabled: true
+       provider: "cloudflare"
+       mode: "quick"
+       auto_start: true
+   ```
+
+3. **Start the public tunnel:**
+   ```bash
+   bash scripts/dashboard-service.sh start-public
+   ```
+   The script starts the local dashboard (if needed), then launches a Cloudflare Quick
+   Tunnel. The public HTTPS URL (e.g. `https://random-phrase.trycloudflare.com`) is
+   printed to stdout and written to `runtime/shared/dashboard-service.json`.
+
+4. **Verify:**
+   ```bash
+   bash scripts/dashboard-service.sh status
+   # Check `public.url` in the output, then run:
+   bash scripts/doctor.sh   # section 4c reports tunnel status
+   ```
+
+> **Note:** Quick Tunnel URLs are ephemeral — each restart assigns a new random URL.
+> For a stable public URL, use a named Cloudflare Tunnel or ngrok with a paid plan.
+
+### Option B — ngrok
+
+1. **Install ngrok** from [ngrok.com](https://ngrok.com) and authenticate:
+   ```bash
+   ngrok config add-authtoken <YOUR_NGROK_TOKEN>
+   ```
+
+2. **Start the local dashboard:**
+   ```bash
+   bash scripts/dashboard-service.sh start-local
+   ```
+
+3. **Open a tunnel to port 7890:**
+   ```bash
+   ngrok http 7890
+   ```
+
+4. **Record the public URL** and save it in your deployed config under
+   `dashboard_public_exposure.public_url`:
+   ```json
+   "dashboard_public_exposure": {
+     "tunnel_provider": "ngrok",
+     "public_url": "https://your-subdomain.ngrok-free.app"
+   }
+   ```
+
+### Stopping the tunnel
+
+```bash
+bash scripts/dashboard-service.sh stop
+```
+
+Run `bash scripts/doctor.sh` at any time — section **4c** reports dashboard exposure status.
+
 ## Directory layout
 
 ```
