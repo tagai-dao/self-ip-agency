@@ -777,9 +777,45 @@ except Exception:
     else
       DASHBOARD_PUBLIC_INSTALL_COMMAND="See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
     fi
+
+    # Auto-install cloudflared when auto_start is enabled
+    if [ "$public_auto_start" = "true" ]; then
+      log_info "cloudflared not found — attempting automatic installation..."
+      if command -v brew >/dev/null 2>&1; then
+        log_info "Installing cloudflared via Homebrew..."
+        if brew install cloudflared 2>&1; then
+          DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="true"
+          DASHBOARD_PUBLIC_INSTALL_COMMAND=""
+          log_ok "cloudflared installed successfully"
+        else
+          log_warn "Failed to install cloudflared via brew"
+        fi
+      elif command -v apt-get >/dev/null 2>&1; then
+        log_info "Installing cloudflared via apt-get..."
+        if sudo apt-get install -y cloudflared 2>&1; then
+          DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="true"
+          DASHBOARD_PUBLIC_INSTALL_COMMAND=""
+          log_ok "cloudflared installed successfully"
+        else
+          log_warn "Failed to install cloudflared via apt-get — trying direct download..."
+          local arch="amd64"
+          [ "$(uname -m)" = "aarch64" ] && arch="arm64"
+          if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}" -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared; then
+            DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="true"
+            DASHBOARD_PUBLIC_INSTALL_COMMAND=""
+            log_ok "cloudflared installed via direct download"
+          else
+            log_warn "Failed to download cloudflared binary"
+          fi
+        fi
+      else
+        log_warn "No supported package manager found (brew/apt-get) — cannot auto-install cloudflared"
+        log_warn "Install manually: $DASHBOARD_PUBLIC_INSTALL_COMMAND"
+      fi
+    fi
   fi
 
-  if [ "$public_auto_start" = "true" ] && [ "$DASHBOARD_STATUS" = "running" ]; then
+  if [ "$public_auto_start" = "true" ] && [ "$DASHBOARD_STATUS" = "running" ] && [ "$DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED" = "true" ]; then
     log_info "dashboard.public.auto_start=true → starting public tunnel..."
     "$svc" start-public --port "$DASHBOARD_PORT" --workspace "$workspace" || true
 
@@ -802,7 +838,11 @@ except Exception:
 " 2>/dev/null || echo "")"
     fi
   elif [ "$public_auto_start" = "true" ]; then
-    log_warn "dashboard.public.auto_start=true but local dashboard is not running — skipping public tunnel"
+    if [ "$DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED" != "true" ]; then
+      log_warn "dashboard.public.auto_start=true but cloudflared could not be installed — skipping public tunnel"
+    else
+      log_warn "dashboard.public.auto_start=true but local dashboard is not running — skipping public tunnel"
+    fi
     DASHBOARD_PUBLIC_STATUS="failed"
   else
     # auto_start is OFF — decide whether to surface guidance.
