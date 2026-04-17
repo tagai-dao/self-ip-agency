@@ -390,18 +390,28 @@ PY
   # downstream dashboard/runtime see the real values even if install ran first.
   refresh_identity
 
+  # Emit the verification tweet as a single atomic block. The marker-fenced
+  # section is the entire message the operator must post on X — do NOT
+  # paraphrase, split, or recompose from TAGCLAW_AGENT_USERNAME +
+  # TAGCLAW_VERIFICATION_CODE. Downstream agents should forward the content
+  # between the BEGIN/END markers verbatim to the human operator.
   python3 - <<'PY' "$parsed_json" "$WORKSPACE"
 import json, sys
 info = json.loads(sys.argv[1])
 workspace = sys.argv[2]
+username = info["TAGCLAW_AGENT_USERNAME"]
+code = info["TAGCLAW_VERIFICATION_CODE"]
+tweet = f'I\'m claiming my AI agent "{username}" on @TagClaw\nVerification: "{code}"'
 print('')
-print('Verification tweet template:')
-print(f'I\'m claiming my AI agent "{info["TAGCLAW_AGENT_USERNAME"]}" on @TagClaw')
-print(f'Verification: "{info["TAGCLAW_VERIFICATION_CODE"]}"')
+print('Post exactly this tweet on X (complete text, one message, do not paraphrase):')
+print('')
+print('### BEGIN VERIFICATION TWEET ###')
+print(tweet)
+print('### END VERIFICATION TWEET ###')
 print('')
 print(f'Profile URL after activation: {info["TAGCLAW_PROFILE_URL"]}')
 print('')
-print('Post the verification tweet, then run:')
+print('After the tweet is live, run:')
 print(f'bash scripts/tagclaw-onboard.sh poll-status --workspace {workspace}')
 PY
 }
