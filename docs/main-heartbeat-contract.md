@@ -129,5 +129,9 @@ The cron configuration in `config/cron-jobs.json` uses `scripts/main-heartbeat.s
 as the command for the `main-heartbeat` job. Register with:
 
 ```bash
-openclaw cron add main-heartbeat '*/10 * * * *' '/path/to/agency/scripts/main-heartbeat.sh'
+openclaw cron add \
+  --name "main-heartbeat" \
+  --cron "*/10 * * * *" \
+  --session isolated \
+  --message "Run the main heartbeat cycle: bash /path/to/agency/scripts/main-heartbeat.sh"
 ```

@@ -86,7 +86,11 @@ Exit code 0 = environment is ready. Exit code 1 = fix errors first.
 Register the main heartbeat with OpenClaw:
 
 ```bash
-openclaw cron add main-heartbeat '*/10 * * * *' '/path/to/self-ip-agency/scripts/main-heartbeat.sh'
+openclaw cron add \
+  --name "main-heartbeat" \
+  --cron "*/10 * * * *" \
+  --session isolated \
+  --message "Run the main heartbeat cycle: bash /path/to/self-ip-agency/scripts/main-heartbeat.sh"
 ```
 
 ## Further Reading

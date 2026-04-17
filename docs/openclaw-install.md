@@ -74,9 +74,23 @@ the exact commands — look for the `CRON REGISTRATION COMMANDS` block in the ou
 
 Example pattern:
 ```bash
-openclaw cron add main-heartbeat '*/10 * * * *' 'bash ~/.openclaw/workspace/scripts/main-heartbeat.sh'
-openclaw cron add bookmarker-cycle '*/30 * * * *' 'bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh'
-openclaw cron add trader-cycle '0 * * * *' 'bash ~/.openclaw/workspace/scripts/trader-cycle.sh'
+openclaw cron add \
+  --name "main-heartbeat" \
+  --cron "*/10 * * * *" \
+  --session isolated \
+  --message "Run the main heartbeat cycle: bash ~/.openclaw/workspace/scripts/main-heartbeat.sh"
+
+openclaw cron add \
+  --name "bookmarker-cycle" \
+  --cron "*/30 * * * *" \
+  --session isolated \
+  --message "Run the bookmarker curation cycle: bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh"
+
+openclaw cron add \
+  --name "trader-cycle" \
+  --cron "0 * * * *" \
+  --session isolated \
+  --message "Run the trader operations cycle: bash ~/.openclaw/workspace/scripts/trader-cycle.sh"
 ```
 
 > **Note**: All three cycles use dedicated entrypoint scripts, NOT `runtime/*/task.json`.
