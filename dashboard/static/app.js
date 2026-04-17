@@ -280,6 +280,7 @@ let _lastControlTower = null;
 let _lastAgentHealth = null;
 let _lastNoc = null;
 let _lastExplainability = null;
+let _agentUsername = null;
 
 function t(key) {
   return (I18N[_lang] || I18N.zh)[key] ?? (I18N.zh)[key] ?? key;
@@ -660,7 +661,7 @@ function translateLiteral(value, lang) {
     if ((m = s.match(/^(\d+) drafts?$/))) return `${m[1]} 条草稿`;
     if ((m = s.match(/^(\d+\/\d+) ok$/))) return `${m[1]} 正常`;
     if ((m = s.match(/^Recent posts \((\d+)\)$/))) return `最近帖子（${m[1]}）`;
-    if ((m = s.match(/^(\d+) @clawdbot posts$/))) return `${m[1]} 条 @clawdbot 帖子`;
+    if ((m = s.match(/^(\d+) @([A-Za-z0-9_]+) posts$/))) return `${m[1]} 条 @${m[2]} 帖子`;
     if ((m = s.match(/^source: (.+)$/))) return `来源：${m[1]}`;
     if ((m = s.match(/^mode: (.+)$/))) return `模式：${translateLiteral(m[1], l)}`;
     if ((m = s.match(/^→ (.+)$/)) && !isCanonicalPathLike(s)) return `→ ${m[1].split(/,\s*/).map(x => translateLiteral(x, l)).join('，')}`;
@@ -754,9 +755,49 @@ function formatCharCount(n) {
   return langText(`${n} 字`, `${n} chars`);
 }
 
+function getAgentUsername() {
+  return (_agentUsername || '').replace(/^@+/, '').trim();
+}
+
+function getAgentHandle() {
+  const username = getAgentUsername();
+  return username ? `@${username}` : '@clawdbot';
+}
+
+function setAgentBrand(identity) {
+  const username = String((identity && identity.username) || '').trim().replace(/^@+/, '');
+  if (username) _agentUsername = username;
+  const handle = getAgentHandle();
+  const brandEl = $('brand-handle');
+  if (brandEl) brandEl.textContent = handle;
+  document.title = _lang === 'zh' ? `${handle} · 智能体看板` : `${handle} · Agent Dashboard`;
+}
+
+function isBootstrapLike(value) {
+  const s = String(value || '').trim().toLowerCase();
+  return ['bootstrap', 'pending', 'initializing', 'pending_first_run'].some(k => s.includes(k));
+}
+
+function shouldHideBootstrapText(value) {
+  const s = String(value || '').trim().toLowerCase();
+  return !s || s === '—'
+    ? false
+    : /awaiting first\b/.test(s)
+      || /pending first run/.test(s)
+      || /artifact\(s\) pending first run/.test(s)
+      || /environment freshly installed/.test(s);
+}
+
+function shouldShowBootstrapBanner(status) {
+  if (!status || !status.is_bootstrap) return false;
+  const rs = status.runtime_status || {};
+  const agents = ['main', 'bookmarker', 'trader'];
+  return agents.every(id => isBootstrapLike((rs[id] || {}).status));
+}
+
 function applyLang() {
   document.documentElement.lang = _lang === 'zh' ? 'zh' : 'en';
-  document.title = _lang === 'zh' ? '@clawdbot · 智能体看板' : '@clawdbot · Agent Dashboard';
+  setAgentBrand({ username: _agentUsername });
   document.querySelectorAll('[data-i18n]').forEach(el => {
     el.textContent = t(el.dataset.i18n);
   });
@@ -1137,6 +1178,7 @@ function deltaAwareVerdict(rawVerdict, tasDelta) {
 // RENDER: Status
 // ══════════════════════════════════════════════════════════════════════════
 function renderStatus(data) {
+  setAgentBrand(data.agent_identity || {});
   const rs = data.runtime_status || {};
   // Agent pills with age
   ['main', 'bookmarker', 'trader'].forEach(a => {
@@ -1399,7 +1441,7 @@ function renderTasCommandCenter(data) {
   const tbSrcEl = $('cc-trackb-source');
   if (tbSrcEl) {
     const capNote = tbDetail.is_capped ? (' [capped]') : '';
-    tbSrcEl.textContent = (tbDetail.post_count != null ? `${tbDetail.post_count} @clawdbot posts${capNote}` : '—');
+    tbSrcEl.textContent = (tbDetail.post_count != null ? `${tbDetail.post_count} ${getAgentHandle()} posts${capNote}` : '—');
   }
 
   // ── TAS_social detail panes ──
@@ -2667,8 +2709,11 @@ function renderActionRequired(controlTower, agentHealth) {
     const alerts = (controlTower && controlTower.alerts) || [];
     alerts.forEach(a => {
       const sev = a.severity || a.level || '';
+      const msg = a.message || a.msg || '';
       if (sev === 'critical' || sev === 'warning') {
-        items.push({ level: sev, msg: humanize(a.message || a.msg || '') });
+        if (!shouldHideBootstrapText(msg)) {
+          items.push({ level: sev, msg: humanize(msg) });
+        }
       }
     });
   } catch (_) {}
@@ -2680,7 +2725,9 @@ function renderActionRequired(controlTower, agentHealth) {
       if (!agent) return;
       const b = agent.blocker;
       if (b && b !== '—' && b !== 'none' && b !== '' && b !== null) {
-        items.push({ level: 'warning', msg: `${humanize(id)}：${humanize(b)}` });
+        if (!shouldHideBootstrapText(b)) {
+          items.push({ level: 'warning', msg: `${humanize(id)}：${humanize(b)}` });
+        }
       }
     });
   } catch (_) {}
@@ -2705,11 +2752,19 @@ function _setInlineMetric(id, value, fallback='—') {
   el.textContent = value == null || value === '' ? fallback : String(value);
 }
 
+function _setMetricVisibility(id, visible) {
+  const el = $(id);
+  if (!el) return;
+  const pill = el.closest('.tl-summary-pill');
+  if (pill) pill.style.display = visible ? '' : 'none';
+}
+
 function renderControlTower(data) {
   if (!data) return;
 
   // Mission Status summary slots
   _setInlineMetric('ct-system-mode', operatorLang(data.system_mode || 'normal'));
+  _setMetricVisibility('ct-system-mode', String(data.system_mode || '').toLowerCase() !== 'initializing');
   _setInlineMetric('ct-primary-bottleneck', data.primary_bottleneck || langText('无明确瓶颈', 'no explicit bottleneck'));
   _setInlineMetric('ct-highest-priority', operatorLang(data.highest_priority_action || '—'));
   _setInlineMetric('ct-tas-lever', operatorLang(data.expected_tas_lever || '—'));
@@ -2718,7 +2773,7 @@ function renderControlTower(data) {
   // Alerts Strip
   const alertsEl = $('alerts-strip');
   if (alertsEl) {
-    const alerts = data.alerts || [];
+    const alerts = (data.alerts || []).filter(a => !shouldHideBootstrapText(a.message || a.msg || ''));
     if (!alerts.length) {
       alertsEl.innerHTML = `<span class="muted small">${t('no-blockers')}</span>`;
     } else {
@@ -2807,6 +2862,15 @@ function _laneKV(label, value) {
 }
 
 function renderAgentOperatingCards(agents) {
+  function shouldHideSlot(agentId, slotKey, rawValue, renderedValue) {
+    const raw = String(rawValue || '').trim().toLowerCase();
+    const rendered = String(renderedValue || '').trim().toLowerCase();
+    if (agentId === 'trader' && slotKey === 'role') return true;
+    if (slotKey === 'next_action' && /initializing\s*tas/.test(raw || rendered)) return true;
+    if (slotKey === 'blocker' && shouldHideBootstrapText(raw || rendered)) return true;
+    return false;
+  }
+
   for (const agentId of ['main', 'bookmarker', 'trader', 'claude_dispatch']) {
     const el = $('agent-card-' + agentId);
     if (!el) continue;
@@ -2832,13 +2896,16 @@ function renderAgentOperatingCards(agents) {
       el.classList.remove('aoc-7col');
       el.classList.remove('aoc-9col');
     }
-    slots.push(
-      `<div class="aoc-slot"><span class="aoc-label">${t('aoc-role')}</span><span class="aoc-value">${escHtml(roleDisplay)}</span></div>`,
-      `<div class="aoc-slot"><span class="aoc-label">${t('aoc-mode')}</span><span class="aoc-value">${escHtml(operatorLang(a.mode))}</span></div>`,
-      `<div class="aoc-slot"><span class="aoc-label">${t('aoc-freshness')}</span><span class="aoc-value ${freshCls}">${escHtml(a.freshness || '—')}</span></div>`,
-      `<div class="aoc-slot"><span class="aoc-label">${t('aoc-blocker')}</span><span class="aoc-value ${blockerCls}">${escHtml(a.blocker || 'none')}</span></div>`,
-      `<div class="aoc-slot"><span class="aoc-label">${t('aoc-next-action')}</span><span class="aoc-value">${escHtml(operatorLang(a.next_action))}</span></div>`,
-    );
+    [
+      { key: 'role', label: t('aoc-role'), raw: a.role, value: roleDisplay, cls: '' },
+      { key: 'mode', label: t('aoc-mode'), raw: a.mode, value: operatorLang(a.mode), cls: '' },
+      { key: 'freshness', label: t('aoc-freshness'), raw: a.freshness, value: a.freshness || '—', cls: freshCls },
+      { key: 'blocker', label: t('aoc-blocker'), raw: a.blocker, value: a.blocker || 'none', cls: blockerCls },
+      { key: 'next_action', label: t('aoc-next-action'), raw: a.next_action, value: operatorLang(a.next_action), cls: '' },
+    ].forEach(slot => {
+      if (shouldHideSlot(agentId, slot.key, slot.raw, slot.value)) return;
+      slots.push(`<div class="aoc-slot"><span class="aoc-label">${slot.label}</span><span class="aoc-value ${slot.cls}">${escHtml(slot.value)}</span></div>`);
+    });
     el.innerHTML = slots.join('');
   }
 }
@@ -3487,7 +3554,7 @@ async function fetchAll() {
     renderSafely('bootstrap-banner', () => {
       const bannerEl = $('bootstrap-banner');
       if (!bannerEl) return;
-      if (status && status.is_bootstrap) bannerEl.classList.add('visible');
+      if (shouldShowBootstrapBanner(status)) bannerEl.classList.add('visible');
       else bannerEl.classList.remove('visible');
     });
     renderSafely('timeline', () => renderTimeline(timeline));

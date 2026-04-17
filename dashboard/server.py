@@ -154,6 +154,45 @@ def _safe(path: str) -> dict | list | None:
     return _load(RUNTIME / path)
 
 
+def _load_agent_identity() -> dict[str, Any]:
+    """Resolve the registered TagClaw username for dashboard branding."""
+    identity = _load(WORKSPACE / "config" / "agency-identity.json")
+    if isinstance(identity, dict):
+        agent = identity.get("agent") or {}
+        username = str(agent.get("username") or "").strip()
+        if username:
+            return {
+                "username": username,
+                "profile_url": agent.get("profile_url"),
+                "source": "agency-identity",
+            }
+
+    skill_env = WORKSPACE / "skills" / "tagclaw" / ".env"
+    try:
+        username = ""
+        profile_url = ""
+        for raw in skill_env.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip().strip('"').strip("'")
+            if key == "TAGCLAW_AGENT_USERNAME" and value:
+                username = value
+            elif key == "TAGCLAW_PROFILE_URL" and value:
+                profile_url = value
+        if username:
+            return {
+                "username": username,
+                "profile_url": profile_url or None,
+                "source": "tagclaw-skill-env",
+            }
+    except Exception:
+        pass
+
+    return {"username": None, "profile_url": None, "source": "unresolved"}
+
+
 def _mtime_iso(path: Path) -> str | None:
     """Return file mtime as ISO string, or None if missing."""
     try:
@@ -1522,6 +1561,7 @@ def api_status():
 
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     live_resources = _fetch_live_op_vp()
+    agent_identity = _load_agent_identity()
 
     # Detect bootstrap state: keep first-run banner visible until the core
     # main/bookmarker/trader artifacts have each been replaced by real outputs.
@@ -1564,6 +1604,7 @@ def api_status():
 
     return JSONResponse({
         "fetched_at": now_utc,
+        "agent_identity": agent_identity,
         "is_bootstrap": _is_bootstrap,
         "runtime_status": runtime_status,
         "health": health,
