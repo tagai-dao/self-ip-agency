@@ -1102,11 +1102,8 @@ main() {
   local TAGCLAW_ACTIVATED=false
   if wait_for_tagclaw_activation; then
     TAGCLAW_ACTIVATED=true
-    if register_crons; then
-      install_dashboard
-    else
-      log_warn "Skipping dashboard setup — cron registration did not complete successfully"
-    fi
+    register_crons || true
+    install_dashboard
   else
     log_warn "Skipping cron registration and dashboard setup — TagClaw not yet activated"
     log_info "After activation, re-run: bash scripts/install.sh"
@@ -1236,7 +1233,7 @@ print(json.dumps({
         "Register cron jobs manually (openclaw CLI was not available during install)"
     fi
 
-    if [ "$DASHBOARD_STATUS" = "not_attempted" ] && [ "$TAGCLAW_STATUS" = "active" ] && [ "$CRONS_REGISTERED" = "true" ]; then
+    if [ "$DASHBOARD_STATUS" = "not_attempted" ] && [ "$TAGCLAW_STATUS" = "active" ]; then
       _emit_step_simple "start_dashboard" \
         "Or start the local dashboard directly: bash $workspace/scripts/dashboard-service.sh start-local --workspace $workspace"
     fi
