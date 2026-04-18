@@ -658,6 +658,128 @@ print(json.dumps(d, indent=2))
   log_ok "Wrote cron intent artifact: $workspace/.install-cron-jobs.json"
 }
 
+# Attempt to finalize deferred cron registration via CLI best-effort.
+# Called after writing the intent artifact. If the openclaw CLI is actually
+# reachable (common when detection was conservative, e.g. cloud env var set
+# but CLI+gateway still work), register all 3 jobs and promote state to
+# "registered". If anything fails, leave the deferred artifact intact.
+_attempt_deferred_cron_finalization() {
+  local workspace="$1"
+  local intent_path="$AGENCY_DIR/.install-cron-jobs.json"
+  local cron_log_dir="$workspace/logs"
+  local cron_log="$cron_log_dir/openclaw-cron-finalize.log"
+
+  mkdir -p "$cron_log_dir"
+
+  # Gate: CLI must exist and execute
+  if ! command -v openclaw >/dev/null 2>&1; then
+    log_info "Deferred finalization: openclaw CLI not in PATH — skipping auto-finalization"
+    return 1
+  fi
+  if ! openclaw --version >/dev/null 2>&1; then
+    log_info "Deferred finalization: openclaw CLI broken — skipping auto-finalization"
+    return 1
+  fi
+
+  # Gate: scheduler must be reachable (lightweight probe)
+  if ! openclaw cron list >/dev/null 2>&1; then
+    log_info "Deferred finalization: scheduler not reachable — skipping auto-finalization"
+    return 1
+  fi
+
+  log_info "Deferred finalization: scheduler reachable — attempting auto-registration"
+
+  # Read jobs from the intent artifact
+  local job_count
+  job_count="$(python3 -c "
+import json, sys
+with open('$intent_path') as f:
+    d = json.load(f)
+print(len(d.get('jobs', [])))
+" 2>/dev/null || echo "0")"
+
+  if [ "${job_count:-0}" -eq 0 ]; then
+    log_warn "Deferred finalization: no jobs found in intent artifact"
+    return 1
+  fi
+
+  # Remove existing jobs from the intent artifact (dynamic, not hardcoded)
+  local remove_names
+  remove_names="$(python3 -c "
+import json
+with open('$intent_path') as f:
+    d = json.load(f)
+for j in d.get('jobs', []):
+    print(j['name'])
+" 2>/dev/null)"
+  while IFS= read -r job_name; do
+    [ -n "$job_name" ] && openclaw cron rm "$job_name" >>"$cron_log" 2>&1 || true
+  done <<< "$remove_names"
+
+  # Register each job from the intent artifact
+  # Use tab delimiter to avoid collision with cron schedules and message text
+  local finalize_ok=true
+  local registered_count=0
+  local failed_jobs=""
+
+  while IFS=$'\t' read -r name schedule session message; do
+    [ -z "$name" ] && continue
+    log_info "Deferred finalization: registering $name ($schedule)..."
+    if openclaw cron add \
+      --name "$name" \
+      --cron "$schedule" \
+      --session "$session" \
+      --message "$message" >>"$cron_log" 2>&1; then
+      log_ok "Deferred finalization: registered $name"
+      registered_count=$((registered_count + 1))
+    else
+      log_warn "Deferred finalization: failed to register $name"
+      finalize_ok=false
+      failed_jobs="${failed_jobs:+$failed_jobs, }$name"
+    fi
+  done < <(python3 -c "
+import json
+with open('$intent_path') as f:
+    d = json.load(f)
+for j in d.get('jobs', []):
+    print(f\"{j['name']}\t{j['schedule']}\t{j['session']}\t{j['message']}\")
+" 2>/dev/null)
+
+  if [ "$finalize_ok" = "true" ] && [ "$registered_count" -gt 0 ]; then
+    CRONS_REGISTERED=true
+    CRON_REGISTRATION_MODE="local-cli"
+    log_ok "Deferred finalization: all $registered_count cron jobs registered successfully"
+
+    # Write a finalization receipt to the intent artifact (preserves provenance)
+    python3 -c "
+import json, os, tempfile
+from datetime import datetime, timezone
+with open('$intent_path') as f:
+    d = json.load(f)
+d['finalized_at'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+d['finalized_by'] = 'installer-deferred-auto'
+d['mode'] = 'finalized'
+p = '$intent_path'
+with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(p), suffix='.tmp', delete=False) as f:
+    json.dump(d, f, indent=2)
+    tmp = f.name
+os.replace(tmp, p)
+# Also update workspace copy
+wp = '$workspace/.install-cron-jobs.json'
+with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(wp), suffix='.tmp', delete=False) as f:
+    json.dump(d, f, indent=2)
+    tmp = f.name
+os.replace(tmp, wp)
+" 2>/dev/null || true
+
+    return 0
+  else
+    log_warn "Deferred finalization: $registered_count/$job_count jobs registered ($failed_jobs failed)"
+    log_info "Deferred finalization: intent artifact preserved for manual/agent retry"
+    return 1
+  fi
+}
+
 _print_manual_cron_commands() {
   local ws="$1"
   echo ""
@@ -712,9 +834,18 @@ register_crons() {
   if [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
     log_info "Cloud/clawdi environment detected — deferring cron registration to agent/tool path"
     _write_cron_intent_artifact "$workspace"
-    log_info "Cron registration deferred: installer-side CLI auto-registration is not available in this environment"
-    log_info "The scheduler backend may still be reachable via the agent/tool cron registration path"
     log_info "Intent artifact written to: $CRON_INTENT_PATH"
+
+    # Best-effort auto-finalization: the detection was conservative (env vars or
+    # path heuristic), but the CLI+gateway might still be reachable. Try it now
+    # so the user doesn't have to manually request cron completion after install.
+    if _attempt_deferred_cron_finalization "$workspace"; then
+      log_ok "Deferred cron registration auto-finalized successfully"
+      return 0
+    fi
+
+    log_info "Cron registration deferred: auto-finalization did not complete"
+    log_info "The scheduler backend may still be reachable via the agent/tool cron registration path"
     # Not a failure — deferred is a valid terminal state for cloud installs
     return 0
   fi
