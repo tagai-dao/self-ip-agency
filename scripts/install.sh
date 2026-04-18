@@ -1352,7 +1352,7 @@ d = {
     'tagclaw_onboard_status': '$TAGCLAW_ONBOARD_STATUS',
     'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
     'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
-    'schema': 'installed.v2'
+    'schema': 'installed.v3'
 }
 print(json.dumps(d, indent=2))
 ")"
@@ -1386,13 +1386,158 @@ print(json.dumps(d, indent=2))
       log_warn "trader-cycle --self-check FAILED — trader not yet runnable"
     fi
 
+    # ── Phase 1 Bootstrap: run first cycles synchronously ───────────────
+    # Instead of leaving the system in "bootstrap" state until cron triggers
+    # the first cycle (up to 60 min), run each ready agent's first cycle now.
+    # This transitions runtime-status.json from bootstrap → completed and
+    # gives the dashboard real artifacts to display immediately.
+    local MAIN_BOOTSTRAPPED=false BOOKMARKER_BOOTSTRAPPED=false TRADER_BOOTSTRAPPED=false
+    local BOOTSTRAP_ATTEMPTED=false
+
+    # Resolve timeout command (GNU coreutils: timeout or gtimeout; fallback: none)
+    local _TIMEOUT_CMD=""
+    if command -v timeout &>/dev/null; then
+      _TIMEOUT_CMD="timeout"
+    elif command -v gtimeout &>/dev/null; then
+      _TIMEOUT_CMD="gtimeout"
+    fi
+
+    if [ "$TAGCLAW_ACTIVATED" = "true" ]; then
+      local _any_ready=false
+      [ "$MAIN_READY" = "true" ] || [ "$BOOKMARKER_READY" = "true" ] || [ "$TRADER_READY" = "true" ] && _any_ready=true
+
+      if [ "$_any_ready" = "true" ]; then
+        BOOTSTRAP_ATTEMPTED=true
+        echo ""
+        echo "  ┌──────────────────────────────────────────────────────┐"
+        echo "  │  Phase 1 Bootstrap — running first agent cycles...  │"
+        echo "  └──────────────────────────────────────────────────────┘"
+        echo ""
+
+        # Helper: run a command with optional timeout
+        _run_with_timeout() {
+          local secs="$1"; shift
+          if [ -n "$_TIMEOUT_CMD" ]; then
+            "$_TIMEOUT_CMD" "$secs" "$@"
+          else
+            "$@"
+          fi
+        }
+
+        # 1. Main heartbeat (timeout 120s — builds input packet + orchestrator)
+        if [ "$MAIN_READY" = "true" ]; then
+          log_info "Running first main heartbeat cycle..."
+          if _run_with_timeout 120 bash "$workspace/scripts/main-heartbeat.sh" 2>&1; then
+            MAIN_BOOTSTRAPPED=true
+            log_ok "Main heartbeat bootstrap cycle completed"
+          else
+            log_warn "Main heartbeat bootstrap cycle failed (non-fatal, cron will retry)"
+          fi
+        fi
+
+        # 2. Bookmarker cycle (timeout 180s — social curation)
+        if [ "$BOOKMARKER_READY" = "true" ]; then
+          log_info "Running first bookmarker cycle..."
+          if _run_with_timeout 180 bash "$workspace/scripts/bookmarker-cycle.sh" 2>&1; then
+            BOOKMARKER_BOOTSTRAPPED=true
+            log_ok "Bookmarker bootstrap cycle completed"
+          else
+            log_warn "Bookmarker bootstrap cycle failed (non-fatal, cron will retry)"
+          fi
+        fi
+
+        # 3. Trader cycle (timeout 300s — on-chain ops)
+        if [ "$TRADER_READY" = "true" ]; then
+          log_info "Running first trader cycle..."
+          if _run_with_timeout 300 bash "$workspace/scripts/trader-cycle.sh" 2>&1; then
+            TRADER_BOOTSTRAPPED=true
+            log_ok "Trader bootstrap cycle completed"
+          else
+            log_warn "Trader bootstrap cycle failed (non-fatal, cron will retry)"
+          fi
+        fi
+
+        # Summary
+        local _bs_ok=0 _bs_total=0
+        [ "$MAIN_READY" = "true" ] && _bs_total=$((_bs_total + 1))
+        [ "$BOOKMARKER_READY" = "true" ] && _bs_total=$((_bs_total + 1))
+        [ "$TRADER_READY" = "true" ] && _bs_total=$((_bs_total + 1))
+        [ "$MAIN_BOOTSTRAPPED" = "true" ] && _bs_ok=$((_bs_ok + 1))
+        [ "$BOOKMARKER_BOOTSTRAPPED" = "true" ] && _bs_ok=$((_bs_ok + 1))
+        [ "$TRADER_BOOTSTRAPPED" = "true" ] && _bs_ok=$((_bs_ok + 1))
+
+        if [ "$_bs_ok" -eq "$_bs_total" ] && [ "$_bs_total" -gt 0 ]; then
+          log_ok "Bootstrap complete: $_bs_ok/$_bs_total agent cycles succeeded"
+        elif [ "$_bs_ok" -gt 0 ]; then
+          log_warn "Bootstrap partial: $_bs_ok/$_bs_total agent cycles succeeded"
+        else
+          log_warn "Bootstrap cycles all failed — dashboard will show bootstrap state until cron succeeds"
+        fi
+
+        # Refresh dashboard if it's running so it picks up new artifacts
+        if [ "$DASHBOARD_STATUS" = "running" ]; then
+          log_info "Refreshing dashboard to reflect bootstrap artifacts..."
+          curl -s "http://localhost:${DASHBOARD_PORT:-8765}/api/health" >/dev/null 2>&1 || true
+        fi
+        echo ""
+      fi
+    fi
+
     local _public_summary="${DASHBOARD_PUBLIC_STATUS}"
     if [ -n "$DASHBOARD_PUBLIC_URL" ]; then
       _public_summary="${DASHBOARD_PUBLIC_STATUS} (${DASHBOARD_PUBLIC_URL})"
     fi
     local _cron_summary="manual"
     [ "$CRONS_REGISTERED" = "true" ] && _cron_summary="auto-registered"
-    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: ${_cron_summary}. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}."
+    local _bootstrap_summary="not-attempted"
+    if [ "$BOOTSTRAP_ATTEMPTED" = "true" ]; then
+      local _bs_count=0
+      [ "$MAIN_BOOTSTRAPPED" = "true" ] && _bs_count=$((_bs_count + 1))
+      [ "$BOOKMARKER_BOOTSTRAPPED" = "true" ] && _bs_count=$((_bs_count + 1))
+      [ "$TRADER_BOOTSTRAPPED" = "true" ] && _bs_count=$((_bs_count + 1))
+      if [ "$_bs_count" -eq 3 ]; then
+        _bootstrap_summary="complete"
+      elif [ "$_bs_count" -gt 0 ]; then
+        _bootstrap_summary="partial (${_bs_count}/3)"
+      else
+        _bootstrap_summary="failed"
+      fi
+    fi
+    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: ${_cron_summary}. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}. Bootstrap: ${_bootstrap_summary}."
+
+    # ── Update .installed marker with bootstrap results ───────────────────
+    # The initial write (above) ran before self-checks so cycle scripts see
+    # the marker. Now re-write with final bootstrap state included.
+    if [ "$BOOTSTRAP_ATTEMPTED" = "true" ]; then
+      local installed_json_final
+      installed_json_final="$(python3 -c "
+import json
+from datetime import datetime, timezone
+d = {
+    'version': '$AGENCY_VERSION',
+    'installed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'install_status': '$INSTALL_STATUS',
+    'crons_registered': '$CRONS_REGISTERED' == 'true',
+    'dashboard_status': '$DASHBOARD_STATUS',
+    'dashboard_local_status': '$DASHBOARD_STATUS',
+    'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',
+    'dashboard_public_url': '$DASHBOARD_PUBLIC_URL',
+    'dashboard_public_guide_available': '$DASHBOARD_PUBLIC_GUIDE_AVAILABLE' == 'true',
+    'tagclaw_onboard_status': '$TAGCLAW_ONBOARD_STATUS',
+    'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
+    'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
+    'bootstrap_attempted': True,
+    'main_bootstrapped': $([ "$MAIN_BOOTSTRAPPED" = "true" ] && echo "True" || echo "False"),
+    'bookmarker_bootstrapped': $([ "$BOOKMARKER_BOOTSTRAPPED" = "true" ] && echo "True" || echo "False"),
+    'trader_bootstrapped': $([ "$TRADER_BOOTSTRAPPED" = "true" ] && echo "True" || echo "False"),
+    'bootstrap_status': '$_bootstrap_summary',
+    'schema': 'installed.v3'
+}
+print(json.dumps(d, indent=2))
+")"
+      atomic_write_json "$INSTALLED_FILE" "$installed_json_final"
+      atomic_write_json "$workspace/.agency-installed" "$installed_json_final"
+    fi
 
     # ── Dedicated verification tweet handoff artifact ──────────────────────
     # VERIFICATION_TWEET_FILE was declared earlier (before the structured
@@ -1684,6 +1829,33 @@ print(json.dumps(d, indent=2))
     else
       echo "  ║    ✗ trader-cycle         — NOT READY (run --self-check for details)"
     fi
+    echo "  ║"
+    echo "  ║  Bootstrap cycles (first-run):"
+    if [ "$BOOTSTRAP_ATTEMPTED" = "true" ]; then
+      if [ "$MAIN_BOOTSTRAPPED" = "true" ]; then
+        echo "  ║    ✓ main-heartbeat       — BOOTSTRAPPED"
+      elif [ "$MAIN_READY" = "true" ]; then
+        echo "  ║    ✗ main-heartbeat       — FAILED (cron will retry)"
+      else
+        echo "  ║    - main-heartbeat       — SKIPPED (not ready)"
+      fi
+      if [ "$BOOKMARKER_BOOTSTRAPPED" = "true" ]; then
+        echo "  ║    ✓ bookmarker-cycle     — BOOTSTRAPPED"
+      elif [ "$BOOKMARKER_READY" = "true" ]; then
+        echo "  ║    ✗ bookmarker-cycle     — FAILED (cron will retry)"
+      else
+        echo "  ║    - bookmarker-cycle     — SKIPPED (not ready)"
+      fi
+      if [ "$TRADER_BOOTSTRAPPED" = "true" ]; then
+        echo "  ║    ✓ trader-cycle         — BOOTSTRAPPED"
+      elif [ "$TRADER_READY" = "true" ]; then
+        echo "  ║    ✗ trader-cycle         — FAILED (cron will retry)"
+      else
+        echo "  ║    - trader-cycle         — SKIPPED (not ready)"
+      fi
+    else
+      echo "  ║    - not attempted (TagClaw not yet activated)"
+    fi
     echo "  ║    contract: $workspace/HEARTBEAT.md"
     echo "  ║"
     echo "  ║  Docs:"
@@ -1752,6 +1924,11 @@ print(json.dumps(d, indent=2))
     echo "DASHBOARD_PUBLIC_START_COMMAND=\"${DASHBOARD_PUBLIC_START_COMMAND:-}\""
     echo "DASHBOARD_PUBLIC_STATE_FILE=\"${DASHBOARD_PUBLIC_STATE_FILE:-}\""
     echo "CRONS_REGISTERED=\"${CRONS_REGISTERED}\""
+    echo "BOOTSTRAP_ATTEMPTED=\"${BOOTSTRAP_ATTEMPTED}\""
+    echo "MAIN_BOOTSTRAPPED=\"${MAIN_BOOTSTRAPPED}\""
+    echo "BOOKMARKER_BOOTSTRAPPED=\"${BOOKMARKER_BOOTSTRAPPED}\""
+    echo "TRADER_BOOTSTRAPPED=\"${TRADER_BOOTSTRAPPED}\""
+    echo "BOOTSTRAP_STATUS=\"${_bootstrap_summary}\""
     echo "INSTALL_SUMMARY=\"${INSTALL_SUMMARY}\""
     echo "### END INSTALL CONTRACT ###"
     echo ""
