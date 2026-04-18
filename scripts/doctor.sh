@@ -9,6 +9,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AGENCY_DIR="$(dirname "$SCRIPT_DIR")"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
 
 # ── Parse workspace arg ─────────────────────────────────────────────────────
 WORKSPACE="${OPENCLAW_WORKSPACE:-}"
@@ -286,7 +288,7 @@ else
       fail "public dashboard state=running but PID $DASH_PUBLIC_PID is not alive — run: bash scripts/dashboard-service.sh start-public"
     fi
   elif [ "$DASH_PUBLIC_STATUS" = "failed" ]; then
-    fail "public dashboard tunnel failed — check logs/dashboard-tunnel.log (is cloudflared installed? brew install cloudflared)"
+    fail "public dashboard tunnel failed — check logs/dashboard-tunnel.log (is cloudflared installed? $(cloudflared_install_hint))"
   else
     # Tri-state B: local healthy, public not started. Decision depends on
     # operator intent (auto_start vs suggest_in_install). In all opt-in cases
@@ -296,18 +298,14 @@ else
     if command -v cloudflared >/dev/null 2>&1; then
       CF_HINT=""
     else
-      if command -v brew >/dev/null 2>&1; then
-        CF_HINT=" (install cloudflared first: brew install cloudflared)"
-      else
-        CF_HINT=" (cloudflared not installed — see https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)"
-      fi
+      CF_HINT=" (install cloudflared first: $(cloudflared_install_hint))"
     fi
 
     if [ "$PUBLIC_AUTO_START" = "true" ]; then
       # Operator asked for auto-start but it's not running — treat as drift.
       fail "public dashboard auto_start=true but tunnel is not running — run: $GUIDE_START${CF_HINT}"
     elif [ "$PUBLIC_SUGGEST" = "true" ]; then
-      info "public dashboard not started (optional). To expose a public URL, run: $GUIDE_START${CF_HINT}"
+      warn "public dashboard not started (optional). To expose a public URL, run: $GUIDE_START${CF_HINT}"
     else
       ok "public dashboard disabled (suggest_in_install=false in config/agency.config.yaml)"
     fi
