@@ -106,6 +106,33 @@ resolve_agent_file() {
   return 1
 }
 
+# ── Cloudflared install hint ──────────────────────────────────────────────────
+# Returns an appropriate install command for cloudflared based on the current OS.
+# Usage: hint="$(cloudflared_install_hint)"
+cloudflared_install_hint() {
+  case "$(uname -s)" in
+    Linux*)
+      if command -v apt-get >/dev/null 2>&1; then
+        echo "sudo apt-get install -y cloudflared  # or: curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$([ \"$(uname -m)\" = 'aarch64' ] && echo arm64 || echo amd64) -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared"
+      else
+        local arch="amd64"
+        [ "$(uname -m)" = "aarch64" ] && arch="arm64"
+        echo "curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch} -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared"
+      fi
+      ;;
+    Darwin*)
+      if command -v brew >/dev/null 2>&1; then
+        echo "brew install cloudflared"
+      else
+        echo "See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+      fi
+      ;;
+    *)
+      echo "See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+      ;;
+  esac
+}
+
 # ── Atomic JSON write ─────────────────────────────────────────────────────────
 # Usage: atomic_write_json "/path/to/file.json" '{"key":"value"}'
 # Writes JSON content to file atomically using tmp + mv pattern.

@@ -899,16 +899,42 @@ except Exception:
     DASHBOARD_PUBLIC_INSTALL_COMMAND=""
   else
     DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="false"
-    if command -v brew >/dev/null 2>&1; then
-      DASHBOARD_PUBLIC_INSTALL_COMMAND="brew install cloudflared"
-    else
-      DASHBOARD_PUBLIC_INSTALL_COMMAND="See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
-    fi
+    DASHBOARD_PUBLIC_INSTALL_COMMAND="$(cloudflared_install_hint)"
 
     # Auto-install cloudflared when auto_start is enabled
     if [ "$public_auto_start" = "true" ]; then
       log_info "cloudflared not found — attempting automatic installation..."
-      if command -v brew >/dev/null 2>&1; then
+      local _os_type
+      _os_type="$(uname -s)"
+      if [ "$_os_type" = "Linux" ]; then
+        # Linux: try apt-get first, then direct binary download
+        local _cf_installed=false
+        if command -v apt-get >/dev/null 2>&1; then
+          log_info "Installing cloudflared via apt-get..."
+          if sudo apt-get install -y cloudflared 2>&1; then
+            _cf_installed=true
+            log_ok "cloudflared installed successfully via apt-get"
+          else
+            log_warn "Failed to install cloudflared via apt-get — trying direct download..."
+          fi
+        fi
+        if [ "$_cf_installed" = "false" ]; then
+          local arch="amd64"
+          [ "$(uname -m)" = "aarch64" ] && arch="arm64"
+          log_info "Downloading cloudflared binary for linux-${arch}..."
+          if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}" -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared; then
+            _cf_installed=true
+            log_ok "cloudflared installed via direct download"
+          else
+            log_warn "Failed to download cloudflared binary"
+          fi
+        fi
+        if [ "$_cf_installed" = "true" ]; then
+          DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="true"
+          DASHBOARD_PUBLIC_INSTALL_COMMAND=""
+        fi
+      elif command -v brew >/dev/null 2>&1; then
+        # macOS with Homebrew
         log_info "Installing cloudflared via Homebrew..."
         if brew install cloudflared 2>&1; then
           DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="true"
@@ -917,27 +943,8 @@ except Exception:
         else
           log_warn "Failed to install cloudflared via brew"
         fi
-      elif command -v apt-get >/dev/null 2>&1; then
-        log_info "Installing cloudflared via apt-get..."
-        if sudo apt-get install -y cloudflared 2>&1; then
-          DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="true"
-          DASHBOARD_PUBLIC_INSTALL_COMMAND=""
-          log_ok "cloudflared installed successfully"
-        else
-          log_warn "Failed to install cloudflared via apt-get — trying direct download..."
-          local arch="amd64"
-          [ "$(uname -m)" = "aarch64" ] && arch="arm64"
-          if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}" -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared; then
-            DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="true"
-            DASHBOARD_PUBLIC_INSTALL_COMMAND=""
-            log_ok "cloudflared installed via direct download"
-          else
-            log_warn "Failed to download cloudflared binary"
-          fi
-        fi
       else
-        log_warn "No supported package manager found (brew/apt-get) — cannot auto-install cloudflared"
-        log_warn "Install manually: $DASHBOARD_PUBLIC_INSTALL_COMMAND"
+        log_warn "Cannot auto-install cloudflared — install manually: $DASHBOARD_PUBLIC_INSTALL_COMMAND"
       fi
     fi
   fi
@@ -1285,7 +1292,7 @@ print(json.dumps({
 
     if [ "$DASHBOARD_PUBLIC_STATUS" = "failed" ]; then
       _emit_step_simple "install_cloudflared" \
-        "Public dashboard tunnel failed to start. Install cloudflared (brew install cloudflared) then run: bash $workspace/scripts/dashboard-service.sh start-public"
+        "Public dashboard tunnel failed to start. Install cloudflared ($(cloudflared_install_hint)) then run: bash $workspace/scripts/dashboard-service.sh start-public"
     fi
 
     # Public dashboard guidance: emitted when the local dashboard is running,

@@ -302,7 +302,7 @@ cmd_start_public() {
 
   # 2. Require cloudflared.
   if ! command -v cloudflared >/dev/null 2>&1; then
-    log_err "cloudflared not found on PATH. Install from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+    log_err "cloudflared not found on PATH. Install with: $(cloudflared_install_hint)"
     _write_state "$(_read_state_field local status)" \
       "$(_read_state_field local port)" \
       "$(_read_state_field local pid)" \
@@ -456,11 +456,7 @@ cmd_guide_public() {
   if command -v cloudflared >/dev/null 2>&1; then
     cloudflared_installed="true"
   else
-    if command -v brew >/dev/null 2>&1; then
-      install_command="brew install cloudflared"
-    else
-      install_command="See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
-    fi
+    install_command="$(cloudflared_install_hint)"
   fi
 
   local start_command="bash $WORKSPACE/scripts/dashboard-service.sh start-public --workspace $WORKSPACE"
