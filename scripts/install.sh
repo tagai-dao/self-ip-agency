@@ -563,6 +563,35 @@ install_autoresearch() {
 # 7. register_crons
 # ──────────────────────────────────────────────────────────────────────────────
 
+_print_manual_cron_commands() {
+  local ws="$1"
+  echo ""
+  echo "  ══════════════════════════════════════════════════════════"
+  echo "  ACTION REQUIRED: Run these commands to register cron jobs."
+  echo "  ══════════════════════════════════════════════════════════"
+  echo ""
+  echo "  openclaw cron add \\"
+  echo "    --name \"main-heartbeat\" \\"
+  echo "    --cron \"*/10 * * * *\" \\"
+  echo "    --session isolated \\"
+  echo "    --message \"Run the main heartbeat cycle: bash $ws/scripts/main-heartbeat.sh\""
+  echo ""
+  echo "  openclaw cron add \\"
+  echo "    --name \"bookmarker-cycle\" \\"
+  echo "    --cron \"*/30 * * * *\" \\"
+  echo "    --session isolated \\"
+  echo "    --message \"Run the bookmarker curation cycle: bash $ws/scripts/bookmarker-cycle.sh\""
+  echo ""
+  echo "  openclaw cron add \\"
+  echo "    --name \"trader-cycle\" \\"
+  echo "    --cron \"0 * * * *\" \\"
+  echo "    --session isolated \\"
+  echo "    --message \"Run the trader operations cycle: bash $ws/scripts/trader-cycle.sh\""
+  echo ""
+  echo "  ══════════════════════════════════════════════════════════"
+  echo ""
+}
+
 register_crons() {
   log_info "Step 7: Registering cron jobs..."
 
@@ -581,39 +610,50 @@ register_crons() {
   : > "$gateway_log"
   : > "$cron_log"
 
-  # Check if openclaw CLI is available
+  # ── CLI presence check ──────────────────────────────────────────────────
   if ! command -v openclaw >/dev/null 2>&1; then
-    log_warn "openclaw CLI not found — printing manual cron registration commands"
-    echo ""
-    echo "  ══════════════════════════════════════════════════════════"
-    echo "  ACTION REQUIRED: Run these commands to register cron jobs."
-    echo "  ══════════════════════════════════════════════════════════"
-    echo ""
-    echo "  openclaw cron add \\"
-    echo "    --name \"main-heartbeat\" \\"
-    echo "    --cron \"*/10 * * * *\" \\"
-    echo "    --session isolated \\"
-    echo "    --message \"Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh\""
-    echo ""
-    echo "  openclaw cron add \\"
-    echo "    --name \"bookmarker-cycle\" \\"
-    echo "    --cron \"*/30 * * * *\" \\"
-    echo "    --session isolated \\"
-    echo "    --message \"Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh\""
-    echo ""
-    echo "  openclaw cron add \\"
-    echo "    --name \"trader-cycle\" \\"
-    echo "    --cron \"0 * * * *\" \\"
-    echo "    --session isolated \\"
-    echo "    --message \"Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh\""
-    echo ""
-    echo "  ══════════════════════════════════════════════════════════"
-    echo ""
+    log_warn "openclaw CLI not found in PATH — printing manual cron registration commands"
+    _print_manual_cron_commands "$workspace"
     return 1
   fi
 
-  # `openclaw cron *` talks to the Gateway-backed scheduler. A present CLI is
-  # not enough; the gateway itself must be reachable first.
+  # ── CLI health probe — verify the binary actually executes ─────────────
+  # A broken pnpm shim or dangling symlink passes `command -v` but crashes
+  # on invocation. Catch that *before* blaming the gateway.
+  local cli_path cli_real_path cli_version_out
+  cli_path="$(command -v openclaw)"
+  cli_real_path="$(readlink -f "$cli_path" 2>/dev/null || echo "$cli_path")"
+
+  if ! cli_version_out="$(openclaw --version 2>&1)"; then
+    log_warn "openclaw CLI found at $cli_path but it is broken or unexecutable"
+    if [ "$cli_path" != "$cli_real_path" ]; then
+      log_warn "Symlink target: $cli_real_path"
+    fi
+    log_warn "Error output: $cli_version_out"
+    echo ""
+    echo "  ══════════════════════════════════════════════════════════"
+    echo "  DIAGNOSIS: The 'openclaw' command exists but fails to run."
+    echo ""
+    echo "  This typically means a broken pnpm global shim or a"
+    echo "  dangling symlink after a version upgrade."
+    echo ""
+    echo "  Recommended fixes (try in order):"
+    echo "    1. Reinstall the CLI:  pnpm add -g openclaw@latest"
+    echo "    2. Or remove the stale shim and reinstall:"
+    echo "       rm \"$cli_path\""
+    echo "       pnpm add -g openclaw@latest"
+    echo "    3. Then re-run:  bash $AGENCY_DIR/scripts/install.sh"
+    echo "  ══════════════════════════════════════════════════════════"
+    echo ""
+    _print_manual_cron_commands "$workspace"
+    return 1
+  fi
+
+  log_ok "openclaw CLI healthy — version: $cli_version_out"
+
+  # ── Gateway reachability ───────────────────────────────────────────────
+  # `openclaw cron *` talks to the Gateway-backed scheduler. A healthy CLI
+  # is not enough; the gateway itself must be reachable.
   if ! openclaw health --json >"$gateway_log" 2>&1; then
     log_warn "OpenClaw CLI found, but the Gateway scheduler is not reachable"
     log_info "Attempting to start the OpenClaw Gateway service..."
