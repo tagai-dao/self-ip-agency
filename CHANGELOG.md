@@ -2,6 +2,13 @@
 
 All notable changes to Self-IP Agency will be documented in this file.
 
+## [2.1.4] - 2026-04-19
+
+### Fixed
+- Dashboard visibility no longer gated on cron registration state — deferred crons are now treated as acceptable for `install_status: "verified"`
+- Added explicit `dashboard_ready` field to `.installed`, `.agency-installed`, `.install-next-steps.json`, and machine-readable output so downstream consumers can determine dashboard availability independently of cron state
+- Install result artifacts now tell a consistent story: dashboard available + cron deferred is a valid, verified install
+
 ## [2.1.3] - 2026-04-19
 
 ### Fixed

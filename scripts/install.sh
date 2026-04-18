@@ -1421,15 +1421,28 @@ main() {
     fi
 
     # ── P0-C: Compute truthful install status ───────────────────────────────
-    # "verified" requires: identity resolved + credentials exist + crons registered + dashboard running
+    # "verified" requires: identity resolved + credentials exist + dashboard running
+    #            + crons registered OR acceptably deferred
     # "partial"  is anything less
     # "failed"   only if core install steps (runtime/wiki/autoresearch) failed
     local INSTALL_STATUS="partial"
+    local _crons_acceptable=false
+    if [ "$CRONS_REGISTERED" = "true" ]; then
+      _crons_acceptable=true
+    elif [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
+      _crons_acceptable=true
+    fi
     if [ "$IDENTITY_RESOLVED" = "true" ] && \
        [ "$CREDENTIALS_EXIST" = "true" ] && \
-       [ "$CRONS_REGISTERED" = "true" ] && \
+       [ "$_crons_acceptable" = "true" ] && \
        [ "$DASHBOARD_STATUS" = "running" ]; then
       INSTALL_STATUS="verified"
+    fi
+
+    # Dashboard readiness: independent of cron state
+    local DASHBOARD_READY=false
+    if [ "$DASHBOARD_STATUS" = "running" ]; then
+      DASHBOARD_READY=true
     fi
 
     # ── Build ordered next-steps list ───────────────────────────────────────
@@ -1607,6 +1620,7 @@ d = {
     'cron_registration_mode': '$CRON_REGISTRATION_MODE',
     'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('deferred' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
     'cron_intent_path': '$CRON_INTENT_PATH',
+    'dashboard_ready': '$DASHBOARD_READY' == 'true',
     'dashboard_status': '$DASHBOARD_STATUS',
     'dashboard_local_status': '$DASHBOARD_STATUS',
     'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',
@@ -1790,6 +1804,7 @@ d = {
     'cron_registration_mode': '$CRON_REGISTRATION_MODE',
     'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('deferred' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
     'cron_intent_path': '$CRON_INTENT_PATH',
+    'dashboard_ready': '$DASHBOARD_READY' == 'true',
     'dashboard_status': '$DASHBOARD_STATUS',
     'dashboard_local_status': '$DASHBOARD_STATUS',
     'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',
@@ -1864,6 +1879,7 @@ d = {
     'schema': 'install-next-steps.v2',
     'install_status': '$INSTALL_STATUS',
     'summary': '$INSTALL_SUMMARY',
+    'dashboard_ready': '$DASHBOARD_READY' == 'true',
     'dashboard_local_status': '$DASHBOARD_STATUS',
     'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',
     'dashboard_public_url': '$DASHBOARD_PUBLIC_URL',
@@ -2194,6 +2210,7 @@ print(json.dumps(d, indent=2))
     echo "MAIN_READY=\"${MAIN_READY}\""
     echo "BOOKMARKER_READY=\"${BOOKMARKER_READY}\""
     echo "TRADER_READY=\"${TRADER_READY}\""
+    echo "DASHBOARD_READY=\"${DASHBOARD_READY}\""
     echo "DASHBOARD_STATUS=\"${DASHBOARD_STATUS}\""
     echo "DASHBOARD_LOCAL_STATUS=\"${DASHBOARD_STATUS}\""
     echo "DASHBOARD_PUBLIC_STATUS=\"${DASHBOARD_PUBLIC_STATUS}\""
