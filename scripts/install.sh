@@ -28,6 +28,11 @@ DRY_RUN=false
 DASHBOARD_STATUS="not_attempted"
 DASHBOARD_PUBLIC_STATUS="disabled"
 DASHBOARD_PUBLIC_URL=""
+DASHBOARD_PUBLIC_GUIDE_AVAILABLE="false"
+DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED="false"
+DASHBOARD_PUBLIC_INSTALL_COMMAND=""
+DASHBOARD_PUBLIC_START_COMMAND=""
+DASHBOARD_PUBLIC_STATE_FILE=""
 TAGCLAW_ONBOARD_NAME="${TAGCLAW_AGENT_NAME:-}"
 TAGCLAW_ONBOARD_DESCRIPTION="${TAGCLAW_AGENT_DESCRIPTION:-}"
 TAGCLAW_ONBOARD_POLL=false
@@ -753,6 +758,7 @@ install_dashboard() {
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
   local dashboard_dst="$workspace/tools/self-ip-dashboard"
+  local dashboard_deps_log="$workspace/logs/dashboard-deps-install.log"
 
   if [ "$DRY_RUN" = "true" ]; then
     log_info "[DRY RUN] Would install dashboard to: $dashboard_dst"
@@ -795,6 +801,43 @@ except Exception:
   else
     log_warn "Expected state file missing: $state_file"
     DASHBOARD_STATUS="unknown"
+  fi
+
+  # 3b. If the dashboard owner reported missing Python deps, install them
+  # automatically with the same python3 interpreter that dashboard-service.sh
+  # uses, then retry local startup once before proceeding.
+  if [ "$DASHBOARD_STATUS" = "deps_missing" ] && [ -f "$dashboard_dst/requirements.txt" ]; then
+    mkdir -p "$(dirname "$dashboard_deps_log")"
+    : > "$dashboard_deps_log"
+    log_info "Dashboard deps missing — attempting automatic install with python3 -m pip"
+
+    local pip_ready=false
+    if python3 -m pip --version >>"$dashboard_deps_log" 2>&1; then
+      pip_ready=true
+    elif python3 -m ensurepip --upgrade >>"$dashboard_deps_log" 2>&1 && python3 -m pip --version >>"$dashboard_deps_log" 2>&1; then
+      pip_ready=true
+    fi
+
+    if [ "$pip_ready" = "true" ] && python3 -m pip install -r "$dashboard_dst/requirements.txt" >>"$dashboard_deps_log" 2>&1; then
+      log_ok "Installed dashboard Python dependencies"
+      VIZ_PORT="$DASHBOARD_PORT" "$svc" start-local \
+        --port "$DASHBOARD_PORT" --workspace "$workspace" || true
+
+      if [ -f "$state_file" ]; then
+        DASHBOARD_STATUS="$(python3 -c "
+import json
+try:
+    d = json.load(open('$state_file'))
+    print(d.get('local', {}).get('status') or 'unknown')
+except Exception:
+    print('unknown')
+" 2>/dev/null || echo "unknown")"
+      else
+        DASHBOARD_STATUS="unknown"
+      fi
+    else
+      log_warn "Automatic dashboard dependency install failed — see $dashboard_deps_log"
+    fi
   fi
 
   # 4. Public exposure. Two distinct knobs:
