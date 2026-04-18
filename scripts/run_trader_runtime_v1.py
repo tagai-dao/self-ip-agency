@@ -330,19 +330,89 @@ def run_trader_cycle() -> dict:
 # Canonical runtime output publishers
 # ---------------------------------------------------------------------------
 
-def _extract_portfolio_usd(agent: dict | None, rewards: list[dict]) -> tuple[float | None, str]:
-    """Derive a portfolio USD value from /me or rewards.
+def _fetch_bnb_balance_onchain(wallet_address: str) -> float | None:
+    """Fetch native BNB balance via BSC JSON-RPC (eth_getBalance).
 
-    /me shapes vary per deployment — try a small set of common field names
-    before giving up. Returns (value_or_None, source_label).
+    Uses the same RPC endpoint as tagclaw-wallet: bsc-dataseed2.binance.org.
+    Returns balance in ether (float) or None on failure.
+    """
+    import urllib.request
+
+    rpc_url = "https://bsc-dataseed2.binance.org"
+    payload = json.dumps({
+        "jsonrpc": "2.0",
+        "method": "eth_getBalance",
+        "params": [wallet_address, "latest"],
+        "id": 1,
+    })
+    req = urllib.request.Request(
+        rpc_url,
+        data=payload.encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        hex_val = data.get("result")
+        if not hex_val or hex_val == "0x0":
+            return 0.0
+        return int(hex_val, 16) / 1e18
+    except Exception:
+        return None
+
+
+def _fetch_bnb_price_usd() -> float | None:
+    """Fetch BNB/USD price from TagClaw API (same endpoint as tagclaw-wallet).
+
+    Endpoint: GET https://bsc-api.tagai.fun/tiptag/getETHPrice
+    Returns price as float or None on failure.
+    """
+    import urllib.request
+
+    url = "https://bsc-api.tagai.fun/tiptag/getETHPrice"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            text = resp.read().decode("utf-8")
+        if not text:
+            return None
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError:
+            raw = text
+        # The endpoint may return a bare number, a string, or a JSON wrapper
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        if isinstance(raw, str):
+            return float(raw)
+        if isinstance(raw, dict):
+            for key in ("price", "ethPrice", "bnbPrice", "result", "data"):
+                v = _coerce_float(raw.get(key))
+                if v is not None:
+                    return v
+        return None
+    except Exception:
+        return None
+
+
+def _extract_portfolio_usd(agent: dict | None, rewards: list[dict]) -> tuple[float | None, str]:
+    """Derive a portfolio USD value from /me, token lists, or on-chain fallback.
+
+    Priority order:
+      1. Direct USD fields on /me (portfolio_usd, balanceUsd, etc.)
+      2. Sum of token-level USD values from /me
+      3. On-chain fallback: BNB balance × BNB/USD price
+
+    Returns (value_or_None, source_label).
     """
     if isinstance(agent, dict):
+        # --- Priority 1: direct USD fields on /me ---
         for key in ("portfolio_usd", "portfolioUsd", "totalUsd", "total_usd",
                     "balanceUsd", "balance_usd", "usd"):
             val = _coerce_float(agent.get(key))
             if val is not None:
                 return val, f"me.{key}"
-        # Fall back to summing token-level USD values if exposed
+        # --- Priority 2: sum token-level USD values ---
         tokens = agent.get("tokens") or agent.get("positions") or agent.get("balances")
         if isinstance(tokens, list):
             total = 0.0
@@ -355,6 +425,21 @@ def _extract_portfolio_usd(agent: dict | None, rewards: list[dict]) -> tuple[flo
                         found = True
             if found:
                 return round(total, 4), "me.tokens[].value_usd"
+
+        # --- Priority 3: on-chain fallback (BNB balance × BNB/USD) ---
+        wallet_address = (
+            agent.get("eth_addr") or agent.get("ethAddr")
+            or agent.get("address") or agent.get("wallet")
+        )
+        if wallet_address and isinstance(wallet_address, str) and wallet_address.startswith("0x"):
+            bnb_balance = _fetch_bnb_balance_onchain(wallet_address)
+            if bnb_balance is not None:
+                bnb_price = _fetch_bnb_price_usd()
+                if bnb_price is not None and bnb_price > 0:
+                    portfolio = round(bnb_balance * bnb_price, 4)
+                    print(f"[trader-runtime] fallback valuation: {bnb_balance:.6f} BNB × ${bnb_price:.2f} = ${portfolio:.4f}")
+                    return portfolio, "onchain_bnb_fallback"
+
     return None, "unavailable"
 
 
@@ -504,7 +589,7 @@ def publish_trader_canonical(result: dict, ts_now: str, bundle_ts: str) -> None:
         null_reason = "blocked: /me unavailable"
     elif tas_value is None:
         tas_status = "partial"
-        null_reason = "partial: portfolio_usd not exposed by /me — awaiting price visibility"
+        null_reason = "partial: portfolio_usd not derived from /me or on-chain fallback — awaiting price visibility"
     else:
         tas_status = "ok"
         null_reason = None
