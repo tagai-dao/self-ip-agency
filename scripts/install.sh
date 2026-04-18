@@ -44,6 +44,8 @@ TAGCLAW_JOINED=false
 CREDENTIALS_EXIST=false
 IDENTITY_RESOLVED=false
 CRONS_REGISTERED=false
+CRON_REGISTRATION_MODE=""        # local-cli | deferred-tool | blocked
+CRON_INTENT_PATH=""              # path to .install-cron-jobs.json when deferred
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 
@@ -563,6 +565,99 @@ install_autoresearch() {
 # 7. register_crons
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ── Cloud / environment detection for cron registration ────────────────────────
+# Returns via CRON_REGISTRATION_MODE:
+#   local-cli     — CLI + gateway available, register immediately
+#   deferred-tool — cloud/clawdi environment, defer to agent/tool path
+#   blocked       — truly broken (no CLI, no cloud, no path forward)
+_detect_cron_registration_mode() {
+  local workspace="$1"
+
+  # Signal 1: explicit cloud env vars (clawdi, cloud-run, etc.)
+  if [ -n "${CLAWDI_CLOUD_ENV:-}" ] || [ -n "${CLAWDI_SESSION_ID:-}" ] || \
+     [ -n "${CLOUD_RUN_JOB:-}" ] || [ -n "${K_SERVICE:-}" ] || \
+     [ "${OPENCLAW_ENV:-}" = "cloud" ]; then
+    CRON_REGISTRATION_MODE="deferred-tool"
+    return 0
+  fi
+
+  # Signal 2: running inside a clawdi workspace (path heuristic)
+  if [[ "$workspace" == */clawdi/* ]] || [[ "$HOME" == */clawdi/* ]]; then
+    CRON_REGISTRATION_MODE="deferred-tool"
+    return 0
+  fi
+
+  # Signal 3: no user service manager (systemctl/launchctl) — cloud container
+  if ! command -v systemctl >/dev/null 2>&1 && ! command -v launchctl >/dev/null 2>&1; then
+    # Additional check: if openclaw CLI exists but gateway is structurally unavailable
+    if command -v openclaw >/dev/null 2>&1; then
+      # CLI exists — try a lightweight probe (cron list, not full health)
+      if openclaw cron list >/dev/null 2>&1; then
+        CRON_REGISTRATION_MODE="local-cli"
+        return 0
+      fi
+    fi
+    CRON_REGISTRATION_MODE="deferred-tool"
+    return 0
+  fi
+
+  # Default: try local CLI path
+  CRON_REGISTRATION_MODE="local-cli"
+  return 0
+}
+
+# Write structured cron intent artifact for deferred registration
+_write_cron_intent_artifact() {
+  local workspace="$1"
+  local intent_path="$AGENCY_DIR/.install-cron-jobs.json"
+
+  local intent_json
+  intent_json="$(python3 -c "
+import json
+from datetime import datetime, timezone
+d = {
+    'schema': 'install-crons.v1',
+    'mode': 'deferred-tool-registration',
+    'deferred_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'workspace': '$workspace',
+    'jobs': [
+        {
+            'name': 'main-heartbeat',
+            'schedule': '*/10 * * * *',
+            'session': 'isolated',
+            'message': 'Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh',
+            'timeout_seconds': 120,
+        },
+        {
+            'name': 'bookmarker-cycle',
+            'schedule': '*/30 * * * *',
+            'session': 'isolated',
+            'message': 'Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh',
+            'timeout_seconds': 180,
+        },
+        {
+            'name': 'trader-cycle',
+            'schedule': '0 * * * *',
+            'session': 'isolated',
+            'message': 'Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh',
+            'timeout_seconds': 300,
+        },
+    ],
+    'finalize_command': 'openclaw cron add --name \"{name}\" --cron \"{schedule}\" --session {session} --message \"{message}\"',
+    'notes': 'Installer-side CLI cron auto-registration was not available in this environment. Use the agent/tool cron registration path or run the finalize_command for each job when the scheduler is reachable.',
+}
+print(json.dumps(d, indent=2))
+")"
+  atomic_write_json "$intent_path" "$intent_json"
+
+  # Also write to workspace for agent visibility
+  atomic_write_json "$workspace/.install-cron-jobs.json" "$intent_json"
+
+  CRON_INTENT_PATH="$intent_path"
+  log_ok "Wrote cron intent artifact: $intent_path"
+  log_ok "Wrote cron intent artifact: $workspace/.install-cron-jobs.json"
+}
+
 _print_manual_cron_commands() {
   local ws="$1"
   echo ""
@@ -610,9 +705,27 @@ register_crons() {
   : > "$gateway_log"
   : > "$cron_log"
 
+  # ── Detect cron registration mode ──────────────────────────────────────
+  _detect_cron_registration_mode "$workspace"
+  log_info "Cron registration mode: $CRON_REGISTRATION_MODE"
+
+  if [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
+    log_info "Cloud/clawdi environment detected — deferring cron registration to agent/tool path"
+    _write_cron_intent_artifact "$workspace"
+    log_info "Cron registration deferred: installer-side CLI auto-registration is not available in this environment"
+    log_info "The scheduler backend may still be reachable via the agent/tool cron registration path"
+    log_info "Intent artifact written to: $CRON_INTENT_PATH"
+    # Not a failure — deferred is a valid terminal state for cloud installs
+    return 0
+  fi
+
+  # ── local-cli mode: proceed with CLI-based registration ────────────────
+
   # ── CLI presence check ──────────────────────────────────────────────────
   if ! command -v openclaw >/dev/null 2>&1; then
-    log_warn "openclaw CLI not found in PATH — printing manual cron registration commands"
+    log_warn "openclaw CLI not found in PATH"
+    CRON_REGISTRATION_MODE="blocked"
+    _write_cron_intent_artifact "$workspace"
     _print_manual_cron_commands "$workspace"
     return 1
   fi
@@ -645,6 +758,8 @@ register_crons() {
     echo "    3. Then re-run:  bash $AGENCY_DIR/scripts/install.sh"
     echo "  ══════════════════════════════════════════════════════════"
     echo ""
+    CRON_REGISTRATION_MODE="blocked"
+    _write_cron_intent_artifact "$workspace"
     _print_manual_cron_commands "$workspace"
     return 1
   fi
@@ -652,10 +767,16 @@ register_crons() {
   log_ok "openclaw CLI healthy — version: $cli_version_out"
 
   # ── Gateway reachability ───────────────────────────────────────────────
-  # `openclaw cron *` talks to the Gateway-backed scheduler. A healthy CLI
-  # is not enough; the gateway itself must be reachable.
-  if ! openclaw health --json >"$gateway_log" 2>&1; then
-    log_warn "OpenClaw CLI found, but the Gateway scheduler is not reachable"
+  # Try lightweight cron list first; fall back to health --json + gateway start
+  local gw_ready=false
+  if openclaw cron list >/dev/null 2>&1; then
+    gw_ready=true
+  elif openclaw health --json >"$gateway_log" 2>&1; then
+    gw_ready=true
+  fi
+
+  if [ "$gw_ready" != "true" ]; then
+    log_warn "OpenClaw scheduler not immediately reachable — attempting gateway start"
     log_info "Attempting to start the OpenClaw Gateway service..."
     if openclaw gateway start >>"$gateway_log" 2>&1; then
       log_ok "Requested OpenClaw Gateway service start"
@@ -663,28 +784,30 @@ register_crons() {
       log_warn "openclaw gateway start returned non-zero"
     fi
 
-    local gw_ready=false
     local _gw_try
     for _gw_try in 1 2 3 4 5 6 7 8 9 10; do
       sleep 1
-      if openclaw health --json >>"$gateway_log" 2>&1; then
+      if openclaw cron list >/dev/null 2>&1 || openclaw health --json >>"$gateway_log" 2>&1; then
         gw_ready=true
         break
       fi
     done
-
-    if [ "$gw_ready" != "true" ]; then
-      log_warn "OpenClaw Gateway is still unavailable — skipping cron auto-registration"
-      log_warn "Cron scheduler in current OpenClaw releases is Gateway-backed; 'openclaw cron add' cannot succeed until the Gateway is healthy"
-      log_warn "See gateway bootstrap log: $gateway_log"
-      log_info "Recovery steps:"
-      echo "  1. Run: openclaw gateway status"
-      echo "  2. If needed, run: openclaw gateway start"
-      echo "  3. Re-run: bash $AGENCY_DIR/scripts/install.sh"
-      return 1
-    fi
-    log_ok "OpenClaw Gateway became healthy — proceeding with cron registration"
   fi
+
+  if [ "$gw_ready" != "true" ]; then
+    log_warn "Installer-side CLI cron auto-registration did not complete — scheduler not reachable after retries"
+    log_info "Cron registration deferred to agent/tool path or manual retry"
+    log_warn "See gateway bootstrap log: $gateway_log"
+    CRON_REGISTRATION_MODE="deferred-tool"
+    _write_cron_intent_artifact "$workspace"
+    log_info "Recovery steps:"
+    echo "  1. Run: openclaw gateway status"
+    echo "  2. If needed, run: openclaw gateway start"
+    echo "  3. Re-run: bash $AGENCY_DIR/scripts/install.sh"
+    echo "  Or: use the agent/tool cron registration path (see .install-cron-jobs.json)"
+    return 1
+  fi
+  log_ok "OpenClaw scheduler reachable — proceeding with cron registration"
 
   # Auto-register cron jobs
   local cron_ok=true
@@ -732,6 +855,7 @@ register_crons() {
 
   if [ "$cron_ok" = "true" ]; then
     CRONS_REGISTERED=true
+    CRON_REGISTRATION_MODE="local-cli"
     log_ok "All 3 cron jobs registered successfully"
     return 0
   else
@@ -1276,8 +1400,13 @@ print(json.dumps({
     fi
 
     if [ "$CRONS_REGISTERED" != "true" ] && [ "$TAGCLAW_STATUS" = "active" ]; then
-      _emit_step_simple "register_crons" \
-        "Register cron jobs manually (openclaw CLI was not available during install)"
+      if [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
+        _emit_step_simple "register_crons" \
+          "Register cron jobs via agent/tool path (installer-side CLI auto-registration deferred in this environment — see .install-cron-jobs.json)"
+      else
+        _emit_step_simple "register_crons" \
+          "Register cron jobs manually (openclaw CLI was not available during install)"
+      fi
     fi
 
     if [ "$DASHBOARD_STATUS" = "not_attempted" ] && [ "$TAGCLAW_STATUS" = "active" ]; then
@@ -1344,6 +1473,9 @@ d = {
     'installed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'install_status': '$INSTALL_STATUS',
     'crons_registered': '$CRONS_REGISTERED' == 'true',
+    'cron_registration_mode': '$CRON_REGISTRATION_MODE',
+    'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('deferred' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
+    'cron_intent_path': '$CRON_INTENT_PATH',
     'dashboard_status': '$DASHBOARD_STATUS',
     'dashboard_local_status': '$DASHBOARD_STATUS',
     'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',
@@ -1352,7 +1484,7 @@ d = {
     'tagclaw_onboard_status': '$TAGCLAW_ONBOARD_STATUS',
     'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
     'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
-    'schema': 'installed.v3'
+    'schema': 'installed.v4'
 }
 print(json.dumps(d, indent=2))
 ")"
@@ -1488,7 +1620,13 @@ print(json.dumps(d, indent=2))
       _public_summary="${DASHBOARD_PUBLIC_STATUS} (${DASHBOARD_PUBLIC_URL})"
     fi
     local _cron_summary="manual"
-    [ "$CRONS_REGISTERED" = "true" ] && _cron_summary="auto-registered"
+    if [ "$CRONS_REGISTERED" = "true" ]; then
+      _cron_summary="auto-registered"
+    elif [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
+      _cron_summary="deferred"
+    elif [ "$CRON_REGISTRATION_MODE" = "blocked" ]; then
+      _cron_summary="blocked"
+    fi
     local _bootstrap_summary="not-attempted"
     if [ "$BOOTSTRAP_ATTEMPTED" = "true" ]; then
       local _bs_count=0
@@ -1518,6 +1656,9 @@ d = {
     'installed_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'install_status': '$INSTALL_STATUS',
     'crons_registered': '$CRONS_REGISTERED' == 'true',
+    'cron_registration_mode': '$CRON_REGISTRATION_MODE',
+    'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('deferred' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
+    'cron_intent_path': '$CRON_INTENT_PATH',
     'dashboard_status': '$DASHBOARD_STATUS',
     'dashboard_local_status': '$DASHBOARD_STATUS',
     'dashboard_public_status': '$DASHBOARD_PUBLIC_STATUS',
@@ -1531,7 +1672,7 @@ d = {
     'bookmarker_bootstrapped': $([ "$BOOKMARKER_BOOTSTRAPPED" = "true" ] && echo "True" || echo "False"),
     'trader_bootstrapped': $([ "$TRADER_BOOTSTRAPPED" = "true" ] && echo "True" || echo "False"),
     'bootstrap_status': '$_bootstrap_summary',
-    'schema': 'installed.v3'
+    'schema': 'installed.v4'
 }
 print(json.dumps(d, indent=2))
 ")"
@@ -1603,6 +1744,10 @@ d = {
         'run_command': '$DASHBOARD_PUBLIC_START_COMMAND',
         'state_file': '$DASHBOARD_PUBLIC_STATE_FILE',
     },
+    'crons_registered': '$CRONS_REGISTERED' == 'true',
+    'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('deferred' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
+    'cron_registration_mode': '$CRON_REGISTRATION_MODE',
+    'cron_intent_path': '$CRON_INTENT_PATH',
     'next_steps': _arrays['next_steps'],
     'next_steps_text': _arrays['next_steps_text'],
     'tagclaw': {
@@ -1700,6 +1845,10 @@ print(json.dumps(d, indent=2))
       fi
       if [ "$CRONS_REGISTERED" = "true" ]; then
         echo "| Cron jobs | auto-registered ✓ |"
+      elif [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
+        echo "| Cron jobs | deferred to agent/tool path (see .install-cron-jobs.json) |"
+      elif [ "$CRON_REGISTRATION_MODE" = "blocked" ]; then
+        echo "| Cron jobs | blocked (openclaw CLI not available) |"
       else
         echo "| Cron jobs | manual (openclaw CLI not available) |"
       fi
@@ -1924,6 +2073,9 @@ print(json.dumps(d, indent=2))
     echo "DASHBOARD_PUBLIC_START_COMMAND=\"${DASHBOARD_PUBLIC_START_COMMAND:-}\""
     echo "DASHBOARD_PUBLIC_STATE_FILE=\"${DASHBOARD_PUBLIC_STATE_FILE:-}\""
     echo "CRONS_REGISTERED=\"${CRONS_REGISTERED}\""
+    echo "CRON_REGISTRATION_MODE=\"${CRON_REGISTRATION_MODE}\""
+    echo "CRON_REGISTRATION_STATUS=\"${_cron_summary}\""
+    echo "CRON_INTENT_PATH=\"${CRON_INTENT_PATH}\""
     echo "BOOTSTRAP_ATTEMPTED=\"${BOOTSTRAP_ATTEMPTED}\""
     echo "MAIN_BOOTSTRAPPED=\"${MAIN_BOOTSTRAPPED}\""
     echo "BOOKMARKER_BOOTSTRAPPED=\"${BOOKMARKER_BOOTSTRAPPED}\""
