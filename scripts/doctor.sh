@@ -305,7 +305,7 @@ else
       # Operator asked for auto-start but it's not running — treat as drift.
       fail "public dashboard auto_start=true but tunnel is not running — run: $GUIDE_START${CF_HINT}"
     elif [ "$PUBLIC_SUGGEST" = "true" ]; then
-      info "public dashboard not started (optional). To expose a public URL, run: $GUIDE_START${CF_HINT}"
+      warn "public dashboard not started (optional). To expose a public URL, run: $GUIDE_START${CF_HINT}"
     else
       ok "public dashboard disabled (suggest_in_install=false in config/agency.config.yaml)"
     fi
