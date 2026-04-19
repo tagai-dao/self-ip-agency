@@ -154,6 +154,18 @@ def _safe(path: str) -> dict | list | None:
     return _load(RUNTIME / path)
 
 
+def _safe_str(value: Any, fallback: str = "—") -> str:
+    """Coerce a value to a display-safe string; prevents [object Object] in UI."""
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        return value or fallback
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    # dict/list/other → summarise instead of blindly stringifying
+    return fallback
+
+
 def _load_agent_identity() -> dict[str, Any]:
     """Resolve the registered TagClaw username for dashboard branding."""
     identity = _load(WORKSPACE / "config" / "agency-identity.json")
@@ -1210,16 +1222,37 @@ def _build_bookmarker_social_pipeline(
     *, main_social_intent: dict | None = None, main_last_decision: dict | None = None,
 ) -> dict:
     """Build bookmarker social execution pipeline summary for dashboard (6-step v2)."""
-    # Step 1: X Sync
-    sh_status = source_health.get("bird") or source_health.get("status") or "—"
+    # Step 1: X Sync — use feed diagnostics when available for truthful status
+    sh_bird = source_health.get("bird") or source_health.get("status") or "—"
     sh_source = source_health.get("source_class", "—")
     sh_updated = source_health.get("updated_at", "")
+    feed_parse_status = source_health.get("feed_parse_status", "")
+    feed_count = source_health.get("feed_count_raw", -1)
+
     # Determine primary active source
     active_src = "—"
     for src_key in ("bird", "browser_relay", "xurl"):
-        if source_health.get(src_key) == "ok":
+        val = source_health.get(src_key)
+        if val in ("ok", "valid_empty"):
             active_src = src_key
             break
+
+    # Compute the step status with semantic distinction:
+    #   ok            = feed healthy with items
+    #   valid_empty   = feed healthy but 0 items (not a failure)
+    #   degraded      = feed schema mismatch or parse failure
+    #   stale         = old/unknown state
+    #   blocked       = transport failure / unavailable
+    if sh_bird == "ok":
+        x_sync_status = "ok"
+    elif sh_bird == "valid_empty":
+        x_sync_status = "valid_empty"
+    elif sh_bird == "degraded" or feed_parse_status == "schema_mismatch":
+        x_sync_status = "degraded"
+    elif sh_bird == "unavailable":
+        x_sync_status = "blocked"
+    else:
+        x_sync_status = "stale" if sh_bird else "unknown"
 
     # Step 2: Topic Brief
     tb_keywords = topic_brief.get("keywords") or []
@@ -1287,12 +1320,14 @@ def _build_bookmarker_social_pipeline(
             {
                 "id": "x_sync",
                 "label": "X Sync",
-                "status": "ok" if sh_status == "ok" else ("stale" if sh_status else "unknown"),
+                "status": x_sync_status,
                 "data": {
-                    "status": sh_status,
+                    "status": sh_bird,
                     "source": active_src,
                     "source_class": sh_source,
                     "updated_at": sh_updated,
+                    "feed_parse_status": feed_parse_status,
+                    "feed_count": feed_count if feed_count >= 0 else None,
                 },
             },
             {
@@ -2357,7 +2392,7 @@ def api_agent_health():
         "tas_total": tas_latest.get("tas_total"),
         "tas_social": tas_latest.get("tas_social"),
         "tas_trade": tas_latest.get("tas_trade"),
-        "community_heat_health": (community_heat.get("source_health") or "unavailable"),
+        "community_heat_health": _safe_str(community_heat.get("source_health"), "unavailable"),
         "topic_brief_keywords": (topic_brief.get("keywords") or [])[:5],
         "source_health_status": source_health.get("bird") or source_health.get("status") or "unknown",
     }

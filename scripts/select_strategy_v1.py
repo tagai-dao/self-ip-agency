@@ -156,7 +156,7 @@ def analyze_log(entries: list[dict], delta_key: str) -> dict:
     - overall win rate
     """
     if not entries:
-        return {'best_combinations': [], 'worst_combinations': [], 'win_rate': 0, 'recent_trend': []}
+        return {'best_combinations': [], 'worst_combinations': [], 'win_rate': 0, 'recent_trend': [], 'total_cycles': 0}
 
     # Per-param-value: track (sum_delta, count)
     param_stats: dict[str, dict[str, tuple[float, int]]] = defaultdict(lambda: defaultdict(lambda: (0.0, 0)))

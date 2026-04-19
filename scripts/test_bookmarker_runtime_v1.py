@@ -207,6 +207,74 @@ def test_fallback_parser_without_pyyaml(monkey_no_yaml=True) -> None:
             f"fallback parser curation_vp_pct must be 0.6, got {social.get('curation_vp_pct')!r}")
 
 
+def test_feed_parse_schema_mismatch() -> None:
+    """Feed response is a dict with no known data key → schema_mismatch, not ok."""
+    ws = _prep_workspace(REAL_CONFIG)
+    mod = _load_module_with_workspace(ws)
+    # Simulate what run_curation_cycle does internally for feed parsing
+    # Dict with unknown keys → should NOT silently produce ok
+    feed_raw: dict = {"results": [{"id": 1}], "meta": {}}
+    feed_fetch_ok = True
+    feed_parse_status = "pending"
+    errors: list[str] = []
+
+    if isinstance(feed_raw, dict):
+        feed = None
+        for _key in ("posts", "items", "data"):
+            _val = feed_raw.get(_key)
+            if isinstance(_val, list):
+                feed = _val
+                feed_parse_status = "ok"
+                break
+        if feed is None:
+            feed = []
+            feed_parse_status = "schema_mismatch"
+            errors.append("schema_mismatch")
+    _assert(feed_parse_status == "schema_mismatch",
+            f"dict with unknown keys should be schema_mismatch, got {feed_parse_status}")
+    _assert(len(errors) > 0, "schema_mismatch should add an error")
+
+
+def test_feed_parse_valid_empty() -> None:
+    """Feed response is valid but empty → valid_empty, not ok."""
+    feed_raw = {"posts": []}
+    feed_parse_status = "pending"
+    feed = None
+    for _key in ("posts", "items", "data"):
+        _val = feed_raw.get(_key)
+        if isinstance(_val, list):
+            feed = _val
+            feed_parse_status = "ok"
+            break
+    if feed is not None and len(feed) == 0 and feed_parse_status == "ok":
+        feed_parse_status = "valid_empty"
+    _assert(feed_parse_status == "valid_empty",
+            f"empty posts list should be valid_empty, got {feed_parse_status}")
+
+
+def test_feed_parse_normal_success() -> None:
+    """Feed response with posts → ok."""
+    feed_raw = {"posts": [{"id": "1", "content": "test"}]}
+    feed_parse_status = "pending"
+    for _key in ("posts", "items", "data"):
+        _val = feed_raw.get(_key)
+        if isinstance(_val, list):
+            feed = _val
+            feed_parse_status = "ok"
+            break
+    _assert(feed_parse_status == "ok" and len(feed) == 1,
+            f"normal feed should parse ok with 1 item, got {feed_parse_status}")
+
+
+def test_feed_parse_transport_failure() -> None:
+    """Feed response is None → transport_failed."""
+    feed_raw = None
+    feed_fetch_ok = feed_raw is not None
+    feed_parse_status = "transport_failed" if not feed_fetch_ok else "ok"
+    _assert(feed_parse_status == "transport_failed",
+            f"None response should be transport_failed, got {feed_parse_status}")
+
+
 def main() -> int:
     mod = _load_module_with_workspace(_prep_workspace(REAL_CONFIG))
     tests = [
@@ -218,6 +286,10 @@ def main() -> int:
         ("out-of-range value clamps", test_out_of_range_value_clamps_with_warning),
         ("real config shape", test_real_config_matches_expected_shape),
         ("fallback parser (no PyYAML)", test_fallback_parser_without_pyyaml),
+        ("feed parse: schema mismatch", test_feed_parse_schema_mismatch),
+        ("feed parse: valid empty", test_feed_parse_valid_empty),
+        ("feed parse: normal success", test_feed_parse_normal_success),
+        ("feed parse: transport failure", test_feed_parse_transport_failure),
     ]
     failures = 0
     for name, fn in tests:

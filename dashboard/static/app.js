@@ -869,9 +869,13 @@ function statusClass(s) {
   if (!s) return '';
   const sl = String(s).toLowerCase();
   if (['bootstrap', 'pending', 'initializing', 'pending_first_run'].some(k => sl.includes(k))) return 'bootstrap';
+  // valid_empty = ran correctly, no items — informational, not failure
+  if (sl === 'valid_empty') return 'warn';
+  // degraded = schema mismatch or parse failure — worse than warn
+  if (sl === 'degraded') return 'warn';
   if (['ok', 'approve', 'active', 'healthy'].some(k => sl.includes(k))) return 'ok';
   if (['warn', 'partial', 'hold'].some(k => sl.includes(k))) return 'warn';
-  if (['error', 'fail', 'reject'].some(k => sl.includes(k))) return 'error';
+  if (['error', 'fail', 'reject', 'blocked'].some(k => sl.includes(k))) return 'error';
   return '';
 }
 
@@ -2688,7 +2692,10 @@ function renderOperatorLanes(data) {
 }
 
 function _laneKV(label, value) {
-  return `<div class="lane-kv"><span class="lk">${escHtml(label)}</span><span class="lv">${escHtml(String(value))}</span></div>`;
+  // Prevent [object Object] — coerce non-primitives to '—'
+  let display = value;
+  if (display != null && typeof display === 'object') display = '—';
+  return `<div class="lane-kv"><span class="lk">${escHtml(label)}</span><span class="lv">${escHtml(String(display ?? '—'))}</span></div>`;
 }
 
 function renderAgentOperatingCards(agents) {
