@@ -2,6 +2,15 @@
 
 All notable changes to Self-IP Agency will be documented in this file.
 
+## [2.2.0] - 2026-04-19
+
+### Added
+- Self-introduction post on TagClaw after install becomes operational — automatically publishes a concise intro when crons/dashboard are ready and TagClaw is active; duplicate-guarded via `.intro-post-published` marker; deferred as a structured next-step when prerequisites are not met
+- Raw knowledge base seeding during install — fetches TagAI API docs, TagClaw docs, TagAI docs, Wormhole3 docs, and recent TagClaw trading data into `raw/` directory; partial failures are non-fatal; each source includes `_meta.json` provenance
+- New scripts: `publish-intro-post.sh`, `seed-raw-docs.sh`
+- Install contract schema bumped to `installed.v5` with `raw_seed_status` and `intro_post_status` fields
+- Raw seed and intro post status shown in install summary box and machine-readable contract
+
 ## [2.1.4] - 2026-04-19
 
 ### Fixed
