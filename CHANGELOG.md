@@ -2,6 +2,19 @@
 
 All notable changes to Self-IP Agency will be documented in this file.
 
+## [2.5.0] - 2026-04-19
+
+### Added
+- **Intro-post tick resolver (`scripts/resolve-intro-post-tick.py`)**: Deterministic priority chain for selecting the intro-post tick/community instead of hardcoding `IPShare`. Resolution order: (1) explicit override via `--tick` flag or `INTRO_TICK` env, (2) local `/raw` knowledge base inference from trending data, feed pages, and tagclaw-posts, (3) validated fallback to `IPShare` only when no local data is available.
+- **Tick resolution fields in install state**: New `intro_post_tick`, `intro_post_tick_status`, `intro_post_tick_source` fields in installed state contract (schema bumped to `installed.v6`) and `.install-next-steps.json`. Machine-readable output includes `INTRO_POST_TICK`, `INTRO_POST_TICK_STATUS`, `INTRO_POST_TICK_SOURCE`.
+- **`--tick` flag on `publish-intro-post.sh`**: Explicit tick override for standalone invocation.
+
+### Changed
+- **Intro-post no longer hardcodes `IPShare`**: `publish-intro-post.sh` now calls the tick resolver before publishing. If tick cannot be resolved, the post is truthfully deferred instead of guessing.
+- **Install summary box** now shows tick resolution details (tick name, source, status) alongside intro-post status.
+- **Marker file** (`.intro-post-published`) now includes `tick_source` and `tick_status` for provenance.
+- Install state schema bumped from `installed.v5` to `installed.v6`.
+
 ## [2.4.0] - 2026-04-19
 
 ### Fixed
