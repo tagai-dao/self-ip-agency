@@ -2255,6 +2255,14 @@ print(json.dumps(d, indent=2))
         ;;
     esac
 
+    if [ "$CRONS_REGISTERED" = "true" ]; then
+      echo "  ║    - Cron jobs registered (3/3)"
+    elif [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
+      echo "  ║    ⚠ Cron registration deferred — finalize: bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace"
+    elif [ "$CRON_REGISTRATION_MODE" = "blocked" ]; then
+      echo "  ║    ✗ Cron registration blocked (openclaw CLI not available)"
+    fi
+
     echo "  ║"
     if [ "$TAGCLAW_STATUS" = "pending_verification" ] && [ -n "$TAGCLAW_AGENT_USERNAME" ] && [ -n "$TAGCLAW_VERIFICATION_CODE" ]; then
       echo "  ║  Verification tweet (post this exact text):"
@@ -2355,11 +2363,12 @@ print(json.dumps(d, indent=2))
     echo "  ║"
     echo "  ║  Self-introduction post:"
     case "$INTRO_POST_STATUS" in
-      published)         echo "  ║    ✓ Published on TagClaw" ;;
-      already_published) echo "  ║    ✓ Already published (skipped duplicate)" ;;
-      skipped)           echo "  ║    - Deferred (prerequisites not met)" ;;
-      failed)            echo "  ║    ⚠ Failed to publish (non-fatal)" ;;
-      *)                 echo "  ║    - Not attempted" ;;
+      published)                    echo "  ║    ✓ Published on TagClaw" ;;
+      published_but_marker_failed)  echo "  ║    ⚠ Published but marker write failed (duplicate guard not set)" ;;
+      already_published)            echo "  ║    ✓ Already published (skipped duplicate)" ;;
+      skipped)                      echo "  ║    - Deferred (prerequisites not met)" ;;
+      failed)                       echo "  ║    ⚠ Failed to publish (non-fatal)" ;;
+      *)                            echo "  ║    - Not attempted" ;;
     esac
     echo "  ║"
     echo "  ║  Docs:"
@@ -2432,6 +2441,9 @@ print(json.dumps(d, indent=2))
     echo "CRON_REGISTRATION_MODE=\"${CRON_REGISTRATION_MODE}\""
     echo "CRON_REGISTRATION_STATUS=\"${_cron_summary}\""
     echo "CRON_INTENT_PATH=\"${CRON_INTENT_PATH}\""
+    if [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ] && [ "$CRONS_REGISTERED" != "true" ]; then
+      echo "CRON_FINALIZE_COMMAND=\"bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace\""
+    fi
     echo "BOOTSTRAP_ATTEMPTED=\"${BOOTSTRAP_ATTEMPTED}\""
     echo "MAIN_BOOTSTRAPPED=\"${MAIN_BOOTSTRAPPED}\""
     echo "BOOKMARKER_BOOTSTRAPPED=\"${BOOKMARKER_BOOTSTRAPPED}\""
