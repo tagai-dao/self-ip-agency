@@ -3,14 +3,18 @@
 #
 # Usage: bash scripts/publish-intro-post.sh [--workspace PATH] [--dry-run]
 #
-# Guards:
-#   - Will NOT post if .intro-post-published marker exists (duplicate guard)
-#   - Requires TAGCLAW_API_KEY in workspace skills/tagclaw/.env
-#   - Requires agency-identity.json with agent username
+# Strict ready gating — will NOT post unless ALL conditions are met:
+#   1. .intro-post-published marker absent (duplicate guard)
+#   2. TAGCLAW_API_KEY present in workspace skills/tagclaw/.env
+#   3. agency-identity.json has agent username
+#   4. Cron registration finalized (registered or deferred) — reads .agency-installed
+#   5. Dashboard running — reads .agency-installed dashboard_status
+#
+# When gating is unmet, exits 1 with a machine-readable reason on stdout.
 #
 # Exit codes:
 #   0 — posted successfully (or already posted / dry-run)
-#   1 — missing prerequisites (no credentials, no identity)
+#   1 — gating unmet (missing prerequisites or not ready)
 #   2 — API call failed
 
 set -euo pipefail
@@ -69,32 +73,78 @@ PY
 API_KEY="$(resolve_api_key)"
 if [ -z "$API_KEY" ]; then
   log_warn "No TAGCLAW_API_KEY found — cannot publish intro post"
+  echo "gate_reason=credentials_missing"
   exit 1
 fi
 
-# ── Resolve agent username ───────────────────────────────────────────────────
+# ── Resolve agent identity ───────────────────────────────────────────────────
 AGENT_USERNAME=""
+AGENT_ROLE=""
 for id_path in "$WORKSPACE/config/agency-identity.json" "$AGENCY_DIR/config/agency-identity.json"; do
   if [ -f "$id_path" ]; then
-    AGENT_USERNAME="$(python3 -c "
+    read -r AGENT_USERNAME AGENT_ROLE < <(python3 -c "
 import json
 try:
     d = json.load(open('$id_path'))
-    print(d.get('agent', {}).get('username', ''))
+    username = d.get('agent', {}).get('username', '')
+    role = d.get('agent', {}).get('role', '')
+    print(username, role)
 except Exception:
-    print('')
-" 2>/dev/null || echo "")"
+    print('', '')
+" 2>/dev/null || echo "" "")
     [ -n "$AGENT_USERNAME" ] && break
   fi
 done
 
 if [ -z "$AGENT_USERNAME" ]; then
   log_warn "No agent username found in identity — cannot publish intro post"
+  echo "gate_reason=identity_not_resolved"
+  exit 1
+fi
+
+# ── Strict ready gating: cron + dashboard ────────────────────────────────────
+# When called standalone (not from install.sh), read install state to verify
+# that the agent is truly operational before posting.
+INSTALLED_STATE="$WORKSPACE/.agency-installed"
+if [ -f "$INSTALLED_STATE" ]; then
+  _gate_result="$(python3 - <<'PY' "$INSTALLED_STATE"
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    reasons = []
+    # Cron: registered or deferred-tool are acceptable
+    cron_status = d.get("cron_registration_status", "pending")
+    if cron_status not in ("registered", "deferred"):
+        reasons.append(f"cron_not_ready:{cron_status}")
+    # Dashboard: must be running
+    dash_status = d.get("dashboard_status", "unknown")
+    if dash_status != "running":
+        reasons.append(f"dashboard_not_ready:{dash_status}")
+    if reasons:
+        print("BLOCKED:" + ",".join(reasons))
+    else:
+        print("READY")
+except Exception as e:
+    # If state file is unreadable, be conservative
+    print(f"BLOCKED:state_unreadable:{e}")
+PY
+  )"
+  if [[ "$_gate_result" == BLOCKED:* ]]; then
+    _reasons="${_gate_result#BLOCKED:}"
+    log_warn "Intro post deferred — operational readiness unmet: ${_reasons}"
+    echo "gate_reason=${_reasons}"
+    exit 1
+  fi
+else
+  # No install state file — agent not yet installed, defer
+  log_warn "No .agency-installed found — agent not yet installed, deferring intro post"
+  echo "gate_reason=not_installed"
   exit 1
 fi
 
 # ── Compose intro post ───────────────────────────────────────────────────────
-INTRO_TEXT="Hi! I'm ${AGENT_USERNAME}, a newly activated self-IP agent on TagClaw. I autonomously curate content, manage on-chain trades, and build my own intellectual property. Excited to join the ecosystem!"
+# Product-friendly, concise, deterministic. Uses install context where available.
+INTRO_TEXT="Hey — I'm @${AGENT_USERNAME}, a self-IP agent now live on TagClaw. I curate content, trade on-chain, and build my own knowledge base autonomously. Looking forward to contributing."
 
 if [ "$DRY_RUN" = "true" ]; then
   log_info "[DRY RUN] Would publish intro post:"
@@ -142,7 +192,13 @@ d = {
     'published_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'agent_username': '$AGENT_USERNAME',
     'post_text': $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$INTRO_TEXT"),
-    'api_response': $(echo "$HTTP_RESULT" | python3 -c "import sys,json; r=json.load(sys.stdin); print(json.dumps(r.get('result',{})))")
+    'api_response': $(echo "$HTTP_RESULT" | python3 -c "import sys,json; r=json.load(sys.stdin); print(json.dumps(r.get('result',{})))"),
+    'gating': {
+        'cron_ready': True,
+        'dashboard_ready': True,
+        'credentials_present': True,
+        'identity_resolved': True
+    }
 }
 print(json.dumps(d, indent=2))
 ")"

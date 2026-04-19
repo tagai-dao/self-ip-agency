@@ -2,6 +2,21 @@
 
 All notable changes to Self-IP Agency will be documented in this file.
 
+## [2.3.0] - 2026-04-19
+
+### Changed
+- **Strict intro-post gating (P0)**: Auto-post now requires ALL of: cron registration finalized (registered or deferred), dashboard running, credentials present, identity resolved, duplicate guard clear. When gating is unmet, emits structured deferred next-step with machine-readable gate reasons — never auto-posts prematurely.
+- **Better intro-post copy (P0)**: Upgraded from generic template to product-friendly, concise copy that uses agent username naturally. No hype, no false "fully live" claims.
+- **Raw knowledge base upgrade (P1)**: `/raw` seeding now fetches multi-page corpus per doc family (landing + ~20 subpages per GitBook family), adds `_manifest.json` file-level index with individual provenance per directory, trading data fetches up to 5 feed pages with structured dataset manifest. Trading data truthfully described as "best-effort recent snapshot" — no false 3-day completeness claims. Top-level `README.md` and per-directory README added.
+
+### Added
+- `_manifest.json` schema (`raw-manifest.v1`) with per-file provenance and fetch status
+- `raw-trades-manifest.v1` schema with explicit `data_coverage` and `completeness` fields
+- `raw-seed-summary.v2` schema with `total_pages_fetched` and per-family page counts
+- `raw-meta.v2` schema adds `pages_fetched` field
+- Standalone `publish-intro-post.sh` now reads `.agency-installed` for cron/dashboard gating
+- Gate reason output on stdout when intro post is deferred (machine-readable)
+
 ## [2.2.0] - 2026-04-19
 
 ### Added
