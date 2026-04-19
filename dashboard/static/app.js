@@ -1,4 +1,4 @@
-/* TagClawX Dashboard — app.js — v20260410d Dashboard V2 + NOC + zh i18n + Claude Dispatch tab */
+/* TagClawX Dashboard — app.js — v20260419a Dashboard V2 product alignment */
 'use strict';
 
 // ── i18n ───────────────────────────────────────────────────────────────────
@@ -7,19 +7,19 @@ const I18N = {
     subtitle: '智能体看板',
     refresh: '↻ 刷新',
     // Bootstrap banner
-    'bootstrap-title': '🔵 环境刚刚安装 — 等待首次智能体运行',
-    'bootstrap-hint': '首次运行主心跳、书签员和交易员周期后，数据将自动填充。下方所有指标目前处于引导/待定状态。',
+    'bootstrap-title': '正在启动 — 智能体即将就绪',
+    'bootstrap-hint': '首次智能体运行完成后，数据将自动填充。通常需要几分钟。',
     // Section titles
-    'section-tas-command': '🎯 TAS 指挥中心',
+    'section-tas-command': 'TAS 指挥中心',
     'col-tas-social': 'TAS_social',
     'col-tas-aggregate': '聚合 TAS',
     'col-tas-trade': 'TAS_trade',
-    'section-autoresearch': '🔬 AutoResearch 进化环路',
-    'section-agent-details': '🤖 智能体详情',
-    'section-wiki-intel': '📚 self-IP LLM Wiki — 知识层',
-    'section-timeline': '⏱ 行动时间轴',
+    'section-autoresearch': 'AutoResearch 进化环路',
+    'section-agent-details': '智能体',
+    'section-wiki-intel': 'Wiki 知识层',
+    'section-timeline': '动态',
     'section-operator-lanes': '🔄 操作面板',
-    'panel-dev': '🔨 鲁班 / Claude 调度',
+    'panel-dev': '鲁班 / Claude 调度',
     // Agent tab labels
     'tab-main': '主控',
     'tab-bookmarker': '书签员',
@@ -94,13 +94,13 @@ const I18N = {
     'section-result-links': '结果链接',
     // Mission Status Bar (slots removed)
     // NOC / Intelligence
-    'noc-dep-graph': '🔗 流水线依赖图',
-    'noc-state-machines': '⚙ 执行状态机',
-    'noc-countdown': '⏱ 倒计时面板',
-    'noc-community-heat': '🔥 社区热度',
-    'noc-intel-summary': '📊 情报概览',
+    'noc-dep-graph': '流水线依赖图',
+    'noc-state-machines': '执行状态机',
+    'noc-countdown': '倒计时面板',
+    'noc-community-heat': '社区热度',
+    'noc-intel-summary': '情报概览',
     // Timeline
-    'timeline-filter-note': '仅显示已完成动作',
+    'timeline-filter-note': '已完成',
     'tl-posts': '帖子',
     'tl-curations': '策展',
     'tl-claims': '领取',
@@ -140,7 +140,7 @@ const I18N = {
     // P1/P2 additions
     'npp-title': '下一条帖子（待发布）',
     // P10: Explainability
-    'section-explainability': '🔍 制品可解释性',
+    'section-explainability': '制品可解释性',
     'explain-artifact-state': '制品状态与溯源',
     'explain-health-ctx': '健康上下文',
     'explain-recent-events': '近期 Wiki 事件',
@@ -148,16 +148,16 @@ const I18N = {
   en: {
     subtitle: 'Agent Dashboard',
     refresh: '↻ Refresh',
-    'section-tas-command': '🎯 TAS Command Center',
+    'section-tas-command': 'TAS Command Center',
     'col-tas-social': 'TAS_social',
     'col-tas-aggregate': 'Aggregated TAS',
     'col-tas-trade': 'TAS_trade',
-    'section-autoresearch': '🔬 AutoResearch Evolution Loop',
-    'section-agent-details': '🤖 Agent Details',
-    'section-wiki-intel': '📚 self-IP LLM Wiki — Intelligence Layer',
-    'section-timeline': '⏱ Action Timeline',
+    'section-autoresearch': 'AutoResearch Evolution Loop',
+    'section-agent-details': 'Agents',
+    'section-wiki-intel': 'Wiki Intelligence',
+    'section-timeline': 'Activity',
     'section-operator-lanes': '🔄 Operator Lanes',
-    'panel-dev': '🔨 Claude Dispatch (Luban)',
+    'panel-dev': 'Claude Dispatch (Luban)',
     'tab-main': 'Main',
     'tab-bookmarker': 'Bookmarker',
     'tab-trader': 'Trader',
@@ -226,7 +226,7 @@ const I18N = {
     'noc-countdown': '⏱ Countdown Strip',
     'noc-community-heat': '🔥 Community Heat',
     'noc-intel-summary': '📊 Intelligence Summary',
-    'timeline-filter-note': 'Completed actions only',
+    'timeline-filter-note': 'completed',
     'tl-posts': 'Posts',
     'tl-curations': 'Curations',
     'tl-claims': 'Claims',
@@ -944,6 +944,11 @@ function cleanSummary(text) {
     .replace(/reinforce_previous_strategy/g, langText('延续策略', 'Reinforce Strategy'))
     .replace(/discard_previous_strategy/g, langText('切换策略', 'Switch Strategy'))
     .replace(/vp-flush/g, langText('消耗投票权', 'Use voting power'))
+    .replace(/\bheartbeat\b/gi, langText('心跳', 'heartbeat'))
+    .replace(/\btask_id\b/g, langText('任务', 'task'))
+    .replace(/\bsocial_intent\b/g, langText('社交意图', 'social intent'))
+    .replace(/\btreasury_policy\b/g, langText('国库策略', 'treasury policy'))
+    .replace(/\balign_event\b/g, langText('对齐事件', 'align event'))
     .replace(/\bOP\b/g, langText('操作权力（点）', 'Operation Power (Point)'))
     .replace(/\bVP\b/g, langText('投票权', 'Voting Power'));
 }
@@ -1559,7 +1564,6 @@ function renderAgentDetails(data) {
   renderMainTab(data.main || {});
   renderBookmarkerTab(data.bookmarker || {});
   renderTraderTab(data.trader || {});
-  renderDevPanel(data.dev_dispatch || {});
   renderClaudeDispatchTab(data.dev_dispatch || {}, (_lastAgentHealth || {}).agents || {});
 }
 
@@ -2043,65 +2047,8 @@ function renderPipeline(elId, pipeline, agent) {
   el.innerHTML = html;
 }
 
-// ── Dev Panel ──
-function renderDevPanel(dev) {
-  const status = dev.status || {};
-  const result = dev.result || {};
-  const roi = dev.dispatch_roi || {};
-  const taskIdentity = dev.task_identity || {};
-  const currentTask = dev.current_task || null;
-  const isRunning = taskIdentity.is_running || false;
-
-  // Status badge: show "running" when active, otherwise latest result status
-  if (isRunning) {
-    setBadge('dev-status-badge', 'running');
-  } else {
-    setBadge('dev-status-badge', result.status || status.status || '—');
-  }
-
-  // Stage badge: label mismatch if stage refers to different task
-  const stageStatus = (dev.stage_status || {}).status || '—';
-  setBadge('dev-stage-badge', stageStatus);
-
-  setText('dev-completed-at', isRunning ? '—' : shortTs(result.completed_at || status.updated_at || status.started_at));
-
-  const roiEl = $('dev-dispatch-roi');
-  if (roiEl) {
-    const mismatch = (taskIdentity.roi_matches_active === false);
-    const mismatchNote = mismatch
-      ? `<div class="muted small clr-warning">⚠ ${escHtml(t('cd-roi-mismatch'))}</div>`
-      : '';
-    roiEl.innerHTML = mismatchNote + listHtml([
-      { title: 'Target metric', sub: roi.target_metric || '—', right: roi.roi_status || '—' },
-      { title: langText('预期 TAS 影响', 'Expected TAS impact'), sub: `${langText('任务', 'task')}: ${roi.task_id || '—'}`, right: roi.expected_tas_impact != null ? fmt(roi.expected_tas_impact) : '—' },
-    ]);
-  }
-
-  const summaryEl = $('dev-result-summary');
-  if (summaryEl) {
-    if (isRunning && currentTask) {
-      summaryEl.textContent = `[${t('cd-current-task')}] ${currentTask.title || currentTask.task_id || '—'}`;
-    } else {
-      summaryEl.textContent = result.task_summary || t('no-dev-result');
-    }
-  }
-
-  const linksEl = $('dev-result-links');
-  if (linksEl) {
-    const files = result.files_changed || [];
-    const summary = result.task_summary || '';
-    const links = [];
-    if (!isRunning) {
-      if (files.some(f => String(f).includes('tools/viz')) || /dashboard/i.test(summary)) {
-        links.push({ label: t('live-dashboard'), href: 'https://dashboard.tagclaw.com' });
-        links.push({ label: t('github-repo'), href: 'https://github.com/tagai-dao/Tagclaw-dashboard' });
-      }
-    }
-    linksEl.innerHTML = links.length
-      ? links.map(l => `<div class="list-item"><div class="item-left"><a class="dev-link" href="${escHtml(l.href)}" target="_blank" rel="noopener noreferrer">${escHtml(l.label)}</a></div></div>`).join('')
-      : `<div class="muted small">${escHtml(t('no-links'))}</div>`;
-  }
-}
+// renderDevPanel — removed (superseded by Claude Dispatch tab)
+function renderDevPanel() {}
 
 // ── Claude Dispatch Tab ──
 function renderClaudeDispatchTab(dev, agentHealthAgents) {
@@ -2260,7 +2207,7 @@ function _renderWikiInner(wiki) {
   renderIngestMatrix(wiki);
   renderContractHealth(wiki);
   renderAgentWikiStatus(wiki);
-  renderCommunityHeatMap(wiki);
+  // renderCommunityHeatMap removed (legacy panel deleted)
 }
 
 function _ageText(hours) {
@@ -2615,6 +2562,20 @@ const HUMAN_TERMS = {
   bookmarker:                    { zh: '社交执行', en: 'Social Agent' },
   trader:                        { zh: '交易管理', en: 'Trading Agent' },
   claude_dispatch:               { zh: '开发助手', en: 'Dev Assistant' },
+  // Timeline action types
+  heartbeat:                     { zh: '心跳', en: 'Heartbeat' },
+  curate:                        { zh: '策展', en: 'Curate' },
+  post:                          { zh: '发帖', en: 'Post' },
+  claim:                         { zh: '领取奖励', en: 'Claim' },
+  claim_reward:                  { zh: '领取奖励', en: 'Claim reward' },
+  trade:                         { zh: '交易', en: 'Trade' },
+  social_action:                 { zh: '社交动作', en: 'Social action' },
+  dispatch:                      { zh: '派单', en: 'Dispatch' },
+  strategy_cycle:                { zh: '策略周期', en: 'Strategy cycle' },
+  x_sync:                        { zh: '数据同步', en: 'Data sync' },
+  wiki_compile:                  { zh: 'Wiki 编译', en: 'Wiki compile' },
+  budget_allocate:               { zh: '预算分配', en: 'Budget allocate' },
+  social:                        { zh: '社交', en: 'Social' },
 };
 
 function humanize(key, lang) {
@@ -2628,13 +2589,8 @@ function humanize(key, lang) {
   return key;
 }
 
-// ══════════════════════════════════════════════════════════════════════════
-// Hero Summary Bar — removed (dashboard UX simplification)
-// ══════════════════════════════════════════════════════════════════════════
+// Stubs for removed UI sections (kept for fetchAll compatibility)
 function renderHeroBar() {}
-
-
-// renderActionRequired — removed (dashboard UX simplification)
 function renderActionRequired() {}
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -2742,6 +2698,10 @@ function renderAgentOperatingCards(agents) {
     if (agentId === 'trader' && slotKey === 'role') return true;
     if (slotKey === 'next_action' && /initializing\s*tas/.test(raw || rendered)) return true;
     if (slotKey === 'blocker' && shouldHideBootstrapText(raw || rendered)) return true;
+    // Hide "blocker: none" — no value in showing an empty blocker slot
+    if (slotKey === 'blocker' && (!rawValue || raw === 'none' || raw === '—')) return true;
+    // Hide mode when it's just a dash or empty
+    if (slotKey === 'mode' && (!rawValue || raw === '—')) return true;
     return false;
   }
 
@@ -3210,63 +3170,8 @@ function nppToggle(btn) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// P1: Agent Quick Cards (three-column)
-// ══════════════════════════════════════════════════════════════════════════
-function renderAgentQuickCards(agentHealth, timeline, status) {
-  try {
-    if (!agentHealth) return;
-    const agents = agentHealth.agents || {};
-    const summ = (timeline && timeline.summary) || {};
-
-    // ── Main ──
-    const main = agents.main || {};
-    setText('aqc-main-dot', agentStatusDot(main.freshness));
-    setText('aqc-main-mode', humanize(main.mode));
-    const mainActions = [
-      summ.posts_24h     != null ? formatPostCount(summ.posts_24h)   : null,
-      summ.curations_24h != null ? formatCurationCount(summ.curations_24h) : null,
-    ].filter(Boolean).join(' · ') || '—';
-    setText('aqc-main-actions', mainActions);
-    // Resources: read from bookmarker alloc (main controls budget)
-    try {
-      const ba = (status && status.main && status.main.budget_allocation) || {};
-      const alloc = ba.allocations || {};
-      const bmA = alloc.bookmarker || {};
-      const op = bmA.op_budget != null ? Math.round(bmA.op_budget) : (main.op != null ? Math.round(main.op) : '—');
-      const vpRaw = bmA.vp_budget ?? main.vp;
-      const vp = vpRaw != null ? fmtNum(vpRaw) : '—';
-      setText('aqc-main-resources', formatResourcePair(op, vp));
-    } catch (_) { setText('aqc-main-resources', '—'); }
-    setText('aqc-main-next', humanize(main.next_action));
-
-    // ── Bookmarker ──
-    const bm = agents.bookmarker || {};
-    setText('aqc-bookmarker-dot', agentStatusDot(bm.freshness));
-    setText('aqc-bookmarker-mode', humanize(bm.mode));
-    setText('aqc-bookmarker-actions', summ.curations_24h != null ? formatCurationCount(summ.curations_24h) : '—');
-    try {
-      const bmOp = bm.op != null ? Math.round(bm.op) : '—';
-      const bmVp = bm.vp != null ? fmtNum(bm.vp) : '—';
-      setText('aqc-bookmarker-resources', formatResourcePair(bmOp, bmVp));
-    } catch (_) { setText('aqc-bookmarker-resources', '—'); }
-    setText('aqc-bookmarker-next', humanize(bm.next_action));
-
-    // ── Trader ──
-    const trader = agents.trader || {};
-    setText('aqc-trader-dot', agentStatusDot(trader.freshness));
-    setText('aqc-trader-mode', humanize(trader.mode));
-    const traderActions = summ.trades_24h != null ? formatTradeCount(summ.trades_24h)
-      : summ.claims_24h != null ? formatClaimCount(summ.claims_24h) : '—';
-    setText('aqc-trader-actions', traderActions);
-    try {
-      const trStatus = (status && status.trader) || {};
-      const onchain = trStatus.onchain_positions || {};
-      const pUsd = onchain.total_portfolio_usd ?? trader.portfolio_usd_raw;
-      setText('aqc-trader-resources', pUsd != null ? formatPortfolioUsd(parseFloat(pUsd).toFixed(2)) : '—');
-    } catch (_) { setText('aqc-trader-resources', '—'); }
-    setText('aqc-trader-next', humanize(trader.next_action));
-  } catch (e) { console.warn('[renderAgentQuickCards]', e); }
-}
+// renderAgentQuickCards — removed (cards deleted from UI)
+function renderAgentQuickCards() {}
 
 // ══════════════════════════════════════════════════════════════════════════
 // P10: Explainability Panel
