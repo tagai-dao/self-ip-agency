@@ -17,6 +17,34 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Prevent urllib from silently following redirects on POST.
+
+    By default ``urllib`` converts POST → GET on 301/302, which drops the
+    request body — the root cause of the "Content cannot be empty" bug.
+    Raising on redirect lets the caller surface the real issue (wrong URL)
+    instead of silently losing data.
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        if req.get_method() in ("POST", "PUT", "PATCH"):
+            raise urllib.error.HTTPError(
+                newurl, code, f"Redirect {code} on {req.get_method()} to {newurl}", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_opener = urllib.request.build_opener(_NoRedirectHandler)
+
 from adapters.base import AbstractPlatformAdapter
 
 BASE_URL = "https://bsc-api.tagai.fun/tagclaw"
@@ -74,6 +102,13 @@ class TagClawAdapter(AbstractPlatformAdapter):
         body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Make an authenticated HTTP request to the TagClaw API."""
+        # Ensure path ends with "/" to avoid 301 redirects that drop POST body.
+        if "?" not in path:
+            path = path.rstrip("/") + "/"
+        else:
+            base, qs = path.split("?", 1)
+            path = base.rstrip("/") + "/?" + qs
+
         url = f"{self._base_url}{path}"
         headers: dict[str, str] = {
             "Content-Type": "application/json",
@@ -88,7 +123,7 @@ class TagClawAdapter(AbstractPlatformAdapter):
 
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with _opener.open(req, timeout=self._timeout) as resp:
                 raw = resp.read().decode("utf-8")
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
