@@ -1339,10 +1339,47 @@ publish_intro_post() {
     return 0
   fi
 
-  # Must have credentials and identity
+  # ── Strict ready gating ──────────────────────────────────────────────────
+  # Auto-post requires ALL of:
+  #   1. TagClaw credentials present
+  #   2. Agent identity resolved
+  #   3. Cron registration finalized or acceptably deferred
+  #   4. Dashboard running (public exposure confirmed)
+  #   5. .intro-post-published marker absent (checked above)
+  #
+  # If any condition is unmet, defer as a structured next-step.
+  local _gate_reasons=()
+
   if ! has_tagclaw_credentials; then
+    _gate_reasons+=("credentials_missing")
+  fi
+
+  if [ "$IDENTITY_RESOLVED" != "true" ]; then
+    _gate_reasons+=("identity_not_resolved")
+  fi
+
+  # Cron readiness: registered OR acceptably deferred
+  local _cron_ready=false
+  if [ "$CRONS_REGISTERED" = "true" ]; then
+    _cron_ready=true
+  elif [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
+    _cron_ready=true
+  fi
+  if [ "$_cron_ready" != "true" ]; then
+    _gate_reasons+=("cron_not_ready")
+  fi
+
+  # Dashboard readiness: must be running
+  if [ "$DASHBOARD_STATUS" != "running" ]; then
+    _gate_reasons+=("dashboard_not_ready:${DASHBOARD_STATUS}")
+  fi
+
+  if [ "${#_gate_reasons[@]}" -gt 0 ]; then
     INTRO_POST_STATUS="skipped"
-    log_info "No TagClaw credentials — deferring intro post"
+    local _reasons_str
+    _reasons_str="$(printf '%s, ' "${_gate_reasons[@]}")"
+    _reasons_str="${_reasons_str%, }"
+    log_info "Intro post deferred — gating unmet: ${_reasons_str}"
     return 0
   fi
 
@@ -1711,10 +1748,11 @@ print(json.dumps(payload))
 
     # Intro post deferred step: if intro post was not published during this run
     # and TagClaw is active, emit a structured next-step so the agent can retry.
+    # The auto-post path requires: cron_ready + dashboard_running + credentials + identity.
     if [ "$INTRO_POST_STATUS" = "skipped" ] || [ "$INTRO_POST_STATUS" = "failed" ] || [ "$INTRO_POST_STATUS" = "not_attempted" ]; then
       if [ "$TAGCLAW_STATUS" = "active" ] && [ "$CREDENTIALS_EXIST" = "true" ]; then
         _emit_step_simple "publish_intro_post" \
-          "Publish self-introduction post: bash $AGENCY_DIR/scripts/publish-intro-post.sh --workspace $workspace"
+          "Publish self-introduction post (requires crons registered + dashboard running): bash $AGENCY_DIR/scripts/publish-intro-post.sh --workspace $workspace"
       fi
     fi
 
