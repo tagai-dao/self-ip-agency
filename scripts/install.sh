@@ -47,7 +47,7 @@ CRONS_REGISTERED=false
 CRON_REGISTRATION_MODE=""        # local-cli | deferred-tool | blocked
 CRON_INTENT_PATH=""              # path to .install-cron-jobs.json when deferred
 RAW_SEED_STATUS="not_attempted"  # ok | partial | failed | not_attempted
-INTRO_POST_STATUS="not_attempted" # published | already_published | skipped | failed | not_attempted
+INTRO_POST_STATUS="not_attempted" # published | published_but_marker_failed | already_published | skipped | failed | not_attempted
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 
@@ -619,7 +619,7 @@ import json
 from datetime import datetime, timezone
 d = {
     'schema': 'install-crons.v1',
-    'mode': 'deferred-tool-registration',
+    'mode': 'pending_finalization',
     'deferred_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'workspace': '$workspace',
     'jobs': [
@@ -646,7 +646,8 @@ d = {
         },
     ],
     'finalize_command': 'openclaw cron add --name \"{name}\" --cron \"{schedule}\" --session {session} --message \"{message}\"',
-    'notes': 'Installer-side CLI cron auto-registration was not available in this environment. Use the agent/tool cron registration path or run the finalize_command for each job when the scheduler is reachable.',
+    'finalize_script': 'bash scripts/finalize-crons.sh --workspace $workspace',
+    'notes': 'Installer-side CLI cron auto-registration was not available in this environment. Run finalize_script when the scheduler is reachable, or use finalize_command for individual jobs.',
 }
 print(json.dumps(d, indent=2))
 ")"
@@ -847,8 +848,8 @@ register_crons() {
     fi
 
     log_info "Cron registration deferred: auto-finalization did not complete"
-    log_info "The scheduler backend may still be reachable via the agent/tool cron registration path"
-    # Not a failure — deferred is a valid terminal state for cloud installs
+    log_info "Finalize later with: bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace"
+    # Deferred is an acceptable install state — finalize-crons.sh provides the completion path
     return 0
   fi
 
@@ -1390,18 +1391,28 @@ publish_intro_post() {
     return 0
   fi
 
-  if bash "$publish_script" --workspace "$workspace" 2>&1; then
-    INTRO_POST_STATUS="published"
-    log_ok "Self-introduction post published"
-  else
-    local rc=$?
-    if [ "$rc" -eq 1 ]; then
-      INTRO_POST_STATUS="skipped"
-      log_info "Intro post prerequisites not met — deferred"
+  local publish_output
+  publish_output="$(bash "$publish_script" --workspace "$workspace" 2>&1)" || true
+  local rc=$?
+
+  # Parse the outcome from the script's stdout (machine-readable lines)
+  local outcome
+  outcome="$(echo "$publish_output" | grep -oP '(?<=^outcome=).+' | tail -1)" || outcome=""
+
+  if [ "$rc" -eq 0 ]; then
+    if [ "$outcome" = "published_but_marker_failed" ]; then
+      INTRO_POST_STATUS="published_but_marker_failed"
+      log_warn "Intro post published but marker write failed — duplicate guard not set"
     else
-      INTRO_POST_STATUS="failed"
-      log_warn "Failed to publish intro post (non-fatal)"
+      INTRO_POST_STATUS="published"
+      log_ok "Self-introduction post published"
     fi
+  elif [ "$rc" -eq 1 ]; then
+    INTRO_POST_STATUS="skipped"
+    log_info "Intro post prerequisites not met — deferred"
+  else
+    INTRO_POST_STATUS="failed"
+    log_warn "Failed to publish intro post (non-fatal)"
   fi
   return 0
 }
@@ -1686,8 +1697,23 @@ print(json.dumps({
 
     if [ "$CRONS_REGISTERED" != "true" ] && [ "$TAGCLAW_STATUS" = "active" ]; then
       if [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
-        _emit_step_simple "register_crons" \
-          "Register cron jobs via agent/tool path (installer-side CLI auto-registration deferred in this environment — see .install-cron-jobs.json)"
+        local _finalize_cmd="bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace"
+        NEXT_STEPS_TEXT+=("Finalize deferred cron registration: ${_finalize_cmd}")
+        STEP_KINDS+=("finalize_crons")
+        STEP_PAYLOADS+=("$(python3 -c '
+import json, sys
+cmd = sys.argv[1]
+intent = sys.argv[2]
+print(json.dumps({
+    "kind": "finalize_crons",
+    "title": "Finalize deferred cron registration",
+    "action": f"Finalize deferred cron registration: {cmd}",
+    "command": cmd,
+    "intent_artifact": intent,
+    "auto_dispatchable": True,
+    "exit_codes": {"0": "success", "1": "precondition_failure", "2": "scheduler_unreachable", "3": "partial_registration"},
+}))
+' "$_finalize_cmd" "$CRON_INTENT_PATH")")
       else
         _emit_step_simple "register_crons" \
           "Register cron jobs manually (openclaw CLI was not available during install)"
@@ -1769,7 +1795,8 @@ d = {
     'install_status': '$INSTALL_STATUS',
     'crons_registered': '$CRONS_REGISTERED' == 'true',
     'cron_registration_mode': '$CRON_REGISTRATION_MODE',
-    'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('deferred' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
+    'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('pending_finalization' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
+    'cron_finalize_command': 'bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' and '$CRONS_REGISTERED' != 'true' else '',
     'cron_intent_path': '$CRON_INTENT_PATH',
     'dashboard_ready': '$DASHBOARD_READY' == 'true',
     'dashboard_status': '$DASHBOARD_STATUS',
@@ -1924,7 +1951,7 @@ print(json.dumps(d, indent=2))
     if [ "$CRONS_REGISTERED" = "true" ]; then
       _cron_summary="auto-registered"
     elif [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
-      _cron_summary="deferred"
+      _cron_summary="pending-finalization (run: bash scripts/finalize-crons.sh)"
     elif [ "$CRON_REGISTRATION_MODE" = "blocked" ]; then
       _cron_summary="blocked"
     fi
@@ -1958,7 +1985,8 @@ d = {
     'install_status': '$INSTALL_STATUS',
     'crons_registered': '$CRONS_REGISTERED' == 'true',
     'cron_registration_mode': '$CRON_REGISTRATION_MODE',
-    'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('deferred' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
+    'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('pending_finalization' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
+    'cron_finalize_command': 'bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' and '$CRONS_REGISTERED' != 'true' else '',
     'cron_intent_path': '$CRON_INTENT_PATH',
     'dashboard_ready': '$DASHBOARD_READY' == 'true',
     'dashboard_status': '$DASHBOARD_STATUS',
@@ -2050,7 +2078,8 @@ d = {
         'state_file': '$DASHBOARD_PUBLIC_STATE_FILE',
     },
     'crons_registered': '$CRONS_REGISTERED' == 'true',
-    'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('deferred' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
+    'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('pending_finalization' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
+    'cron_finalize_command': 'bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' and '$CRONS_REGISTERED' != 'true' else '',
     'cron_registration_mode': '$CRON_REGISTRATION_MODE',
     'cron_intent_path': '$CRON_INTENT_PATH',
     'next_steps': _arrays['next_steps'],

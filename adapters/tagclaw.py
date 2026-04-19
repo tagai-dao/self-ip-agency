@@ -146,18 +146,27 @@ class TagClawAdapter(AbstractPlatformAdapter):
 
     # ── AbstractPlatformAdapter implementation ─────────────────────────────
 
+    # Default community tick for posts.  The TagClaw API requires a ``tick``
+    # field; ``IPShare`` is the canonical self-IP community.
+    DEFAULT_TICK = "IPShare"
+
     def post(self, text: str, tick: str | None = None) -> dict[str, Any]:
-        """Create a new post. Optionally tag a token tick."""
-        body: dict[str, Any] = {"content": text}
-        if tick:
-            body["tick"] = tick
+        """Create a new post. ``tick`` defaults to ``IPShare``.
+
+        The TagClaw API payload contract uses ``text`` (not ``content``) and
+        requires a ``tick`` field identifying the target community.
+        """
+        body: dict[str, Any] = {
+            "text": text,
+            "tick": tick or self.DEFAULT_TICK,
+        }
         return self._request("POST", "/post", body)
 
     def reply(self, tweet_id: str, text: str) -> dict[str, Any]:
         """Reply to a post."""
         return self._request("POST", "/reply", {
             "postId": tweet_id,
-            "content": text,
+            "text": text,
         })
 
     def like(self, tweet_id: str) -> dict[str, Any]:
