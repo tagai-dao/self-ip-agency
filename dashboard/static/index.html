@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Agent Dashboard</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260417a" />
+  <title>TagClawX — Agent Operating Surface</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260419a" />
 </head>
-<body class="dev-mode">
+<body>
 
 <!-- ═══════════════════════════════════════════ HEADER ══ -->
 <header id="header">
@@ -41,12 +41,10 @@
   </div>
 </header>
 
-<!-- hero-summary-bar, action-required-strip, control-tower-header removed (dashboard UX simplification) -->
-
 <!-- ═══════════════════════════════════════════ BOOTSTRAP BANNER ══ -->
 <div id="bootstrap-banner" class="bootstrap-banner">
-  <div class="banner-title" data-i18n="bootstrap-title">🔵 Environment Freshly Installed — Awaiting First Agent Cycles</div>
-  <div class="banner-hint" data-i18n="bootstrap-hint">Agent data will populate automatically once the main heartbeat, bookmarker, and trader cycles run for the first time. All indicators below are in bootstrap/pending state.</div>
+  <div class="banner-title" data-i18n="bootstrap-title">Setting up — agents starting shortly</div>
+  <div class="banner-hint" data-i18n="bootstrap-hint">Data will appear once the first agent cycles complete. This usually takes a few minutes.</div>
 </div>
 
 <!-- ═══════════════════════════════════════════ MAIN CONTENT ══ -->
@@ -54,12 +52,12 @@
 
   <!-- ══ Section 1: TAS Command Center ══ -->
   <section class="full-section" id="tas-command-center">
-    <h2 class="section-title" data-i18n="section-tas-command">🎯 TAS Command Center</h2>
+    <h2 class="section-title" data-i18n="section-tas-command">TAS Command Center</h2>
     <div class="tas-cc-grid">
       <!-- Left: Aggregated TAS -->
       <div class="tas-agent-col tas-center-col" id="tas-col-center">
         <div class="agent-col-header center-accent">
-          <span>🎯</span> <span data-i18n="col-tas-aggregate">Aggregated TAS</span>
+          <span data-i18n="col-tas-aggregate">Aggregated TAS</span>
         </div>
         <div class="agent-col-body">
           <div class="tas-big-row">
@@ -82,7 +80,7 @@
       <!-- Center: Bookmarker / TAS_social -->
       <div class="tas-agent-col" id="tas-col-bookmarker">
         <div class="agent-col-header bookmarker-accent">
-          <span>📝</span> <span data-i18n="col-tas-social">TAS_social</span>
+          <span data-i18n="col-tas-social">TAS_social</span>
         </div>
         <div class="agent-col-body">
           <div class="agent-big-num">
@@ -108,7 +106,6 @@
             <div class="metric-detail" id="detail-pob"></div>
             <div class="kv-row"><span class="k">Track B source</span><span class="v mono" id="cc-trackb-source">—</span></div>
           </div>
-          <!-- strategy_action, skills, last active rows removed -->
           <div id="cc-social-sparkline" class="sparkline-wrap"></div>
           <div id="cc-social-flat-note" class="sparkline-legend muted small"></div>
         </div>
@@ -117,7 +114,7 @@
       <!-- Right: Trader / TAS_trade -->
       <div class="tas-agent-col" id="tas-col-trader">
         <div class="agent-col-header trader-accent">
-          <span>💰</span> <span data-i18n="col-tas-trade">TAS_trade</span>
+          <span data-i18n="col-tas-trade">TAS_trade</span>
         </div>
         <div class="agent-col-body">
           <div class="agent-big-num">
@@ -144,17 +141,14 @@
             </div>
             <div class="metric-detail" id="detail-pob-reward"></div>
           </div>
-          <!-- recommended, autonomy_mode, skills, heat_signal, coupling_active rows removed -->
           <div id="cc-trade-sparkline" class="sparkline-wrap"></div>
         </div>
       </div>
     </div>
 
-    <!-- Agent Quick Cards removed (策略总控 / 社交执行 / 交易管理) -->
-
-    <!-- ══ AutoResearch Evolution Loop (merged into TAS Command Center) ══ -->
+    <!-- AutoResearch Evolution Loop -->
     <div id="autoresearch-loop" class="ar-in-tas" style="margin-top:1rem">
-      <h3 class="section-title" data-i18n="section-autoresearch">🔬 AutoResearch Evolution Loop</h3>
+      <h3 class="section-title" data-i18n="section-autoresearch">AutoResearch Evolution Loop</h3>
       <div class="ar-panels">
         <!-- Strategy Experiment Panel (left) -->
         <div class="ar-panel">
@@ -195,7 +189,7 @@
 
   <!-- ══ Section 3: Three Agent Details ══ -->
   <section class="full-section" id="agent-details">
-    <h2 class="section-title" data-i18n="section-agent-details">🤖 Agent Details</h2>
+    <h2 class="section-title" data-i18n="section-agent-details">Agents</h2>
     <div class="agent-tabs">
       <button class="agent-tab active" data-tab="main" data-i18n="tab-main" onclick="switchAgentTab('main')">Main</button>
       <button class="agent-tab" data-tab="bookmarker" data-i18n="tab-bookmarker" onclick="switchAgentTab('bookmarker')">Bookmarker</button>
@@ -246,16 +240,6 @@
         <div class="npp-footer">
           <span class="npp-meta" id="nppMeta"></span>
         </div>
-      </div>
-
-      <!-- Detail cards moved into the Social Execution Pipeline grid below -->
-      <!-- Hidden fallback elements for backward compat -->
-      <div style="display:none">
-        <div id="bm-headline"></div><div id="bm-keywords"></div>
-        <div id="bm-cands-list"></div>
-        <div id="bm-drafts-status"></div><div id="bm-drafts-list"></div>
-        <div id="bm-sync-at"></div><div id="bm-mode-badge"></div>
-        <div id="bm-align-events"></div>
       </div>
 
       <div class="detail-grid bookmarker-detail-grid">
@@ -388,9 +372,9 @@
   <!-- ══ Timeline (left) ══ -->
   <section class="full-section" id="timeline-section">
     <h2 class="section-title">
-      <span data-i18n="section-timeline">⏱ Action Timeline</span>
+      <span data-i18n="section-timeline">Activity</span>
       <span id="timeline-count" class="muted small"></span>
-      <span class="muted small" data-i18n="timeline-filter-note">Completed actions only</span>
+      <span class="muted small" data-i18n="timeline-filter-note">completed</span>
     </h2>
     <div id="timeline-summary-row" class="timeline-summary-row"></div>
     <div class="lane-grid" style="margin:.75rem 0;">
@@ -415,12 +399,12 @@
 
   <!-- ══ Wiki Intelligence + NOC (right) ══ -->
   <section class="full-section" id="wiki-intelligence">
-    <h2 class="section-title" data-i18n="section-wiki-intel">📚 self-IP LLM Wiki — Intelligence Layer</h2>
+    <h2 class="section-title" data-i18n="section-wiki-intel">Wiki Intelligence</h2>
     <div class="noc-intel-layout">
       <!-- Left: NOC -->
       <div class="noc-left">
         <div class="x-section-header compact" onclick="toggleSection('dep-graph')">
-          <span class="wiki-section-label" data-i18n="noc-dep-graph">🔗 Pipeline Dependency Graph</span>
+          <span class="wiki-section-label" data-i18n="noc-dep-graph">Pipeline Dependency Graph</span>
           <button id="dep-graph-toggle" class="x-toggle-btn">▲</button>
         </div>
         <div id="dep-graph-collapsible" class="x-collapsible open">
@@ -429,12 +413,12 @@
           </div>
         </div>
 
-        <div class="wiki-section-label" data-i18n="noc-state-machines">⚙ Execution State Machines</div>
+        <div class="wiki-section-label" data-i18n="noc-state-machines">Execution State Machines</div>
         <div class="wiki-card" id="state-machines">
           <div class="muted small">Loading…</div>
         </div>
 
-        <div class="wiki-section-label" data-i18n="noc-countdown">⏱ Countdown Strip</div>
+        <div class="wiki-section-label" data-i18n="noc-countdown">Countdown Strip</div>
         <div id="countdown-strip" class="countdown-strip">
           <div class="muted small">Loading…</div>
         </div>
@@ -442,12 +426,12 @@
 
       <!-- Right: Intelligence -->
       <div class="noc-right">
-        <div class="wiki-section-label" data-i18n="noc-community-heat">🔥 Community Heat</div>
+        <div class="wiki-section-label" data-i18n="noc-community-heat">Community Heat</div>
         <div class="wiki-card" id="community-heat-visual">
           <div class="muted small">Loading…</div>
         </div>
 
-        <div class="wiki-section-label" data-i18n="noc-intel-summary">📊 Intelligence Summary</div>
+        <div class="wiki-section-label" data-i18n="noc-intel-summary">Intelligence Summary</div>
         <div class="wiki-card" id="intelligence-summary">
           <div class="muted small">Loading…</div>
         </div>
@@ -457,7 +441,7 @@
 
     <!-- ══ Explainability Panel (P10) ══ -->
     <div class="x-section-header" onclick="toggleSection('explainability')" style="margin-top:.75rem">
-      <span class="wiki-section-label" data-i18n="section-explainability">🔍 Artifact Explainability</span>
+      <span class="wiki-section-label" data-i18n="section-explainability">Artifact Explainability</span>
       <button id="explainability-toggle" class="x-toggle-btn">▼</button>
     </div>
     <div id="explainability-collapsible" class="x-collapsible">
@@ -521,62 +505,16 @@
       <div class="wiki-section-label">Agent Wiki-first Status</div>
       <div class="wiki-grid" id="wiki-agent-cards"></div>
 
-      <!-- Legacy community heat map for backward compat -->
-      <div class="wiki-section-label">Community Heat Map (legacy)</div>
-      <div class="wiki-card" id="community-heat-panel" style="display:none">
-        <div id="community-heat-map" class="heat-map-grid"></div>
-      </div>
     </div>
   </section>
 
   </div><!-- /.timeline-wiki-duo -->
 
-  <!-- ══ Claude Dispatch — merged into Agent Details tab; hidden for backward compat ══ -->
-  <section class="full-section" id="dev-panel" style="display:none">
-    <div class="x-section-header" onclick="toggleSection('dev-detail')">
-      <h2 class="section-title" data-i18n="panel-dev">🔨 Claude Dispatch (鲁班)</h2>
-      <button id="dev-detail-toggle" class="x-toggle-btn">▼</button>
-    </div>
-    <div id="dev-detail-collapsible" class="x-collapsible">
-      <div class="detail-grid">
-        <div class="detail-card">
-          <div class="kv-compact">
-            <div class="kv-row"><span class="k" data-i18n="label-status">Status</span><span id="dev-status-badge" class="badge sm">—</span></div>
-            <div class="kv-row"><span class="k">Stage</span><span id="dev-stage-badge" class="badge sm">—</span></div>
-            <div class="kv-row"><span class="k" data-i18n="label-completed-at">Completed</span><span class="v mono" id="dev-completed-at">—</span></div>
-          </div>
-        </div>
-        <div class="detail-card">
-          <div class="section-label">Dispatch ROI</div>
-          <div id="dev-dispatch-roi" class="list-block">—</div>
-        </div>
-        <div class="detail-card">
-          <div class="section-label" data-i18n="section-result-summary">Result Summary</div>
-          <div id="dev-result-summary" class="text-block muted">—</div>
-        </div>
-        <div class="detail-card">
-          <div class="section-label" data-i18n="section-result-links">Result Links</div>
-          <div id="dev-result-links" class="list-block">—</div>
-        </div>
-      </div>
-    </div>
-  </section>
 
 </main>
 
-<!-- Kept for backward compat: hidden elements with original IDs -->
-<div style="display:none">
-  <div id="tas-panel"></div>
-  <div id="main-panel"></div>
-  <div id="bookmarker-panel"></div>
-  <div id="trader-panel"></div>
-  <div id="wiki-section"></div>
-  <div id="feedback-loop-section"></div>
-  <div id="lower-panels"></div>
-</div>
-
 <div id="error-bar" class="error-bar hidden"></div>
 
-<script src="/static/app.js?v=20260417a"></script>
+<script src="/static/app.js?v=20260419a"></script>
 </body>
 </html>

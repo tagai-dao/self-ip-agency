@@ -1182,14 +1182,10 @@ main { padding: 1rem 1.5rem; display: flex; flex-direction: column; gap: 1.5rem;
   #action-required-strip { padding: .5rem 1rem; }
 }
 
-/* ══ P2: Developer Mode — hide technical details by default ══ */
-#freshness-matrix { display: none; }
-.pipeline-steps-row { display: none; }
-.gate-checks-raw { display: none; }
-
-body.dev-mode #freshness-matrix { display: block; }
-body.dev-mode .pipeline-steps-row { display: flex; }
-body.dev-mode .gate-checks-raw { display: block; }
+/* Pipeline detail rows always visible (dev-mode toggle removed) */
+#freshness-matrix { display: block; }
+.pipeline-steps-row { display: flex; }
+.gate-checks-raw { display: block; }
 
 /* ══ P1: Next Post Preview Card ══ */
 .next-post-card {
