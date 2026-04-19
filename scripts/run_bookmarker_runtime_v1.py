@@ -396,17 +396,46 @@ def run_curation_cycle() -> dict:
     errors: list[str] = []
     feed_size = 0
 
-    # 1. Fetch feed
+    # 1. Fetch feed — with schema-aware parse diagnostics
     feed_raw = tagclaw_get("/feed", api_key)
     feed_fetch_ok = feed_raw is not None
+    feed_response_type: str = type(feed_raw).__name__ if feed_raw is not None else "null"
+    feed_response_keys: list[str] = sorted(feed_raw.keys()) if isinstance(feed_raw, dict) else []
+    feed_parse_status: str = "pending"
+
     if not feed_fetch_ok:
         errors.append("Failed to fetch feed from TagClaw API")
-        feed = []
+        feed: list = []
+        feed_parse_status = "transport_failed"
     elif isinstance(feed_raw, dict):
-        feed = feed_raw.get("posts") or feed_raw.get("items") or feed_raw.get("data") or []
+        # Try known keys in priority order
+        for _key in ("posts", "items", "data"):
+            _val = feed_raw.get(_key)
+            if isinstance(_val, list):
+                feed = _val
+                feed_parse_status = "ok"
+                break
+        else:
+            # Dict response with no recognised data key → schema mismatch
+            feed = []
+            feed_parse_status = "schema_mismatch"
+            errors.append(
+                f"Feed response is dict but has no known data key "
+                f"(keys: {feed_response_keys[:10]}); treating as empty"
+            )
+    elif isinstance(feed_raw, list):
+        feed = feed_raw
+        feed_parse_status = "ok"
     else:
-        feed = feed_raw if isinstance(feed_raw, list) else []
+        feed = []
+        feed_parse_status = "schema_mismatch"
+        errors.append(f"Unexpected feed response type: {feed_response_type}")
+
     feed_size = len(feed)
+
+    # Detect semantically empty feed (transport ok, parse ok, but nothing to score)
+    if feed_fetch_ok and feed_parse_status == "ok" and feed_size == 0:
+        feed_parse_status = "valid_empty"
 
     # 2. Score and rank posts
     scored: list[tuple[float, dict]] = []
@@ -480,6 +509,9 @@ def run_curation_cycle() -> dict:
         # Internal: pass raw data for canonical output publishing
         "_scored_posts": scored,
         "_feed_fetch_ok": feed_fetch_ok,
+        "_feed_parse_status": feed_parse_status,
+        "_feed_response_type": feed_response_type,
+        "_feed_response_keys": feed_response_keys,
         "_feed_raw_sample": feed[:10] if isinstance(feed, list) else [],
         "_api_key_present": bool(api_key),
     }
@@ -848,30 +880,61 @@ def publish_bookmarker_canonical(result: dict, ts_now: str) -> None:
     atomic_write_json(RUNTIME_BOOKMARKER / "topic-brief.json", topic_brief)
 
     # ── source-health.json ───────────────────────────────────────────────
+    feed_fetch_ok = result.get("_feed_fetch_ok", False)
+    feed_parse_status = result.get("_feed_parse_status", "unknown")
+    feed_response_type = result.get("_feed_response_type", "unknown")
+    feed_response_keys = result.get("_feed_response_keys", [])
+    feed_size = result.get("feed_size", 0)
+
     api_ok = status != "blocked"
-    # A config-fallback warning should make source-health at least ``degraded``
-    # even if the feed itself is healthy, so operators notice it in the dashboard.
+    # Determine bird (X Sync) status:
+    #   ok           = transport ok + parse ok + items > 0
+    #   valid_empty  = transport ok + parse ok + items == 0
+    #   degraded     = transport ok + parse failed / schema mismatch
+    #   unavailable  = transport failed
+    if not feed_fetch_ok:
+        bird_status = "unavailable"
+    elif feed_parse_status in ("schema_mismatch",):
+        bird_status = "degraded"
+    elif feed_parse_status == "valid_empty":
+        bird_status = "valid_empty"
+    elif feed_parse_status == "ok" and feed_size > 0:
+        bird_status = "ok"
+    else:
+        bird_status = "degraded"
+
+    # Overall source-health status
     if not api_ok:
         sh_status = "blocked"
+    elif bird_status not in ("ok", "valid_empty"):
+        sh_status = "degraded"
     elif errors or config_warnings:
         sh_status = "degraded"
     else:
         sh_status = "ok"
+
     source_health = {
-        "schema": "bookmarker.source-health.v1",
+        "schema": "bookmarker.source-health.v2",
         "generated_at": ts_now,
         "updated_at": ts_now,
         "status": sh_status,
-        "bird": "ok" if api_ok else "unavailable",
+        "bird": bird_status,
         "browser_relay": None,
         "xurl": None,
         "mismatch": None,
         "sources": [
-            {"name": "tagclaw-feed", "status": "ok" if api_ok else "blocked",
+            {"name": "tagclaw-feed", "status": bird_status,
              "last_check": ts_now}
         ],
         "source_class": "native-runtime",
         "warnings": list(config_warnings),
+        # Feed diagnostics — operators can see exactly what happened
+        "feed_fetch_ok": feed_fetch_ok,
+        "feed_parse_status": feed_parse_status,
+        "feed_response_type": feed_response_type,
+        "feed_response_keys": feed_response_keys[:10],
+        "feed_count_raw": feed_size,
+        "feed_count_parsed": len(scored),
     }
     atomic_write_json(RUNTIME_BOOKMARKER / "source-health.json", source_health)
 
