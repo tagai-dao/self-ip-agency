@@ -2629,119 +2629,13 @@ function humanize(key, lang) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Hero Summary Bar + Action Required Strip
+// Hero Summary Bar — removed (dashboard UX simplification)
 // ══════════════════════════════════════════════════════════════════════════
+function renderHeroBar() {}
 
-function renderHeroBar(controlTower, timeline, agentHealth, status) {
-  try {
-    // ── Status dot ──
-    const mode = (controlTower && controlTower.system_mode) || 'normal';
-    const dotEl   = $('heroStatusDot');
-    const labelEl = $('heroStatusLabel');
-    if (dotEl)   dotEl.textContent   = mode === 'normal' ? '🟢' : mode === 'degraded' ? '🟡' : '🔴';
-    if (labelEl) labelEl.textContent = humanize(mode);
 
-    // ── TAS score ──
-    const tasScoreEl = $('heroTasScore');
-    const tasTrendEl = $('heroTasTrend');
-    let tasVal = null;
-    try {
-      const st = status && (status.tas || status);
-      if (st && st.tas_total != null) tasVal = parseFloat(st.tas_total);
-    } catch (_) {}
-    if (tasScoreEl) tasScoreEl.textContent = tasVal != null ? tasVal.toFixed(2) : '—';
-    if (tasTrendEl) {
-      // Compare to previous cached value if available
-      let prevTas = null;
-      try {
-        const history = (_lastStatus && _lastStatus.tas_history) || [];
-        if (history.length >= 2) prevTas = parseFloat(history[history.length - 2].tas_total);
-      } catch (_) {}
-      tasTrendEl.textContent = tasVal == null ? '→'
-        : prevTas == null   ? '→'
-        : tasVal > prevTas  ? '↑'
-        : tasVal < prevTas  ? '↓'
-        : '→';
-      tasTrendEl.className = 'hero-trend '
-        + (tasVal == null || prevTas == null ? 'flat'
-          : tasVal > prevTas ? 'up'
-          : tasVal < prevTas ? 'down'
-          : 'flat');
-    }
-
-    // ── Today summary ──
-    const todayEl = $('heroToday');
-    if (todayEl) {
-      const summ    = timeline && timeline.summary;
-      const posts    = summ && summ.posts_24h    != null ? summ.posts_24h    : null;
-      const curations = summ && summ.curations_24h != null ? summ.curations_24h : null;
-      let portfolioUsd = null, claimableUsd = null;
-      try {
-        const tr = agentHealth && agentHealth.agents && agentHealth.agents.trader;
-        if (tr) {
-          if (tr.portfolio_usd_raw != null) portfolioUsd = parseFloat(tr.portfolio_usd_raw);
-          if (tr.claimable_usd_raw != null) claimableUsd = parseFloat(tr.claimable_usd_raw);
-          // fall back to onchain sub-keys
-          if (portfolioUsd == null && tr.onchain && tr.onchain.total_portfolio_usd != null)
-            portfolioUsd = parseFloat(tr.onchain.total_portfolio_usd);
-        }
-      } catch (_) {}
-      const zh = _lang === 'zh';
-      const parts = [
-        posts      != null ? (zh ? `发帖 ${posts} 篇`       : `Posts ${posts}`)         : null,
-        curations  != null ? (zh ? `策展 ${curations} 条`   : `Curations ${curations}`) : null,
-        portfolioUsd != null ? (zh ? `持仓 $${portfolioUsd.toFixed(2)}` : `Portfolio $${portfolioUsd.toFixed(2)}`) : null,
-        claimableUsd != null ? (zh ? `奖励 $${claimableUsd.toFixed(2)}` : `Rewards $${claimableUsd.toFixed(2)}`)  : null,
-      ].filter(Boolean);
-      const prefix = zh ? '今天：' : 'Today: ';
-      todayEl.textContent = prefix + (parts.length ? parts.join(' · ') : '—');
-    }
-  } catch (e) { console.warn('[heroBar]', e); }
-}
-
-function renderActionRequired(controlTower, agentHealth) {
-  const strip = $('action-required-strip');
-  if (!strip) return;
-  const items = [];
-
-  // Alerts from control tower
-  try {
-    const alerts = (controlTower && controlTower.alerts) || [];
-    alerts.forEach(a => {
-      const sev = a.severity || a.level || '';
-      const msg = a.message || a.msg || '';
-      if (sev === 'critical' || sev === 'warning') {
-        if (!shouldHideBootstrapText(msg)) {
-          items.push({ level: sev, msg: humanize(msg) });
-        }
-      }
-    });
-  } catch (_) {}
-
-  // Blockers from agent health
-  try {
-    const agents = (agentHealth && agentHealth.agents) || {};
-    Object.entries(agents).forEach(([id, agent]) => {
-      if (!agent) return;
-      const b = agent.blocker;
-      if (b && b !== '—' && b !== 'none' && b !== '' && b !== null) {
-        if (!shouldHideBootstrapText(b)) {
-          items.push({ level: 'warning', msg: `${humanize(id)}：${humanize(b)}` });
-        }
-      }
-    });
-  } catch (_) {}
-
-  if (!items.length) {
-    strip.style.display = 'none';
-    return;
-  }
-  strip.style.display = 'flex';
-  strip.innerHTML = items.map(it => {
-    const cls = it.level === 'critical' ? 'ar-pill ar-critical' : 'ar-pill ar-warning';
-    return `<span class="${cls}">⚠️ ${escHtml(it.msg)}</span>`;
-  }).join('');
-}
+// renderActionRequired — removed (dashboard UX simplification)
+function renderActionRequired() {}
 
 // ══════════════════════════════════════════════════════════════════════════
 // V2: Control Tower Render
@@ -2762,27 +2656,7 @@ function _setMetricVisibility(id, visible) {
 function renderControlTower(data) {
   if (!data) return;
 
-  // Mission Status summary slots
-  _setInlineMetric('ct-system-mode', operatorLang(data.system_mode || 'normal'));
-  _setMetricVisibility('ct-system-mode', String(data.system_mode || '').toLowerCase() !== 'initializing');
-  _setInlineMetric('ct-primary-bottleneck', data.primary_bottleneck || langText('无明确瓶颈', 'no explicit bottleneck'));
-  _setInlineMetric('ct-highest-priority', operatorLang(data.highest_priority_action || '—'));
-  _setInlineMetric('ct-tas-lever', operatorLang(data.expected_tas_lever || '—'));
-  _setInlineMetric('ct-confidence', operatorLang(data.confidence || '—'));
-
-  // Alerts Strip
-  const alertsEl = $('alerts-strip');
-  if (alertsEl) {
-    const alerts = (data.alerts || []).filter(a => !shouldHideBootstrapText(a.message || a.msg || ''));
-    if (!alerts.length) {
-      alertsEl.innerHTML = `<span class="muted small">${t('no-blockers')}</span>`;
-    } else {
-      alertsEl.innerHTML = alerts.slice(0, 5).map(a => {
-        const cls = a.level === 'critical' ? 'alert-critical' : a.level === 'warning' ? 'alert-warning' : 'alert-info';
-        return `<span class="alert-pill ${cls}">${escHtml(a.message)}</span>`;
-      }).join('');
-    }
-  }
+  // Mission Status summary pills + alerts strip removed (dashboard UX simplification)
 
   // Add meta badges to TAS CC columns
   const freshness = data.freshness || {};
