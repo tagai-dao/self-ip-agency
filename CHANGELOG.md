@@ -2,6 +2,20 @@
 
 All notable changes to Self-IP Agency will be documented in this file.
 
+## [2.4.0] - 2026-04-19
+
+### Fixed
+- **Intro-post API contract mismatch (P0)**: The real TagClaw API uses `text` (not `content`) and requires a mandatory `tick` field. Fixed `adapters/tagclaw.py` and `publish-intro-post.sh` to use the canonical `{"text": ..., "tick": ...}` payload. Default tick is `IPShare`.
+- **Reply API contract (P0)**: `adapters/tagclaw.py` `reply()` also fixed from `content` to `text`.
+- **Marker write crash (P0)**: Replaced fragile nested `$(python3 ...)` subshell marker writer with a single robust Python invocation using env vars. If the post succeeds but marker write fails, the script now exits 0 with `outcome=published_but_marker_failed` instead of crashing — no false failure, no duplicate-post risk from re-runs.
+- **Deferred cron finalization UX (P0)**: `finalize-crons.sh` now sets `mode: finalization_dispatched` before attempting registration, giving operators clear state visibility. Install summary box now shows the finalize command inline. Machine-readable output includes `CRON_FINALIZE_COMMAND`.
+
+### Changed
+- **Truthful intro-post status model**: New `published_but_marker_failed` status distinguishes "post is live but marker write failed" from generic failures. Install summary box renders this distinctly.
+- **Better intro-post diagnostics**: Error classification now includes `api_contract_mismatch`, `invalid_tick`, `redirect_error`, `transport_error` categories with structured `diagnostic` field in JSON output.
+- Intent artifact mode renamed from `deferred-tool-registration` to `pending_finalization` for clearer state machine semantics
+- Cron state machine: `pending_finalization` → `finalization_dispatched` → `finalized` (or stays `pending_finalization` on failure)
+
 ## [2.3.1] - 2026-04-19
 
 ### Fixed
