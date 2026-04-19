@@ -120,6 +120,8 @@ def tagclaw_post(endpoint: str, api_key: str, data: dict) -> dict | None:
     import urllib.error
 
     base_url = "https://bsc-api.tagai.fun/tagclaw"
+    # Ensure trailing slash to avoid 301 redirect which drops POST body
+    endpoint = endpoint.rstrip("/") + "/"
     url = f"{base_url}{endpoint}"
     body = json.dumps(data).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST")

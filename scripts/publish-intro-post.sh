@@ -160,7 +160,8 @@ import json, sys, urllib.request, urllib.error
 
 api_key = sys.argv[1]
 text = sys.argv[2]
-url = "https://bsc-api.tagai.fun/tagclaw/post"
+# Trailing slash prevents 301 redirect which drops POST body in urllib
+url = "https://bsc-api.tagai.fun/tagclaw/post/"
 body = json.dumps({"content": text}).encode("utf-8")
 req = urllib.request.Request(url, data=body, method="POST")
 req.add_header("Authorization", f"Bearer {api_key}")
