@@ -46,6 +46,8 @@ IDENTITY_RESOLVED=false
 CRONS_REGISTERED=false
 CRON_REGISTRATION_MODE=""        # local-cli | deferred-tool | blocked
 CRON_INTENT_PATH=""              # path to .install-cron-jobs.json when deferred
+RAW_SEED_STATUS="not_attempted"  # ok | partial | failed | not_attempted
+INTRO_POST_STATUS="not_attempted" # published | already_published | skipped | failed | not_attempted
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 
@@ -380,7 +382,7 @@ install_runtime() {
   # Deploy all cycle entrypoints into the actual workspace.
   local scripts_dst="$workspace/scripts"
   mkdir -p "$scripts_dst"
-  for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh tagclaw-onboard.sh refresh-agency-identity.sh dashboard-service.sh start-quick-tunnel.sh; do
+  for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh tagclaw-onboard.sh refresh-agency-identity.sh dashboard-service.sh start-quick-tunnel.sh publish-intro-post.sh seed-raw-docs.sh; do
     if [ -f "$AGENCY_DIR/scripts/$cycle_script" ]; then
       cp -f "$AGENCY_DIR/scripts/$cycle_script" "$scripts_dst/$cycle_script"
       chmod +x "$scripts_dst/$cycle_script" || true
@@ -1267,6 +1269,107 @@ except Exception:
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 9. seed_raw_docs
+# ──────────────────────────────────────────────────────────────────────────────
+
+seed_raw_docs() {
+  log_info "Step 9: Seeding raw knowledge base..."
+
+  local workspace
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    log_info "[DRY RUN] Would seed raw docs under: $workspace/raw"
+    RAW_SEED_STATUS="dry-run"
+    return 0
+  fi
+
+  local seed_script="$AGENCY_DIR/scripts/seed-raw-docs.sh"
+  if [ ! -f "$seed_script" ]; then
+    log_warn "seed-raw-docs.sh not found — skipping raw seeding"
+    RAW_SEED_STATUS="failed"
+    return 0
+  fi
+
+  if bash "$seed_script" --workspace "$workspace" 2>&1; then
+    RAW_SEED_STATUS="ok"
+    log_ok "Raw knowledge base seeded"
+  else
+    RAW_SEED_STATUS="partial"
+    log_warn "Raw seeding had issues (non-fatal) — some sources may be missing"
+  fi
+
+  # Check if the summary exists to confirm at least partial success
+  if [ -f "$workspace/raw/_seed-summary.json" ]; then
+    local _fetched _total
+    _fetched="$(python3 -c "import json; d=json.load(open('$workspace/raw/_seed-summary.json')); print(d.get('sources_fetched', 0))" 2>/dev/null || echo "0")"
+    _total="$(python3 -c "import json; d=json.load(open('$workspace/raw/_seed-summary.json')); print(d.get('sources_total', 0))" 2>/dev/null || echo "0")"
+    if [ "${_fetched:-0}" -eq "${_total:-0}" ] && [ "${_total:-0}" -gt 0 ]; then
+      RAW_SEED_STATUS="ok"
+    elif [ "${_fetched:-0}" -gt 0 ]; then
+      RAW_SEED_STATUS="partial"
+    else
+      RAW_SEED_STATUS="failed"
+    fi
+    log_info "Raw seeding result: ${_fetched}/${_total} sources fetched"
+  fi
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 10. publish_intro_post
+# ──────────────────────────────────────────────────────────────────────────────
+
+publish_intro_post() {
+  log_info "Step 10: Self-introduction post..."
+
+  local workspace
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+
+  # Duplicate guard: marker file
+  if [ -f "$workspace/.intro-post-published" ]; then
+    INTRO_POST_STATUS="already_published"
+    log_info "Intro post already published — skipping"
+    return 0
+  fi
+
+  if [ "$DRY_RUN" = "true" ]; then
+    INTRO_POST_STATUS="dry-run"
+    log_info "[DRY RUN] Would publish self-introduction post"
+    return 0
+  fi
+
+  # Must have credentials and identity
+  if ! has_tagclaw_credentials; then
+    INTRO_POST_STATUS="skipped"
+    log_info "No TagClaw credentials — deferring intro post"
+    return 0
+  fi
+
+  local publish_script="$AGENCY_DIR/scripts/publish-intro-post.sh"
+  if [ ! -f "$publish_script" ]; then
+    INTRO_POST_STATUS="failed"
+    log_warn "publish-intro-post.sh not found — skipping intro post"
+    return 0
+  fi
+
+  if bash "$publish_script" --workspace "$workspace" 2>&1; then
+    INTRO_POST_STATUS="published"
+    log_ok "Self-introduction post published"
+  else
+    local rc=$?
+    if [ "$rc" -eq 1 ]; then
+      INTRO_POST_STATUS="skipped"
+      log_info "Intro post prerequisites not met — deferred"
+    else
+      INTRO_POST_STATUS="failed"
+      log_warn "Failed to publish intro post (non-fatal)"
+    fi
+  fi
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 7b. wait_for_tagclaw_activation
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1399,6 +1502,7 @@ main() {
   install_runtime
   install_wiki
   install_autoresearch
+  seed_raw_docs
 
   # ── Gate: wait for TagClaw verification before registering crons / dashboard ──
   local TAGCLAW_ACTIVATED=false
@@ -1605,6 +1709,15 @@ print(json.dumps(payload))
 ' "$_guide_title" "$_guide_action" "$_guide_install_cmd" "$_guide_start_cmd" "$_guide_state_file" "$DASHBOARD_PUBLIC_CLOUDFLARED_INSTALLED")")
     fi
 
+    # Intro post deferred step: if intro post was not published during this run
+    # and TagClaw is active, emit a structured next-step so the agent can retry.
+    if [ "$INTRO_POST_STATUS" = "skipped" ] || [ "$INTRO_POST_STATUS" = "failed" ] || [ "$INTRO_POST_STATUS" = "not_attempted" ]; then
+      if [ "$TAGCLAW_STATUS" = "active" ] && [ "$CREDENTIALS_EXIST" = "true" ]; then
+        _emit_step_simple "publish_intro_post" \
+          "Publish self-introduction post: bash $AGENCY_DIR/scripts/publish-intro-post.sh --workspace $workspace"
+      fi
+    fi
+
     # ── Write .installed marker atomically ──────────────────────────────────
     # IMPORTANT: Write BEFORE self-checks so that cycle --self-check sees
     # the .agency-installed marker and does not false-negative on readiness.
@@ -1629,7 +1742,9 @@ d = {
     'tagclaw_onboard_status': '$TAGCLAW_ONBOARD_STATUS',
     'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
     'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
-    'schema': 'installed.v4'
+    'raw_seed_status': '$RAW_SEED_STATUS',
+    'intro_post_status': '$INTRO_POST_STATUS',
+    'schema': 'installed.v5'
 }
 print(json.dumps(d, indent=2))
 ")"
@@ -1758,6 +1873,9 @@ print(json.dumps(d, indent=2))
         fi
         echo ""
       fi
+
+      # ── Intro post: publish after bootstrap when fully operational ──────
+      publish_intro_post
     fi
 
     local _public_summary="${DASHBOARD_PUBLIC_STATUS}"
@@ -1786,7 +1904,7 @@ print(json.dumps(d, indent=2))
         _bootstrap_summary="failed"
       fi
     fi
-    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: ${_cron_summary}. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}. Bootstrap: ${_bootstrap_summary}."
+    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: ${_cron_summary}. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}. Bootstrap: ${_bootstrap_summary}. Raw seed: ${RAW_SEED_STATUS}. Intro post: ${INTRO_POST_STATUS}."
 
     # ── Update .installed marker with bootstrap results ───────────────────
     # The initial write (above) ran before self-checks so cycle scripts see
@@ -1818,7 +1936,9 @@ d = {
     'bookmarker_bootstrapped': $([ "$BOOKMARKER_BOOTSTRAPPED" = "true" ] && echo "True" || echo "False"),
     'trader_bootstrapped': $([ "$TRADER_BOOTSTRAPPED" = "true" ] && echo "True" || echo "False"),
     'bootstrap_status': '$_bootstrap_summary',
-    'schema': 'installed.v4'
+    'raw_seed_status': '$RAW_SEED_STATUS',
+    'intro_post_status': '$INTRO_POST_STATUS',
+    'schema': 'installed.v5'
 }
 print(json.dumps(d, indent=2))
 ")"
@@ -1908,6 +2028,8 @@ d = {
         'verification_tweet': [_tw_line1, _tw_line2] if _tw_active else [],
         'verification_tweet_text': (_tw_line1 + '\\n' + _tw_line2) if _tw_active else ''
     },
+    'raw_seed_status': '$RAW_SEED_STATUS',
+    'intro_post_status': '$INTRO_POST_STATUS',
     'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'version': '$AGENCY_VERSION'
 }
@@ -1999,6 +2121,8 @@ print(json.dumps(d, indent=2))
       else
         echo "| Cron jobs | manual (openclaw CLI not available) |"
       fi
+      echo "| Raw knowledge base | ${RAW_SEED_STATUS} |"
+      echo "| Self-introduction post | ${INTRO_POST_STATUS} |"
       echo ""
       echo "---"
       echo "_Generated by install.sh v${AGENCY_VERSION} (schema: install-next-steps.v2)_"
@@ -2154,6 +2278,23 @@ print(json.dumps(d, indent=2))
     fi
     echo "  ║    contract: $workspace/HEARTBEAT.md"
     echo "  ║"
+    echo "  ║  Raw knowledge base:"
+    case "$RAW_SEED_STATUS" in
+      ok)      echo "  ║    ✓ Seeded ($workspace/raw)" ;;
+      partial) echo "  ║    ⚠ Partially seeded (some sources unavailable)" ;;
+      failed)  echo "  ║    ✗ Seeding failed (non-fatal)" ;;
+      *)       echo "  ║    - Not attempted" ;;
+    esac
+    echo "  ║"
+    echo "  ║  Self-introduction post:"
+    case "$INTRO_POST_STATUS" in
+      published)         echo "  ║    ✓ Published on TagClaw" ;;
+      already_published) echo "  ║    ✓ Already published (skipped duplicate)" ;;
+      skipped)           echo "  ║    - Deferred (prerequisites not met)" ;;
+      failed)            echo "  ║    ⚠ Failed to publish (non-fatal)" ;;
+      *)                 echo "  ║    - Not attempted" ;;
+    esac
+    echo "  ║"
     echo "  ║  Docs:"
     echo "  ║    - HEARTBEAT.md                 — main heartbeat contract"
     echo "  ║    - agents/main.md              — orchestrator rules"
@@ -2229,6 +2370,8 @@ print(json.dumps(d, indent=2))
     echo "BOOKMARKER_BOOTSTRAPPED=\"${BOOKMARKER_BOOTSTRAPPED}\""
     echo "TRADER_BOOTSTRAPPED=\"${TRADER_BOOTSTRAPPED}\""
     echo "BOOTSTRAP_STATUS=\"${_bootstrap_summary}\""
+    echo "RAW_SEED_STATUS=\"${RAW_SEED_STATUS}\""
+    echo "INTRO_POST_STATUS=\"${INTRO_POST_STATUS}\""
     echo "INSTALL_SUMMARY=\"${INSTALL_SUMMARY}\""
     echo "### END INSTALL CONTRACT ###"
     echo ""
