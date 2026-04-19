@@ -48,6 +48,10 @@ CRON_REGISTRATION_MODE=""        # local-cli | deferred-tool | blocked
 CRON_INTENT_PATH=""              # path to .install-cron-jobs.json when deferred
 RAW_SEED_STATUS="not_attempted"  # ok | partial | failed | not_attempted
 INTRO_POST_STATUS="not_attempted" # published | published_but_marker_failed | already_published | skipped | failed | not_attempted
+INTRO_POST_TICK=""                # resolved tick value
+INTRO_POST_TICK_STATUS=""         # resolved | fallback | unresolved | not_attempted
+INTRO_POST_TICK_SOURCE=""         # explicit | raw_trending | raw_inference | validated_fallback
+INTRO_POST_TICK_CANDIDATES=""     # JSON array of top candidates (for diagnostics)
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 
@@ -1391,8 +1395,26 @@ publish_intro_post() {
     return 0
   fi
 
+  # ── Resolve tick before publishing ──────────────────────────────────────
+  local tick_resolver="$AGENCY_DIR/scripts/resolve-intro-post-tick.py"
+  local _tick_args=()
+  if [ -f "$tick_resolver" ]; then
+    local tick_json
+    tick_json="$(python3 "$tick_resolver" --workspace "$workspace" 2>/dev/null)" || true
+    if [ -n "$tick_json" ]; then
+      INTRO_POST_TICK="$(echo "$tick_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('resolved_tick',''))" 2>/dev/null)" || INTRO_POST_TICK=""
+      INTRO_POST_TICK_STATUS="$(echo "$tick_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)" || INTRO_POST_TICK_STATUS=""
+      INTRO_POST_TICK_SOURCE="$(echo "$tick_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('source',''))" 2>/dev/null)" || INTRO_POST_TICK_SOURCE=""
+      INTRO_POST_TICK_CANDIDATES="$(echo "$tick_json" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('candidates',[])))" 2>/dev/null)" || INTRO_POST_TICK_CANDIDATES="[]"
+      log_info "Tick resolved: ${INTRO_POST_TICK} (source: ${INTRO_POST_TICK_SOURCE}, status: ${INTRO_POST_TICK_STATUS})"
+    fi
+    if [ -n "$INTRO_POST_TICK" ]; then
+      _tick_args=("--tick" "$INTRO_POST_TICK")
+    fi
+  fi
+
   local publish_output
-  publish_output="$(bash "$publish_script" --workspace "$workspace" 2>&1)" || true
+  publish_output="$(bash "$publish_script" --workspace "$workspace" "${_tick_args[@]}" 2>&1)" || true
   local rc=$?
 
   # Parse the outcome from the script's stdout (machine-readable lines)
@@ -1809,7 +1831,10 @@ d = {
     'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
     'raw_seed_status': '$RAW_SEED_STATUS',
     'intro_post_status': '$INTRO_POST_STATUS',
-    'schema': 'installed.v5'
+    'intro_post_tick': '$INTRO_POST_TICK',
+    'intro_post_tick_status': '$INTRO_POST_TICK_STATUS',
+    'intro_post_tick_source': '$INTRO_POST_TICK_SOURCE',
+    'schema': 'installed.v6'
 }
 print(json.dumps(d, indent=2))
 ")"
@@ -2004,7 +2029,10 @@ d = {
     'bootstrap_status': '$_bootstrap_summary',
     'raw_seed_status': '$RAW_SEED_STATUS',
     'intro_post_status': '$INTRO_POST_STATUS',
-    'schema': 'installed.v5'
+    'intro_post_tick': '$INTRO_POST_TICK',
+    'intro_post_tick_status': '$INTRO_POST_TICK_STATUS',
+    'intro_post_tick_source': '$INTRO_POST_TICK_SOURCE',
+    'schema': 'installed.v6'
 }
 print(json.dumps(d, indent=2))
 ")"
@@ -2097,6 +2125,9 @@ d = {
     },
     'raw_seed_status': '$RAW_SEED_STATUS',
     'intro_post_status': '$INTRO_POST_STATUS',
+    'intro_post_tick': '$INTRO_POST_TICK',
+    'intro_post_tick_status': '$INTRO_POST_TICK_STATUS',
+    'intro_post_tick_source': '$INTRO_POST_TICK_SOURCE',
     'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'version': '$AGENCY_VERSION'
 }
@@ -2363,13 +2394,16 @@ print(json.dumps(d, indent=2))
     echo "  ║"
     echo "  ║  Self-introduction post:"
     case "$INTRO_POST_STATUS" in
-      published)                    echo "  ║    ✓ Published on TagClaw" ;;
-      published_but_marker_failed)  echo "  ║    ⚠ Published but marker write failed (duplicate guard not set)" ;;
+      published)                    echo "  ║    ✓ Published on TagClaw (tick: ${INTRO_POST_TICK:-?}, source: ${INTRO_POST_TICK_SOURCE:-?})" ;;
+      published_but_marker_failed)  echo "  ║    ⚠ Published but marker write failed (tick: ${INTRO_POST_TICK:-?})" ;;
       already_published)            echo "  ║    ✓ Already published (skipped duplicate)" ;;
       skipped)                      echo "  ║    - Deferred (prerequisites not met)" ;;
       failed)                       echo "  ║    ⚠ Failed to publish (non-fatal)" ;;
       *)                            echo "  ║    - Not attempted" ;;
     esac
+    if [ -n "$INTRO_POST_TICK" ]; then
+      echo "  ║    tick: ${INTRO_POST_TICK} (${INTRO_POST_TICK_STATUS:-?} via ${INTRO_POST_TICK_SOURCE:-?})"
+    fi
     echo "  ║"
     echo "  ║  Docs:"
     echo "  ║    - HEARTBEAT.md                 — main heartbeat contract"
@@ -2451,6 +2485,9 @@ print(json.dumps(d, indent=2))
     echo "BOOTSTRAP_STATUS=\"${_bootstrap_summary}\""
     echo "RAW_SEED_STATUS=\"${RAW_SEED_STATUS}\""
     echo "INTRO_POST_STATUS=\"${INTRO_POST_STATUS}\""
+    echo "INTRO_POST_TICK=\"${INTRO_POST_TICK}\""
+    echo "INTRO_POST_TICK_STATUS=\"${INTRO_POST_TICK_STATUS}\""
+    echo "INTRO_POST_TICK_SOURCE=\"${INTRO_POST_TICK_SOURCE}\""
     echo "INSTALL_SUMMARY=\"${INSTALL_SUMMARY}\""
     echo "### END INSTALL CONTRACT ###"
     echo ""
