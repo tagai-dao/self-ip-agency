@@ -2,6 +2,22 @@
 
 All notable changes to Self-IP Agency will be documented in this file.
 
+## [2.3.1] - 2026-04-19
+
+### Fixed
+- **Deferred cron finalization (P0)**: Cloud/clawdi installs no longer dead-end at `deferred` state. New `scripts/finalize-crons.sh` provides a concrete, machine-dispatchable completion path with scheduler reachability retries, structured JSON output, and automatic `.agency-installed` state promotion. Install artifacts now emit `cron_finalize_command` and a `finalize_crons` next-step with `auto_dispatchable: true`.
+- **Intro-post redirect protection (P0)**: `publish-intro-post.sh` now uses a `_NoRedirectHandler` (matching `adapters/tagclaw.py` PR #16 fix) to prevent urllib from silently following 301/302 redirects on POST, which would drop the request body and produce the misleading "Content cannot be empty" error. The trailing-slash URL was already correct but the redirect handler provides defense-in-depth.
+- **Better intro-post error diagnostics (P1)**: Error classification expanded to distinguish `redirect_body_loss`, `auth_failure`, `forbidden`, `rate_limited`, `server_error`, and `network_error`. When "Content cannot be empty" is detected, the diagnostic now explicitly identifies redirect body loss as the root cause.
+
+### Changed
+- Cron registration state `deferred` renamed to `pending_finalization` for clearer semantics — consumers that accepted `deferred` should also accept `pending_finalization`
+- Install summary now shows `pending-finalization` with the finalize command instead of vague `deferred`
+- Intent artifact (`.install-cron-jobs.json`) now includes `finalize_script` field pointing to the completion command
+- Standalone `publish-intro-post.sh` gating accepts both `deferred` and `pending_finalization` cron states
+
+### Added
+- `scripts/finalize-crons.sh` — standalone cron finalization script with retries, structured exit codes, and state updates
+
 ## [2.3.0] - 2026-04-19
 
 ### Changed

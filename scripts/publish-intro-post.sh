@@ -114,7 +114,7 @@ try:
     reasons = []
     # Cron: registered or deferred-tool are acceptable
     cron_status = d.get("cron_registration_status", "pending")
-    if cron_status not in ("registered", "deferred"):
+    if cron_status not in ("registered", "deferred", "pending_finalization"):
         reasons.append(f"cron_not_ready:{cron_status}")
     # Dashboard: must be running
     dash_status = d.get("dashboard_status", "unknown")
@@ -155,58 +155,157 @@ fi
 # ── Publish via TagClaw API ──────────────────────────────────────────────────
 log_info "Publishing self-introduction post as ${AGENT_USERNAME}..."
 
-HTTP_RESULT="$(python3 - <<'PY' "$API_KEY" "$INTRO_TEXT"
+INTRO_TICK="${INTRO_TICK:-IPShare}"
+
+HTTP_RESULT="$(python3 - <<'PY' "$API_KEY" "$INTRO_TEXT" "$INTRO_TICK"
 import json, sys, urllib.request, urllib.error
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Prevent urllib from silently following redirects on POST.
+
+    By default urllib converts POST -> GET on 301/302, which drops the
+    request body -- the root cause of the "Content cannot be empty" error.
+    Raising on redirect surfaces the real issue (wrong URL / missing slash)
+    instead of silently losing data.
+    """
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if req.get_method() in ("POST", "PUT", "PATCH"):
+            raise urllib.error.HTTPError(
+                newurl, code,
+                f"Redirect {code} on {req.get_method()} to {newurl} "
+                f"(would drop POST body — use trailing-slash URL)",
+                headers, fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_opener = urllib.request.build_opener(_NoRedirectHandler)
 
 api_key = sys.argv[1]
 text = sys.argv[2]
+tick = sys.argv[3]
 # Trailing slash prevents 301 redirect which drops POST body in urllib
 url = "https://bsc-api.tagai.fun/tagclaw/post/"
-body = json.dumps({"content": text}).encode("utf-8")
+# Canonical API contract: "text" + required "tick" (not "content")
+body = json.dumps({"text": text, "tick": tick}).encode("utf-8")
 req = urllib.request.Request(url, data=body, method="POST")
 req.add_header("Authorization", f"Bearer {api_key}")
 req.add_header("Content-Type", "application/json")
 req.add_header("Accept", "application/json")
 
 try:
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with _opener.open(req, timeout=15) as resp:
         result = json.loads(resp.read().decode("utf-8"))
         print(json.dumps({"ok": True, "result": result}))
 except urllib.error.HTTPError as e:
     raw = e.read().decode("utf-8", errors="replace")
-    print(json.dumps({"ok": False, "status": e.code, "error": raw}))
+    try:
+        err_detail = json.loads(raw)
+    except Exception:
+        err_detail = raw
+    # Classify the error for diagnostics
+    diag = "transport_error"
+    if e.code == 400:
+        diag = "api_contract_mismatch"
+    elif e.code == 422:
+        diag = "invalid_tick"
+    elif e.code in (301, 302, 307, 308):
+        diag = "redirect_body_loss"
+    elif e.code == 401:
+        diag = "auth_failure"
+    elif e.code == 403:
+        diag = "forbidden"
+    elif e.code == 429:
+        diag = "rate_limited"
+    elif 500 <= e.code < 600:
+        diag = "server_error"
+    # Surface redirect details clearly
+    err_msg = err_detail
+    if isinstance(err_detail, dict) and err_detail.get("error") == "Content cannot be empty":
+        diag = "redirect_body_loss"
+        err_msg = {
+            "original_error": err_detail,
+            "diagnosis": "POST body was likely lost due to a 301 redirect. "
+                         "Ensure the URL ends with a trailing slash.",
+        }
+    print(json.dumps({"ok": False, "status": e.code, "error": err_msg, "diagnostic": diag}))
 except Exception as e:
-    print(json.dumps({"ok": False, "status": 0, "error": str(e)}))
+    print(json.dumps({"ok": False, "status": 0, "error": str(e), "diagnostic": "network_error"}))
 PY
 )"
 
 POST_OK="$(echo "$HTTP_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ok', False))" 2>/dev/null || echo "False")"
 
-if [ "$POST_OK" = "True" ]; then
-  log_ok "Self-introduction post published successfully"
+POST_STATUS="failed"
+TWEET_ID=""
 
-  # Write marker file (atomic) to prevent duplicate posting
-  local_marker="$(python3 -c "
-import json
+if [ "$POST_OK" = "True" ]; then
+  POST_STATUS="published"
+  TWEET_ID="$(echo "$HTTP_RESULT" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r.get('result',{}).get('tweetId',''))" 2>/dev/null || echo "")"
+  log_ok "Self-introduction post published successfully (tweetId: ${TWEET_ID:-unknown})"
+fi
+
+# ── Write marker file (robust, atomic) ────────────────────────────────────
+# Even if the post succeeded, the marker write must not crash — otherwise
+# the installer/operator sees a generic failure and may re-post (duplicate risk).
+# We use a single python3 invocation with all data passed via env vars to
+# avoid nested $() subshells and shell quoting issues.
+if [ "$POST_STATUS" = "published" ]; then
+  MARKER_WRITE_OK="$(AGENT_USERNAME="$AGENT_USERNAME" INTRO_TEXT="$INTRO_TEXT" HTTP_RESULT="$HTTP_RESULT" MARKER_FILE="$MARKER_FILE" python3 - <<'PYMARKER'
+import json, os, tempfile
 from datetime import datetime, timezone
-d = {
-    'published_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-    'agent_username': '$AGENT_USERNAME',
-    'post_text': $(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$INTRO_TEXT"),
-    'api_response': $(echo "$HTTP_RESULT" | python3 -c "import sys,json; r=json.load(sys.stdin); print(json.dumps(r.get('result',{})))"),
-    'gating': {
-        'cron_ready': True,
-        'dashboard_ready': True,
-        'credentials_present': True,
-        'identity_resolved': True
+from pathlib import Path
+
+try:
+    http_result = json.loads(os.environ.get("HTTP_RESULT", "{}"))
+    api_response = http_result.get("result", {})
+    tweet_id = api_response.get("tweetId", "")
+
+    marker = {
+        "published_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "agent_username": os.environ.get("AGENT_USERNAME", ""),
+        "post_text": os.environ.get("INTRO_TEXT", ""),
+        "tick": os.environ.get("INTRO_TICK", "IPShare"),
+        "tweet_id": tweet_id,
+        "api_response": api_response,
+        "gating": {
+            "cron_ready": True,
+            "dashboard_ready": True,
+            "credentials_present": True,
+            "identity_resolved": True,
+        },
     }
-}
-print(json.dumps(d, indent=2))
-")"
-  atomic_write_json "$MARKER_FILE" "$local_marker"
-  log_ok "Wrote intro post marker: $MARKER_FILE"
-  exit 0
+
+    marker_path = Path(os.environ["MARKER_FILE"])
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=marker_path.parent, suffix=".tmp", delete=False) as f:
+        json.dump(marker, f, indent=2, ensure_ascii=False)
+        tmp = f.name
+    os.replace(tmp, str(marker_path))
+    print("ok")
+except Exception as e:
+    print(f"error:{e}")
+PYMARKER
+  )" || MARKER_WRITE_OK="error:subshell_failed"
+
+  if [[ "$MARKER_WRITE_OK" == "ok" ]]; then
+    log_ok "Wrote intro post marker: $MARKER_FILE"
+    exit 0
+  else
+    # Post succeeded but marker write failed — truthful status model (P0-A5)
+    log_warn "Intro post published but marker write failed: $MARKER_WRITE_OK"
+    log_warn "tweetId=$TWEET_ID — post is live but duplicate guard not set"
+    echo "outcome=published_but_marker_failed"
+    echo "tweet_id=${TWEET_ID}"
+    echo "diagnostic=marker_write_failed"
+    exit 0  # Do NOT exit 2 — the post itself succeeded
+  fi
 else
+  # Extract diagnostic from HTTP_RESULT if available
+  DIAG="$(echo "$HTTP_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('diagnostic','unknown'))" 2>/dev/null || echo "unknown")"
   log_warn "Failed to publish intro post: $HTTP_RESULT"
+  echo "outcome=failed"
+  echo "diagnostic=$DIAG"
   exit 2
 fi
