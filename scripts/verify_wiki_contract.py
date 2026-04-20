@@ -62,6 +62,30 @@ CONTRACT: list[dict[str, Any]] = [
         'freshness_hours': None,
         'schema_checks': ['concepts', 'ticks', 'schema'],
     },
+    {
+        'name': 'x-tweets-raw',
+        'description': 'Raw X tweets bootstrap from guided sync',
+        'source': [],
+        'derived': 'raw/x-tweets/',
+        'freshness_hours': None,
+        'schema_checks': [],
+    },
+    {
+        'name': 'x-tweets-meta',
+        'description': 'Raw X tweets bootstrap metadata',
+        'source': ['raw/x-tweets/'],
+        'derived': 'raw/x-tweets/_meta.json',
+        'freshness_hours': None,
+        'schema_checks': ['schema', 'status', 'discovery_method'],
+    },
+    {
+        'name': 'x-tweets-wiki',
+        'description': 'Wiki synthesis pages compiled from raw X tweets',
+        'source': ['raw/x-tweets/tweets/'],
+        'derived': 'wiki/synthesis/tweets/',
+        'freshness_hours': None,
+        'schema_checks': [],
+    },
 ]
 
 
@@ -210,6 +234,56 @@ def check_registry_consistency() -> list[dict[str, Any]]:
     return results
 
 
+def check_x_bootstrap_health() -> list[dict[str, Any]]:
+    """Separate bootstrap health (handle + manifest) from feed parse health."""
+    results: list[dict[str, Any]] = []
+    identity_path = WORKSPACE / 'config' / 'agency-identity.json'
+    handle = None
+    if identity_path.is_file():
+        try:
+            data = json.loads(identity_path.read_text(encoding='utf-8'))
+            handle = (data.get('owner') or {}).get('twitter_handle')
+        except Exception:
+            pass
+    results.append({
+        'check': 'x-bootstrap:owner-twitter-handle',
+        'ok': bool(handle),
+        'detail': f'handle={handle}' if handle else 'missing_owner_twitter_handle — X sync cannot proceed',
+    })
+
+    manifest_path = WORKSPACE / 'runtime' / 'shared' / 'guided-x-urls.json'
+    results.append({
+        'check': 'x-bootstrap:guided-manifest',
+        'ok': manifest_path.is_file(),
+        'detail': 'manifest exists' if manifest_path.is_file() else 'guided manifest not yet generated — run sync_guided_x_tweets.py or complete browser guidance',
+    })
+
+    meta_path = WORKSPACE / 'raw' / 'x-tweets' / '_meta.json'
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding='utf-8'))
+            status = meta.get('status', 'unknown')
+            method = meta.get('discovery_method', 'unknown')
+            results.append({
+                'check': 'x-bootstrap:sync-status',
+                'ok': status in ('ok', 'partial'),
+                'detail': f'status={status} method={method}',
+            })
+        except Exception as e:
+            results.append({
+                'check': 'x-bootstrap:sync-status',
+                'ok': False,
+                'detail': f'invalid _meta.json: {e}',
+            })
+    else:
+        results.append({
+            'check': 'x-bootstrap:sync-status',
+            'ok': False,
+            'detail': 'no sync run yet — raw/x-tweets/_meta.json missing',
+        })
+    return results
+
+
 def run_all_checks() -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     now = datetime.now(timezone.utc)
@@ -254,6 +328,7 @@ def run_all_checks() -> dict[str, Any]:
 
     results.extend(check_guided_x_sync_state())
     results.extend(check_registry_consistency())
+    results.extend(check_x_bootstrap_health())
 
     pass_count = sum(1 for r in results if r['ok'])
     fail_count = sum(1 for r in results if not r['ok'])

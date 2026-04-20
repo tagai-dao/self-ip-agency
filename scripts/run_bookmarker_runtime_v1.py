@@ -409,7 +409,7 @@ def run_curation_cycle() -> dict:
         feed_parse_status = "transport_failed"
     elif isinstance(feed_raw, dict):
         # Try known keys in priority order
-        for _key in ("posts", "items", "data"):
+        for _key in ("tweets", "posts", "items", "data"):
             _val = feed_raw.get(_key)
             if isinstance(_val, list):
                 feed = _val

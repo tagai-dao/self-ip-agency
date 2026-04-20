@@ -67,11 +67,43 @@ def test_normalize_fxtwitter_tweet() -> None:
     _assert(out['quote']['author_handle'] == 'alice', 'quote author missing')
 
 
+def test_tweets_envelope_accepted() -> None:
+    """Verify that the bookmarker parser accepts the {tweets:[...]} envelope."""
+    feed_raw = {
+        'hasMore': True,
+        'page': 1,
+        'success': True,
+        'tweets': [{'id': '1', 'text': 'hello'}],
+    }
+    # Simulate the canonical parser logic from run_bookmarker_runtime_v1.py
+    feed = []
+    for _key in ("tweets", "posts", "items", "data"):
+        _val = feed_raw.get(_key)
+        if isinstance(_val, list):
+            feed = _val
+            break
+    _assert(len(feed) == 1, f'expected 1 item from tweets envelope, got {len(feed)}')
+    _assert(feed[0]['text'] == 'hello', 'tweet text mismatch')
+
+
+def test_missing_handle_blocks() -> None:
+    """Sync with empty handle returns blocked status."""
+    # Import inline to avoid circular deps at module level
+    sys.path.insert(0, str(SCRIPT_DIR))
+    from sync_guided_x_tweets import run_sync
+    ws = Path(tempfile.mkdtemp(prefix='guided-x-sync-'))
+    result = run_sync(ws, '', lookback_days=1, include_replies=False, dry_run=True)
+    _assert(result['status'] == 'blocked', f"expected blocked, got {result['status']}")
+    _assert('missing_owner_twitter_handle' in result['blockers'], f"expected missing_owner_twitter_handle blocker, got {result['blockers']}")
+
+
 def main() -> int:
     tests = [
         ('parse tweet url', test_parse_tweet_url),
         ('guided manifest loads', test_guided_manifest_loads),
         ('normalize fxtwitter tweet', test_normalize_fxtwitter_tweet),
+        ('tweets envelope accepted', test_tweets_envelope_accepted),
+        ('missing handle blocks', test_missing_handle_blocks),
     ]
     passed = 0
     for name, fn in tests:

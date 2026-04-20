@@ -92,7 +92,7 @@ def run_sync(workspace: Path, handle: str, lookback_days: int, include_replies: 
 
     if not handle:
         result['status'] = 'blocked'
-        result['blockers'].append('owner.twitter_handle missing')
+        result['blockers'].append('missing_owner_twitter_handle')
     elif not discovered:
         result['status'] = 'deferred'
         result['blockers'].append('no tweet URLs discovered; complete guided browser step or provide guided manifest')
