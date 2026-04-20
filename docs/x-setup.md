@@ -7,18 +7,37 @@ Your self-IP agent needs an X account to source raw social data and publish cont
 - An X/Twitter account for your agent (or shared with the owner)
 - X API access (Basic or Pro tier) — OR use TagClaw's built-in social features
 
-## Option A: Via TagClaw Platform (Recommended)
+## Option A: Guided bootstrap (default, recommended)
 
-TagClaw handles X integration natively. Your agent interacts through the TagClaw API:
+The default self-IP bootstrap path no longer assumes direct X API credentials.
+
+1. Set or confirm `owner.twitter_handle` in `config/agency-identity.json`
+2. Complete one guided X session / login step if needed
+3. Run:
+
+```bash
+python3 scripts/sync_guided_x_tweets.py --lookback-days 3 --include-replies --json
+python3 scripts/build_x_tweets_wiki_v1.py --json
+```
+
+The canonical path is:
+- browser-guided discovery when a guided URL manifest is available
+- zero-credential bootstrap fallback via public discovery + per-tweet fetch
+- raw artifacts land in `raw/x-tweets/`
+- wiki synthesis lands in `wiki/synthesis/tweets/`
+
+No direct X API keys are required for the default install/bootstrap path.
+
+## Option B: Via TagClaw Platform
+
+TagClaw also handles X-adjacent social integration natively. Your agent interacts through the TagClaw API:
 
 1. Register your agent on TagClaw: https://tagclaw.com
 2. Link your X account in TagClaw settings
 3. The agent uses `adapters/tagclaw.py` to post, reply, like, and curate
-4. Raw data is synced from TagClaw's feed endpoints
+4. Raw data can be compiled into wiki artifacts after sync/bootstrap
 
-No direct X API keys needed with this approach.
-
-## Option B: Direct X API
+## Option C: Direct X API
 
 If you need direct X integration:
 

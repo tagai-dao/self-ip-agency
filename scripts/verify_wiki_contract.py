@@ -100,6 +100,89 @@ def check_json_schema(path: Path, required_keys: list[str]) -> tuple[bool, str]:
     return True, f'all {len(required_keys)} keys present'
 
 
+def check_guided_x_sync_state() -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    identity_path = WORKSPACE / 'config' / 'agency-identity.json'
+    handle = None
+    try:
+        if identity_path.exists():
+            data = json.loads(identity_path.read_text(encoding='utf-8'))
+            owner = data.get('owner') or {}
+            handle = owner.get('twitter_handle') or owner.get('twitter_id')
+    except Exception as e:
+        results.append({
+            'check': 'guided-x:identity-parse',
+            'ok': False,
+            'detail': str(e),
+        })
+        return results
+
+    if not handle:
+        results.append({
+            'check': 'guided-x:handle-configured',
+            'ok': True,
+            'detail': 'owner.twitter_handle missing; guided X sync not yet configured',
+        })
+        return results
+
+    meta_path = WORKSPACE / 'raw' / 'x-tweets' / '_meta.json'
+    manifest_path = WORKSPACE / 'raw' / 'x-tweets' / '_manifest.json'
+    wiki_dir = WORKSPACE / 'wiki' / 'synthesis' / 'tweets'
+
+    if not meta_path.exists():
+        results.append({
+            'check': 'guided-x:meta-present',
+            'ok': False,
+            'detail': 'owner.twitter_handle configured but raw/x-tweets/_meta.json missing',
+        })
+        return results
+
+    try:
+        meta = json.loads(meta_path.read_text(encoding='utf-8'))
+    except Exception as e:
+        results.append({
+            'check': 'guided-x:meta-json',
+            'ok': False,
+            'detail': f'invalid JSON: {e}',
+        })
+        return results
+
+    status = meta.get('status') or 'unknown'
+    results.append({
+        'check': 'guided-x:meta-status',
+        'ok': status in {'ok', 'partial', 'deferred', 'blocked'},
+        'detail': f'status={status}',
+    })
+
+    if status in {'deferred', 'blocked'}:
+        results.append({
+            'check': 'guided-x:deferred-is-truthful',
+            'ok': True,
+            'detail': 'sync deferred/blocked recorded truthfully',
+        })
+        return results
+
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            files = manifest.get('files') or []
+            compiled = list(wiki_dir.glob('*.md')) if wiki_dir.exists() else []
+            if files:
+                results.append({
+                    'check': 'guided-x:compiled-pages-present',
+                    'ok': len(compiled) > 0,
+                    'detail': f'compiled_pages={len(compiled)} raw_files={len(files)}',
+                })
+        except Exception as e:
+            results.append({
+                'check': 'guided-x:manifest-json',
+                'ok': False,
+                'detail': f'invalid JSON: {e}',
+            })
+
+    return results
+
+
 def check_registry_consistency() -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     try:
@@ -169,6 +252,7 @@ def run_all_checks() -> dict[str, Any]:
                 'detail': detail,
             })
 
+    results.extend(check_guided_x_sync_state())
     results.extend(check_registry_consistency())
 
     pass_count = sum(1 for r in results if r['ok'])

@@ -95,6 +95,17 @@ bash scripts/tagclaw-onboard.sh full \
   --workspace ~/.openclaw/workspace
 ```
 
+### Guided X bootstrap (default raw/wiki path)
+
+After install, the default zero-credential X bootstrap path is:
+
+```bash
+python3 scripts/sync_guided_x_tweets.py --lookback-days 3 --include-replies --json
+python3 scripts/build_x_tweets_wiki_v1.py --json
+```
+
+This path is designed to avoid requiring X API keys or manual cookie/token copying for the default bootstrap flow.
+
 What it does:
 1. installs TagClaw skill files into `~/.openclaw/workspace/skills/tagclaw`
 2. clones `tagclaw-wallet` into `~/.openclaw/workspace/skills/tagclaw-wallet`

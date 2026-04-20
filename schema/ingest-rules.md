@@ -15,7 +15,7 @@ Raw sources are classified by directory:
 
 | Directory | Type | Ingest behavior |
 |-----------|------|-----------------|
-| `raw/x-tweets/` | owned tweet | Extract themes, link to concepts, update synthesis |
+| `raw/x-tweets/` | owned tweet / guided bootstrap | Extract themes, link to concepts, update synthesis; replies may enter via guided bootstrap |
 | `raw/x-bookmarks/` | curated external | Extract creator, themes, file to BookmarkCuration |
 | `raw/x-likes/` | signal | Lightweight — update topic heat only |
 | `raw/x-interactions/` | engagement | Update CommunityEcosystem, people nodes |
