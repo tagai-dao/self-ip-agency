@@ -2210,7 +2210,7 @@ d = {
     'cron_finalize_command': 'bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' and '$CRONS_REGISTERED' != 'true' else '',
     'cron_registration_mode': '$CRON_REGISTRATION_MODE',
     'cron_intent_path': '$CRON_INTENT_PATH',
-    'x_tweets_seed_status': '$X_SYNC_STATUS',
+    'x_tweets_seed_status': '$X_TWEETS_SEED_STATUS',
     'next_steps': _arrays['next_steps'],
     'next_steps_text': _arrays['next_steps_text'],
     'tagclaw': {
