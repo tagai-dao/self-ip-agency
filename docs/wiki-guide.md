@@ -91,7 +91,16 @@ Add your concepts to `config/wiki_topic_registry.json`:
 }
 ```
 
-### 4. Run Health Checks
+### 4. Bootstrap guided X raw sources
+
+```bash
+python3 scripts/sync_guided_x_tweets.py --lookback-days 3 --include-replies --json
+python3 scripts/build_x_tweets_wiki_v1.py --json
+```
+
+This writes owner X raw sources to `raw/x-tweets/` and compiles first-pass synthesis pages into `wiki/synthesis/tweets/`.
+
+### 5. Run Health Checks
 
 ```bash
 python3 scripts/wiki_lint.py
