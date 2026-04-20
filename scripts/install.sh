@@ -47,6 +47,10 @@ CRONS_REGISTERED=false
 CRON_REGISTRATION_MODE=""        # local-cli | deferred-tool | blocked
 CRON_INTENT_PATH=""              # path to .install-cron-jobs.json when deferred
 RAW_SEED_STATUS="not_attempted"  # ok | partial | failed | not_attempted
+X_TWEETS_SEED_STATUS="not_attempted"   # ok | partial | deferred | blocked | failed | not_attempted | dry-run
+X_TWEETS_COMPILE_STATUS="not_attempted" # ok | deferred | failed | not_attempted | dry-run
+X_TWEETS_COMPILED_COUNT="0"
+X_TWEETS_BLOCKERS="[]"
 INTRO_POST_STATUS="not_attempted" # published | published_but_marker_failed | already_published | skipped | failed | not_attempted
 INTRO_POST_TICK=""                # resolved tick value
 INTRO_POST_TICK_STATUS=""         # resolved | fallback | unresolved | not_attempted
@@ -1322,66 +1326,87 @@ seed_raw_docs() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9b. bootstrap_guided_x_sync — bootstrap owner X tweets into raw/x-tweets
+# 10. sync_guided_x_tweets
 # ──────────────────────────────────────────────────────────────────────────────
 
-X_SYNC_STATUS="pending"
-
-bootstrap_guided_x_sync() {
-  log_info "Step 9b: Bootstrapping guided X tweet sync..."
+sync_guided_x_tweets() {
+  log_info "Step 10: Bootstrapping guided X tweets into raw/..."
 
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
 
   if [ "$DRY_RUN" = "true" ]; then
-    log_info "[DRY RUN] Would bootstrap guided X sync"
-    X_SYNC_STATUS="dry-run"
+    log_info "[DRY RUN] Would sync guided X tweets into: $workspace/raw/x-tweets"
+    X_TWEETS_SEED_STATUS="dry-run"
     return 0
   fi
 
   local sync_script="$AGENCY_DIR/scripts/sync_guided_x_tweets.py"
   if [ ! -f "$sync_script" ]; then
-    log_warn "sync_guided_x_tweets.py not found — skipping X sync bootstrap"
-    X_SYNC_STATUS="script-missing"
+    log_warn "sync_guided_x_tweets.py not found — skipping guided X bootstrap"
+    X_TWEETS_SEED_STATUS="failed"
+    X_TWEETS_BLOCKERS='["sync_script_missing"]'
     return 0
   fi
 
-  local sync_output
-  sync_output="$(python3 "$sync_script" --workspace "$workspace" --include-replies --json 2>&1)" || true
-  local sync_status
-  sync_status="$(printf '%s' "$sync_output" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','error'))" 2>/dev/null || echo "error")"
-
-  X_SYNC_STATUS="$sync_status"
-
-  case "$sync_status" in
-    ok)
-      log_ok "Guided X sync complete"
-      # Also compile raw→wiki
-      local wiki_script="$AGENCY_DIR/scripts/build_x_tweets_wiki_v1.py"
-      if [ -f "$wiki_script" ]; then
-        python3 "$wiki_script" --workspace "$workspace" 2>&1 || true
-      fi
-      ;;
-    partial)
-      log_warn "Guided X sync partially completed — some tweets failed to fetch"
-      ;;
-    deferred)
-      log_info "Guided X sync deferred — guided browser step or manifest not yet available"
-      ;;
-    blocked)
-      local blockers
-      blockers="$(printf '%s' "$sync_output" | python3 -c "import json,sys; print(', '.join(json.load(sys.stdin).get('blockers',[])))" 2>/dev/null || echo "unknown")"
-      log_warn "Guided X sync blocked: $blockers"
-      ;;
-    *)
-      log_warn "Guided X sync returned unexpected status: $sync_status"
-      ;;
-  esac
+  local _tmp_json
+  _tmp_json="$(mktemp)"
+  if python3 "$sync_script" --workspace "$workspace" --lookback-days 3 --include-replies --json >"$_tmp_json" 2>/dev/null; then
+    X_TWEETS_SEED_STATUS="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('status','failed'))" 2>/dev/null || echo "failed")"
+    X_TWEETS_BLOCKERS="$(python3 -c "import json; d=json.load(open('$_tmp_json')); import json as _j; print(_j.dumps(d.get('blockers', []), ensure_ascii=False))" 2>/dev/null || echo '[]')"
+    local _written _skipped _found
+    _written="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('items_written', 0))" 2>/dev/null || echo "0")"
+    _skipped="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('items_skipped_existing', 0))" 2>/dev/null || echo "0")"
+    _found="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('tweet_urls_found', 0))" 2>/dev/null || echo "0")"
+    log_info "Guided X sync result: status=${X_TWEETS_SEED_STATUS}, found=${_found}, written=${_written}, skipped=${_skipped}"
+  else
+    X_TWEETS_SEED_STATUS="failed"
+    X_TWEETS_BLOCKERS='["sync_command_failed"]'
+    log_warn "Guided X sync command failed"
+  fi
+  rm -f "$_tmp_json" 2>/dev/null || true
   return 0
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 10. publish_intro_post
+# 11. compile_x_tweets_wiki
+# ──────────────────────────────────────────────────────────────────────────────
+
+compile_x_tweets_wiki() {
+  log_info "Step 11: Compiling guided X tweets into wiki synthesis..."
+
+  local workspace
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    log_info "[DRY RUN] Would compile raw/x-tweets into wiki/synthesis/tweets"
+    X_TWEETS_COMPILE_STATUS="dry-run"
+    return 0
+  fi
+
+  local compile_script="$AGENCY_DIR/scripts/build_x_tweets_wiki_v1.py"
+  if [ ! -f "$compile_script" ]; then
+    log_warn "build_x_tweets_wiki_v1.py not found — skipping X tweet wiki compile"
+    X_TWEETS_COMPILE_STATUS="failed"
+    return 0
+  fi
+
+  local _tmp_json
+  _tmp_json="$(mktemp)"
+  if python3 "$compile_script" --workspace "$workspace" --json >"$_tmp_json" 2>/dev/null; then
+    X_TWEETS_COMPILE_STATUS="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('status','failed'))" 2>/dev/null || echo "failed")"
+    X_TWEETS_COMPILED_COUNT="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('compiled_items', 0))" 2>/dev/null || echo "0")"
+    log_info "Guided X wiki compile result: status=${X_TWEETS_COMPILE_STATUS}, compiled=${X_TWEETS_COMPILED_COUNT}"
+  else
+    X_TWEETS_COMPILE_STATUS="failed"
+    log_warn "Guided X wiki compile command failed"
+  fi
+  rm -f "$_tmp_json" 2>/dev/null || true
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 12. publish_intro_post
 # ──────────────────────────────────────────────────────────────────────────────
 
 publish_intro_post() {
@@ -1640,6 +1665,8 @@ main() {
     TAGCLAW_ACTIVATED=true
     register_crons || true
     install_dashboard
+    sync_guided_x_tweets
+    compile_x_tweets_wiki
   else
     log_warn "Skipping cron registration and dashboard setup — TagClaw not yet activated"
     log_info "After activation, re-run: bash scripts/install.sh"
@@ -1777,13 +1804,9 @@ print(json.dumps({
         "Verify $workspace/skills/tagclaw/.env contains TAGCLAW_API_KEY and $workspace/skills/tagclaw-wallet/.env contains the wallet bootstrap fields"
     fi
 
-    # ── X sync bootstrap status ──────────────────────────────────────────────
-    if [ "$X_SYNC_STATUS" = "blocked" ]; then
-      _emit_step_simple "x_sync_blocked" \
-        "X sync blocked: set owner.twitter_handle in config/agency-identity.json then re-run install"
-    elif [ "$X_SYNC_STATUS" = "deferred" ]; then
-      _emit_step_simple "x_sync_deferred" \
-        "X sync deferred: provide a guided browser manifest at runtime/shared/guided-x-urls.json or run: python3 scripts/sync_guided_x_tweets.py --handle YOUR_HANDLE --include-replies"
+    if [ "$X_TWEETS_SEED_STATUS" = "deferred" ] || [ "$X_TWEETS_SEED_STATUS" = "blocked" ] || [ "$X_TWEETS_SEED_STATUS" = "failed" ]; then
+      _emit_step_simple "guided_x_sync" \
+        "Complete guided X sync bootstrap: provide owner.twitter_handle, optionally create runtime/shared/guided-x-urls.json from a browser-guided session, then run: python3 $AGENCY_DIR/scripts/sync_guided_x_tweets.py --workspace $workspace --lookback-days 3 --include-replies --json"
     fi
 
     if [ "$CRONS_REGISTERED" != "true" ] && [ "$TAGCLAW_STATUS" = "active" ]; then
@@ -1899,7 +1922,10 @@ d = {
     'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
     'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
     'raw_seed_status': '$RAW_SEED_STATUS',
-    'x_tweets_seed_status': '$X_SYNC_STATUS',
+    'x_tweets_seed_status': '$X_TWEETS_SEED_STATUS',
+    'x_tweets_compile_status': '$X_TWEETS_COMPILE_STATUS',
+    'x_tweets_compiled_count': int('$X_TWEETS_COMPILED_COUNT' or '0'),
+    'x_tweets_blockers': json.loads('''$X_TWEETS_BLOCKERS'''),
     'intro_post_status': '$INTRO_POST_STATUS',
     'intro_post_tick': '$INTRO_POST_TICK',
     'intro_post_tick_status': '$INTRO_POST_TICK_STATUS',
@@ -2064,7 +2090,7 @@ print(json.dumps(d, indent=2))
         _bootstrap_summary="failed"
       fi
     fi
-    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: ${_cron_summary}. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}. Bootstrap: ${_bootstrap_summary}. Raw seed: ${RAW_SEED_STATUS}. X sync: ${X_SYNC_STATUS}. Intro post: ${INTRO_POST_STATUS}."
+    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: ${_cron_summary}. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}. Bootstrap: ${_bootstrap_summary}. Raw seed: ${RAW_SEED_STATUS}. Guided X sync: ${X_TWEETS_SEED_STATUS}. Guided X wiki compile: ${X_TWEETS_COMPILE_STATUS} (${X_TWEETS_COMPILED_COUNT}). Intro post: ${INTRO_POST_STATUS}."
 
     # ── Update .installed marker with bootstrap results ───────────────────
     # The initial write (above) ran before self-checks so cycle scripts see
@@ -2098,7 +2124,10 @@ d = {
     'trader_bootstrapped': $([ "$TRADER_BOOTSTRAPPED" = "true" ] && echo "True" || echo "False"),
     'bootstrap_status': '$_bootstrap_summary',
     'raw_seed_status': '$RAW_SEED_STATUS',
-    'x_tweets_seed_status': '$X_SYNC_STATUS',
+    'x_tweets_seed_status': '$X_TWEETS_SEED_STATUS',
+    'x_tweets_compile_status': '$X_TWEETS_COMPILE_STATUS',
+    'x_tweets_compiled_count': int('$X_TWEETS_COMPILED_COUNT' or '0'),
+    'x_tweets_blockers': json.loads('''$X_TWEETS_BLOCKERS'''),
     'intro_post_status': '$INTRO_POST_STATUS',
     'intro_post_tick': '$INTRO_POST_TICK',
     'intro_post_tick_status': '$INTRO_POST_TICK_STATUS',
@@ -2196,6 +2225,10 @@ d = {
         'verification_tweet_text': (_tw_line1 + '\\n' + _tw_line2) if _tw_active else ''
     },
     'raw_seed_status': '$RAW_SEED_STATUS',
+    'x_tweets_seed_status': '$X_TWEETS_SEED_STATUS',
+    'x_tweets_compile_status': '$X_TWEETS_COMPILE_STATUS',
+    'x_tweets_compiled_count': int('$X_TWEETS_COMPILED_COUNT' or '0'),
+    'x_tweets_blockers': json.loads('''$X_TWEETS_BLOCKERS'''),
     'intro_post_status': '$INTRO_POST_STATUS',
     'intro_post_tick': '$INTRO_POST_TICK',
     'intro_post_tick_status': '$INTRO_POST_TICK_STATUS',
@@ -2292,6 +2325,8 @@ print(json.dumps(d, indent=2))
         echo "| Cron jobs | manual (openclaw CLI not available) |"
       fi
       echo "| Raw knowledge base | ${RAW_SEED_STATUS} |"
+      echo "| Guided X sync | ${X_TWEETS_SEED_STATUS} |"
+      echo "| Guided X wiki compile | ${X_TWEETS_COMPILE_STATUS} (${X_TWEETS_COMPILED_COUNT}) |"
       echo "| Self-introduction post | ${INTRO_POST_STATUS} |"
       echo ""
       echo "---"
@@ -2464,6 +2499,17 @@ print(json.dumps(d, indent=2))
       *)       echo "  ║    - Not attempted" ;;
     esac
     echo "  ║"
+    echo "  ║  Guided X sync:"
+    case "$X_TWEETS_SEED_STATUS" in
+      ok)       echo "  ║    ✓ Synced owner X raw artifacts" ;;
+      partial)  echo "  ║    ⚠ Partial sync (some tweet fetches failed)" ;;
+      deferred) echo "  ║    - Deferred (guided session or URLs not yet available)" ;;
+      blocked)  echo "  ║    ✗ Blocked (handle missing or no discoverable URLs)" ;;
+      failed)   echo "  ║    ✗ Sync failed (non-fatal)" ;;
+      *)        echo "  ║    - Not attempted" ;;
+    esac
+    echo "  ║  Guided X wiki compile: ${X_TWEETS_COMPILE_STATUS} (${X_TWEETS_COMPILED_COUNT})"
+    echo "  ║"
     echo "  ║  Self-introduction post:"
     case "$INTRO_POST_STATUS" in
       published)                    echo "  ║    ✓ Published on TagClaw (tick: ${INTRO_POST_TICK:-?}, source: ${INTRO_POST_TICK_SOURCE:-?})" ;;
@@ -2556,6 +2602,10 @@ print(json.dumps(d, indent=2))
     echo "TRADER_BOOTSTRAPPED=\"${TRADER_BOOTSTRAPPED}\""
     echo "BOOTSTRAP_STATUS=\"${_bootstrap_summary}\""
     echo "RAW_SEED_STATUS=\"${RAW_SEED_STATUS}\""
+    echo "X_TWEETS_SEED_STATUS=\"${X_TWEETS_SEED_STATUS}\""
+    echo "X_TWEETS_COMPILE_STATUS=\"${X_TWEETS_COMPILE_STATUS}\""
+    echo "X_TWEETS_COMPILED_COUNT=\"${X_TWEETS_COMPILED_COUNT}\""
+    echo "X_TWEETS_BLOCKERS=\"${X_TWEETS_BLOCKERS}\""
     echo "INTRO_POST_STATUS=\"${INTRO_POST_STATUS}\""
     echo "INTRO_POST_TICK=\"${INTRO_POST_TICK}\""
     echo "INTRO_POST_TICK_STATUS=\"${INTRO_POST_TICK_STATUS}\""
