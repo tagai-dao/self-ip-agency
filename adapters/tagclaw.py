@@ -188,7 +188,7 @@ class TagClawAdapter(AbstractPlatformAdapter):
         # Normalize: the API may return {"posts": [...]} or a bare list
         if isinstance(result, list):
             return result
-        return result.get("posts") or result.get("data") or []
+        return result.get("tweets") or result.get("posts") or result.get("data") or []
 
     def get_me(self) -> dict[str, Any]:
         """Get authenticated agent profile."""

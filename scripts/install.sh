@@ -1322,6 +1322,65 @@ seed_raw_docs() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 9b. bootstrap_guided_x_sync — bootstrap owner X tweets into raw/x-tweets
+# ──────────────────────────────────────────────────────────────────────────────
+
+X_SYNC_STATUS="pending"
+
+bootstrap_guided_x_sync() {
+  log_info "Step 9b: Bootstrapping guided X tweet sync..."
+
+  local workspace
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    log_info "[DRY RUN] Would bootstrap guided X sync"
+    X_SYNC_STATUS="dry-run"
+    return 0
+  fi
+
+  local sync_script="$AGENCY_DIR/scripts/sync_guided_x_tweets.py"
+  if [ ! -f "$sync_script" ]; then
+    log_warn "sync_guided_x_tweets.py not found — skipping X sync bootstrap"
+    X_SYNC_STATUS="script-missing"
+    return 0
+  fi
+
+  local sync_output
+  sync_output="$(python3 "$sync_script" --workspace "$workspace" --include-replies --json 2>&1)" || true
+  local sync_status
+  sync_status="$(printf '%s' "$sync_output" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','error'))" 2>/dev/null || echo "error")"
+
+  X_SYNC_STATUS="$sync_status"
+
+  case "$sync_status" in
+    ok)
+      log_ok "Guided X sync complete"
+      # Also compile raw→wiki
+      local wiki_script="$AGENCY_DIR/scripts/build_x_tweets_wiki_v1.py"
+      if [ -f "$wiki_script" ]; then
+        python3 "$wiki_script" --workspace "$workspace" 2>&1 || true
+      fi
+      ;;
+    partial)
+      log_warn "Guided X sync partially completed — some tweets failed to fetch"
+      ;;
+    deferred)
+      log_info "Guided X sync deferred — guided browser step or manifest not yet available"
+      ;;
+    blocked)
+      local blockers
+      blockers="$(printf '%s' "$sync_output" | python3 -c "import json,sys; print(', '.join(json.load(sys.stdin).get('blockers',[])))" 2>/dev/null || echo "unknown")"
+      log_warn "Guided X sync blocked: $blockers"
+      ;;
+    *)
+      log_warn "Guided X sync returned unexpected status: $sync_status"
+      ;;
+  esac
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 10. publish_intro_post
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1573,6 +1632,7 @@ main() {
   install_wiki
   install_autoresearch
   seed_raw_docs
+  bootstrap_guided_x_sync
 
   # ── Gate: wait for TagClaw verification before registering crons / dashboard ──
   local TAGCLAW_ACTIVATED=false
@@ -1717,6 +1777,15 @@ print(json.dumps({
         "Verify $workspace/skills/tagclaw/.env contains TAGCLAW_API_KEY and $workspace/skills/tagclaw-wallet/.env contains the wallet bootstrap fields"
     fi
 
+    # ── X sync bootstrap status ──────────────────────────────────────────────
+    if [ "$X_SYNC_STATUS" = "blocked" ]; then
+      _emit_step_simple "x_sync_blocked" \
+        "X sync blocked: set owner.twitter_handle in config/agency-identity.json then re-run install"
+    elif [ "$X_SYNC_STATUS" = "deferred" ]; then
+      _emit_step_simple "x_sync_deferred" \
+        "X sync deferred: provide a guided browser manifest at runtime/shared/guided-x-urls.json or run: python3 scripts/sync_guided_x_tweets.py --handle YOUR_HANDLE --include-replies"
+    fi
+
     if [ "$CRONS_REGISTERED" != "true" ] && [ "$TAGCLAW_STATUS" = "active" ]; then
       if [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
         local _finalize_cmd="bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace"
@@ -1830,11 +1899,12 @@ d = {
     'identity_resolved': $([ "$IDENTITY_RESOLVED" = "true" ] && echo "True" || echo "False"),
     'credentials_exist': $([ "$CREDENTIALS_EXIST" = "true" ] && echo "True" || echo "False"),
     'raw_seed_status': '$RAW_SEED_STATUS',
+    'x_tweets_seed_status': '$X_SYNC_STATUS',
     'intro_post_status': '$INTRO_POST_STATUS',
     'intro_post_tick': '$INTRO_POST_TICK',
     'intro_post_tick_status': '$INTRO_POST_TICK_STATUS',
     'intro_post_tick_source': '$INTRO_POST_TICK_SOURCE',
-    'schema': 'installed.v6'
+    'schema': 'installed.v7'
 }
 print(json.dumps(d, indent=2))
 ")"
@@ -1994,7 +2064,7 @@ print(json.dumps(d, indent=2))
         _bootstrap_summary="failed"
       fi
     fi
-    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: ${_cron_summary}. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}. Bootstrap: ${_bootstrap_summary}. Raw seed: ${RAW_SEED_STATUS}. Intro post: ${INTRO_POST_STATUS}."
+    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: ${_cron_summary}. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}. Bootstrap: ${_bootstrap_summary}. Raw seed: ${RAW_SEED_STATUS}. X sync: ${X_SYNC_STATUS}. Intro post: ${INTRO_POST_STATUS}."
 
     # ── Update .installed marker with bootstrap results ───────────────────
     # The initial write (above) ran before self-checks so cycle scripts see
@@ -2028,11 +2098,12 @@ d = {
     'trader_bootstrapped': $([ "$TRADER_BOOTSTRAPPED" = "true" ] && echo "True" || echo "False"),
     'bootstrap_status': '$_bootstrap_summary',
     'raw_seed_status': '$RAW_SEED_STATUS',
+    'x_tweets_seed_status': '$X_SYNC_STATUS',
     'intro_post_status': '$INTRO_POST_STATUS',
     'intro_post_tick': '$INTRO_POST_TICK',
     'intro_post_tick_status': '$INTRO_POST_TICK_STATUS',
     'intro_post_tick_source': '$INTRO_POST_TICK_SOURCE',
-    'schema': 'installed.v6'
+    'schema': 'installed.v7'
 }
 print(json.dumps(d, indent=2))
 ")"
@@ -2110,6 +2181,7 @@ d = {
     'cron_finalize_command': 'bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' and '$CRONS_REGISTERED' != 'true' else '',
     'cron_registration_mode': '$CRON_REGISTRATION_MODE',
     'cron_intent_path': '$CRON_INTENT_PATH',
+    'x_tweets_seed_status': '$X_SYNC_STATUS',
     'next_steps': _arrays['next_steps'],
     'next_steps_text': _arrays['next_steps_text'],
     'tagclaw': {
