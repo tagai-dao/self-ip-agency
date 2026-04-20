@@ -47,7 +47,7 @@ FAILED=0
 # Write provenance metadata for a raw directory
 write_meta() {
   local dir="$1" source_url="$2" description="$3" status="${4:-ok}" page_count="${5:-1}"
-  python3 - <<PY "$dir" "$source_url" "$description" "$status" "$page_count"
+  python3 - <<'PY' "$dir" "$source_url" "$description" "$status" "$page_count"
 import json, os, sys, tempfile
 from datetime import datetime, timezone
 d = {
@@ -111,7 +111,7 @@ fetch_gitbook_family() {
   done
 
   # Write manifest
-  python3 - <<PY "$output_dir" "$base_url" "$description" "$page_count" "$(printf '%s\n' "${manifest_entries[@]}")"
+  python3 - <<'PY' "$output_dir" "$base_url" "$description" "$page_count" "$(printf '%s\n' "${manifest_entries[@]}")"
 import json, os, sys, tempfile
 from datetime import datetime, timezone
 out_dir, base_url, desc, count = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
@@ -202,7 +202,7 @@ for spec_path in "/v3/api-docs" "/swagger.json" "/openapi.json"; do
 done
 
 # Write API docs manifest
-python3 - <<PY "$TAGAI_API_DIR" "$_api_page_count" "$(printf '%s\n' "${_api_manifest[@]}")"
+python3 - <<'PY' "$TAGAI_API_DIR" "$_api_page_count" "$(printf '%s\n' "${_api_manifest[@]}")"
 import json, os, sys, tempfile
 from datetime import datetime, timezone
 out_dir, count = sys.argv[1], int(sys.argv[2])
@@ -468,7 +468,7 @@ if [ "$FAILED" -gt 0 ]; then
 fi
 
 # Write a top-level summary with corpus overview
-python3 - <<PY "$RAW_DIR" "$FETCHED" "$FAILED" "$TOTAL"
+python3 - <<'PY' "$RAW_DIR" "$FETCHED" "$FAILED" "$TOTAL"
 import json, os, sys, tempfile
 from datetime import datetime, timezone
 

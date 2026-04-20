@@ -1657,7 +1657,7 @@ main() {
   install_wiki
   install_autoresearch
   seed_raw_docs
-  bootstrap_guided_x_sync
+  sync_guided_x_tweets
 
   # ── Gate: wait for TagClaw verification before registering crons / dashboard ──
   local TAGCLAW_ACTIVATED=false
