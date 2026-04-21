@@ -246,14 +246,33 @@ identity = {
 # we have no real identity yet. Exit non-zero so callers can distinguish
 # "refreshed with real data" from "nothing to refresh".
 sufficient = bool(username) and bool(eth_addr)
+insufficient_reason = ""
+
+# Twitter-binding gate: once TagClaw reports status=active, the account is
+# verified and /me must carry ownerTwitterHandle. If the handle is still
+# empty after /me enrichment, we refuse to advertise identity as "resolved"
+# — doing so masks the binding gap and lets downstream X sync silently
+# degrade (see docs/design/x-sync-twitter-binding-fix.md §4.3 + §7 #1).
+#
+# Callers (install.sh, heartbeat self-heal) will see exit 2 and retry on
+# their own cadence; this does NOT self-loop within the script. The gate
+# only kicks in when TAGCLAW_STATUS is literally "active", so pre-
+# verification installs (pending_verification, unknown, empty) still pass
+# with handle==null — same as pre-patch behavior.
+tagclaw_status_raw = (skill_env.get("TAGCLAW_STATUS") or "").strip().lower()
+if sufficient and tagclaw_status_raw == "active" and not owner_twitter_handle:
+    sufficient = False
+    insufficient_reason = "active_but_twitter_handle_null"
 
 out = {
     "sufficient": sufficient,
+    "insufficient_reason": insufficient_reason,
     "identity": identity,
     "sources": {
         "skill_env_exists": (workspace / "skills/tagclaw/.env").exists(),
         "wallet_env_exists": (workspace / "skills/tagclaw-wallet/.env").exists(),
         "api_verified": bool(me),
+        "tagclaw_status": tagclaw_status_raw,
     },
 }
 print(json.dumps(out))
@@ -261,11 +280,17 @@ PY
 )"
 
 sufficient="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('sufficient'))" "$identity_payload")"
+insufficient_reason="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('insufficient_reason') or '')" "$identity_payload")"
 identity_json="$(python3 -c "import json,sys; print(json.dumps(json.loads(sys.argv[1])['identity'], indent=2))" "$identity_payload")"
 
 if [ "$sufficient" != "True" ]; then
-  log_warn "Identity sources incomplete — skill .env has no TAGCLAW_AGENT_USERNAME or TAGCLAW_ETH_ADDR yet"
-  log_warn "Identity JSON will not be overwritten until onboarding produces real values"
+  if [ "$insufficient_reason" = "active_but_twitter_handle_null" ]; then
+    log_warn "Identity gate: TagClaw status=active but /me has not yet returned ownerTwitterHandle"
+    log_warn "Not overwriting identity JSON with null twitter_handle; caller should retry (heartbeat self-heal or post-verify-finalize)"
+  else
+    log_warn "Identity sources incomplete — skill .env has no TAGCLAW_AGENT_USERNAME or TAGCLAW_ETH_ADDR yet"
+    log_warn "Identity JSON will not be overwritten until onboarding produces real values"
+  fi
   exit 2
 fi
 
