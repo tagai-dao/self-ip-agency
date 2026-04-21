@@ -111,15 +111,24 @@ ensure_skill_dir() {
 # should not roll back register/poll state that was already written to .env.
 # Exit codes from the helper:
 #   0 — refreshed identity JSON with real values
-#   2 — sources not yet sufficient (missing username or eth_addr); expected
-#       during early onboarding steps before register returns an address.
+#   2 — sources not yet sufficient (missing username or eth_addr, or TagClaw
+#       status=active but /me has not yet returned ownerTwitterHandle); expected
+#       during early onboarding steps before register returns an address, and
+#       transiently between verification tweet post and backend binding.
+#
+# --verify-api is passed unconditionally so the helper hits `/me` whenever a
+# TAGCLAW_API_KEY exists in skill .env. Prior to this change the onboarding
+# side never invoked /me, which meant owner.twitter_id/handle could never be
+# backfilled from the TagClaw side post-verification — callers had to rerun
+# install.sh to get /me enrichment. See:
+#   docs/design/x-sync-twitter-binding-fix.md §4.3, §5 step 1.
 refresh_identity() {
   if [ ! -f "$REFRESH_IDENTITY_SCRIPT" ]; then
     log_warn "refresh-agency-identity.sh not found at $REFRESH_IDENTITY_SCRIPT — skipping identity refresh"
     return 0
   fi
   local rc=0
-  bash "$REFRESH_IDENTITY_SCRIPT" --workspace "$WORKSPACE" || rc=$?
+  bash "$REFRESH_IDENTITY_SCRIPT" --workspace "$WORKSPACE" --verify-api || rc=$?
   case "$rc" in
     0) log_ok "Refreshed agency-identity.json from onboarded state" ;;
     2) log_info "Identity sources not yet sufficient for refresh (onboarding still in progress)" ;;
