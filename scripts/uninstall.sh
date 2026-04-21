@@ -449,16 +449,16 @@ remove_crons() {
         ;;
     esac
 
-    cron_ids="$(CRON_JOB_NAME="$j" CRON_SCRIPT_NAME="$script_name" EXPECTED_PATH="$expected_path" python3 - <<'PY' <<< "$cron_list"
+    cron_ids="$(CRON_LIST="$cron_list" CRON_JOB_NAME="$j" CRON_SCRIPT_NAME="$script_name" EXPECTED_PATH="$expected_path" python3 - <<'PY'
 import os
 import re
-import sys
 
 job = os.environ.get("CRON_JOB_NAME", "").strip()
 script = os.environ.get("CRON_SCRIPT_NAME", "").strip()
 expected_path = os.environ.get("EXPECTED_PATH", "").strip()
-text = sys.stdin.read()
+text = os.environ.get("CRON_LIST", "")
 uuid_re = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+line_re = re.compile(r"^\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s+(\S+)\b", re.I)
 
 lines = text.splitlines()
 blocks = []
@@ -498,6 +498,20 @@ if not matches:
             for cron_id in uuid_re.findall(line):
                 if cron_id not in matches:
                     matches.append(cron_id)
+
+if not matches:
+    name_matches = []
+    for line in lines:
+        m = line_re.match(line)
+        if not m:
+            continue
+        cron_id, name = m.group(1), m.group(2)
+        if name == job and cron_id not in name_matches:
+            name_matches.append(cron_id)
+    # `openclaw cron list` may omit message/script paths. Fall back to exact
+    # unique name matches only; ambiguous duplicates are intentionally skipped.
+    if len(name_matches) == 1:
+        matches = name_matches
 
 print("\n".join(matches))
 PY
