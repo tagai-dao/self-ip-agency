@@ -153,10 +153,18 @@ def fetch_agent_state(api_key: str) -> tuple[dict | None, str | None]:
     resp = tagclaw_get("/me", api_key)
     if resp is None:
         return None, "could not fetch /me"
-    if isinstance(resp, dict):
-        agent = resp.get("agent") if isinstance(resp.get("agent"), dict) else resp
-        return agent, None
-    return None, "unexpected /me shape"
+    if not isinstance(resp, dict):
+        return None, "unexpected /me shape"
+    # Envelope normalization — same precedence as adapters/tagclaw.extract_me_agent.
+    # Covers {agent:{}}, {data:{agent:{}}}, {data:{...flat}}, and legacy flat.
+    if isinstance(resp.get("agent"), dict):
+        return resp["agent"], None
+    data = resp.get("data")
+    if isinstance(data, dict):
+        if isinstance(data.get("agent"), dict):
+            return data["agent"], None
+        return data, None
+    return resp, None
 
 
 def fetch_agent_rewards(api_key: str) -> tuple[list[dict], str | None]:

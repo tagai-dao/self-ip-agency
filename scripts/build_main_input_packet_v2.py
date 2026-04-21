@@ -141,7 +141,21 @@ def fetch_live_op_vp() -> tuple[float | None, float | None]:
         if proc.returncode != 0:
             return None, None
         data = json.loads(proc.stdout.strip())
-        agent = data.get('agent') or data
+        # /me envelope can be {agent: {...}}, {data: {agent: {...}}},
+        # {data: {...flat}}, or a bare flat dict. Probe all in priority order
+        # — same precedence as adapters/tagclaw.extract_me_agent.
+        agent = None
+        if isinstance(data, dict):
+            if isinstance(data.get('agent'), dict):
+                agent = data['agent']
+            elif isinstance(data.get('data'), dict) and isinstance(data['data'].get('agent'), dict):
+                agent = data['data']['agent']
+            elif isinstance(data.get('data'), dict):
+                agent = data['data']
+            else:
+                agent = data
+        if not isinstance(agent, dict):
+            return None, None
         op = agent.get('op')
         vp = agent.get('vp')
         return (float(op) if op is not None else None), (float(vp) if vp is not None else None)

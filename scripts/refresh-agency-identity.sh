@@ -167,13 +167,27 @@ def maybe_fetch_me(api_key: str) -> dict:
         if result.returncode != 0 or not result.stdout.strip():
             return {}
         body = json.loads(result.stdout)
-        if isinstance(body, dict) and isinstance(body.get("data"), dict):
-            return body["data"]
-        if isinstance(body, dict):
-            return body
     except Exception:
         return {}
-    return {}
+    # Normalize /me response shape. The server has shipped four variants over
+    # time; callers must all unwrap to the inner agent dict, otherwise fields
+    # like ownerTwitterHandle go silently missing:
+    #   - {"success": true, "agent": {...}}            (current, 2026-04)
+    #   - {"success": true, "data": {"agent": {...}}}  (older nested wrapper)
+    #   - {"success": true, "data": {...flat...}}      (earlier flat-wrapped)
+    #   - {...flat...}                                  (legacy bare)
+    if not isinstance(body, dict):
+        return {}
+    agent = body.get("agent")
+    if isinstance(agent, dict):
+        return agent
+    data = body.get("data")
+    if isinstance(data, dict):
+        nested = data.get("agent")
+        if isinstance(nested, dict):
+            return nested
+        return data
+    return body
 
 
 skill_env = parse_dotenv(workspace / "skills/tagclaw/.env")

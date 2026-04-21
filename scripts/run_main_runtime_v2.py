@@ -320,9 +320,22 @@ def load_wiki_platform_context() -> dict:
         result['top_communities'] = [c.get('name') for c in comm_list[:5] if c.get('name')]
 
     # Me — vp/op reference
+    # The cached snapshot may carry any of the server's /me envelope shapes
+    # (top-level agent, data.agent, flat data, or legacy bare dict). Probe
+    # all of them rather than hard-coding one — this is the same normalization
+    # rule used by adapters/tagclaw.extract_me_agent.
     me_data = _read_platform('me.json')
     if me_data:
-        agent = (me_data.get('data') or {}).get('agent') or {}
+        agent: dict = {}
+        for candidate in (
+            me_data.get('agent'),
+            (me_data.get('data') or {}).get('agent'),
+            me_data.get('data'),
+            me_data,
+        ):
+            if isinstance(candidate, dict) and ('vp' in candidate or 'op' in candidate):
+                agent = candidate
+                break
         vp_val = agent.get('vp')
         op_val = agent.get('op')
         if vp_val is not None:

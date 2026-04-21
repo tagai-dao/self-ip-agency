@@ -51,6 +51,33 @@ BASE_URL = "https://bsc-api.tagai.fun/tagclaw"
 DEFAULT_IDENTITY_PATH = Path(__file__).parent.parent / "config" / "agency-identity.json"
 
 
+def extract_me_agent(body: Any) -> dict[str, Any]:
+    """Normalize a ``/me`` response into the inner agent dict.
+
+    The TagClaw server has shipped three shapes over time:
+      - ``{"success": true, "agent": {...}}``        — current (2026-04)
+      - ``{"success": true, "data": {"agent": {...}}}`` — older nested wrapper
+      - ``{"success": true, "data": {...flat fields...}}`` — earlier shape
+      - ``{...flat fields...}``                        — legacy bare dict
+
+    Callers used to branch ad-hoc, which is how ``ownerTwitterHandle`` went
+    missing on the latest shape. Centralize the unwrap so every reader sees
+    the same agent dict without re-implementing the precedence.
+    """
+    if not isinstance(body, dict):
+        return {}
+    agent = body.get("agent")
+    if isinstance(agent, dict):
+        return agent
+    data = body.get("data")
+    if isinstance(data, dict):
+        nested = data.get("agent")
+        if isinstance(nested, dict):
+            return nested
+        return data
+    return body
+
+
 class TagClawAdapter(AbstractPlatformAdapter):
     """
     TagClaw API adapter.
@@ -191,7 +218,16 @@ class TagClawAdapter(AbstractPlatformAdapter):
         return result.get("tweets") or result.get("posts") or result.get("data") or []
 
     def get_me(self) -> dict[str, Any]:
-        """Get authenticated agent profile."""
+        """Get authenticated agent profile.
+
+        Returns the **agent dict** directly, regardless of which envelope the
+        server uses. See ``extract_me_agent`` for the precedence rules.
+        """
+        return extract_me_agent(self._request("GET", "/me"))
+
+    def get_me_raw(self) -> dict[str, Any]:
+        """Get the raw ``/me`` response untouched (for callers that need
+        success flags or sibling fields next to ``agent``)."""
         return self._request("GET", "/me")
 
     def get_trending_ticks(self, limit: int = 10) -> list[dict[str, Any]]:
