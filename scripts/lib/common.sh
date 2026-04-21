@@ -258,3 +258,59 @@ require_curl() {
     return 1
   fi
 }
+
+# ── OpenClaw scheduler reachability probe ─────────────────────────────────────
+# Probes whether the OpenClaw scheduler is reachable, correctly distinguishing:
+#   - Scheduler reachable (exit 0) — even if zero jobs are registered
+#   - Scheduler unreachable (exit 1) — service down, gateway not started
+#   - CLI broken (exit 2) — binary exists but crashes on invocation
+#
+# Strategy: `openclaw cron list` returning empty output (exit 0) is healthy.
+#           Some CLI versions return non-zero for an empty job table, so we
+#           fall back to `openclaw health --json` which is a pure connectivity
+#           check that does not depend on scheduler state.
+#
+# Usage: probe_scheduler_reachable [log_prefix]
+# Sets: _PROBE_RESULT ("reachable" | "unreachable" | "cli_broken")
+
+probe_scheduler_reachable() {
+  local prefix="${1:-}"
+
+  # Gate: CLI must exist
+  if ! command -v openclaw >/dev/null 2>&1; then
+    _PROBE_RESULT="cli_broken"
+    return 2
+  fi
+
+  # Gate: CLI must actually execute
+  if ! openclaw --version >/dev/null 2>&1; then
+    _PROBE_RESULT="cli_broken"
+    return 2
+  fi
+
+  # Probe 1: `cron list` — if exit 0, scheduler is reachable (even if output is empty)
+  local cron_list_out cron_list_rc
+  cron_list_out="$(openclaw cron list 2>&1)" && cron_list_rc=0 || cron_list_rc=$?
+
+  if [ "$cron_list_rc" -eq 0 ]; then
+    _PROBE_RESULT="reachable"
+    return 0
+  fi
+
+  # Probe 2: `health --json` — pure connectivity check, independent of job count.
+  # This catches the case where `cron list` returns non-zero for an empty table
+  # but the scheduler service itself is running fine.
+  if openclaw health --json >/dev/null 2>&1; then
+    _PROBE_RESULT="reachable"
+    return 0
+  fi
+
+  # Probe 3: `cron status` — some CLI versions support a status subcommand
+  if openclaw cron status >/dev/null 2>&1; then
+    _PROBE_RESULT="reachable"
+    return 0
+  fi
+
+  _PROBE_RESULT="unreachable"
+  return 1
+}

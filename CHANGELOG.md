@@ -2,6 +2,13 @@
 
 All notable changes to Self-IP Agency will be documented in this file.
 
+## [2.5.1] - 2026-04-21
+
+### Fixed
+- **Cron registration reachability probe**: `openclaw cron list` was the sole probe for scheduler reachability across `install.sh`, `finalize-crons.sh`, and deferred finalization. A healthy scheduler with zero registered jobs could return non-zero from `cron list`, causing the installer to misclassify it as `scheduler_unreachable`. Now uses a multi-signal probe (`cron list` + `health --json` + `cron status` fallbacks) via a shared `probe_scheduler_reachable` function in `lib/common.sh`.
+- **Inconsistent probe logic**: `_detect_cron_registration_mode`, `_attempt_deferred_cron_finalization`, and `finalize-crons.sh` all lacked the `health --json` fallback that `register_crons` had. All four sites now use the same shared probe.
+- **Opaque error reporting**: Scheduler probe failures now surface the specific `_PROBE_RESULT` (`unreachable` vs `cli_broken`) in log messages and JSON output, making diagnosis easier for operators.
+
 ## [2.5.0] - 2026-04-19
 
 ### Added
