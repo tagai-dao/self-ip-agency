@@ -57,6 +57,41 @@ def load_identity_handle(workspace: Path) -> str | None:
     return str(handle).strip() if handle else None
 
 
+def load_self_heal_state(workspace: Path) -> dict[str, Any]:
+    """Read runtime/shared/identity-sync.json if present.
+
+    Used to distinguish "handle missing but heartbeat self-heal is actively
+    retrying /me" (→ deferred) from "handle missing and no self-heal in
+    flight" (→ blocked, operator intervention needed). See
+    docs/design/x-sync-twitter-binding-fix.md §4.4 + §4.5.
+    """
+    path = workspace / 'runtime' / 'shared' / 'identity-sync.json'
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def is_self_heal_active(state: dict[str, Any]) -> bool:
+    """Truthy when heartbeat self-heal is expected to (re)resolve the binding.
+
+    Heuristic: state file exists AND owner binding is not yet verified AND
+    self-heal is not explicitly disabled. A stale file with verified=true
+    means we should NOT keep deferring.
+    """
+    if not state:
+        return False
+    if state.get('disabled') is True:
+        return False
+    if state.get('verified') is True:
+        return False
+    # Any recent attempt (or unattempted-but-present state) means heartbeat
+    # is the repair vehicle; sync should defer rather than hard-block.
+    return True
+
+
 def ensure_dirs(workspace: Path) -> Path:
     raw_dir = workspace / RAW_DIR_RELPATH
     (raw_dir / 'tweets').mkdir(parents=True, exist_ok=True)
@@ -91,8 +126,26 @@ def run_sync(workspace: Path, handle: str, lookback_days: int, include_replies: 
     }
 
     if not handle:
-        result['status'] = 'blocked'
-        result['blockers'].append('missing_owner_twitter_handle')
+        # Distinguish two shapes of "no handle":
+        #   - deferred: heartbeat self-heal is running (identity-sync.json
+        #     present + verified=false + not disabled) → first-cycle "failure"
+        #     is benign; cron retry will succeed once /me returns the binding.
+        #   - blocked: no self-heal state at all → really missing, operator
+        #     should either declare --owner-twitter-handle on install or run
+        #     post-verify-finalize.
+        self_heal_state = load_self_heal_state(workspace)
+        if is_self_heal_active(self_heal_state):
+            result['status'] = 'deferred'
+            result['deferrals'] = ['awaiting_owner_binding_autoheal']
+            # Record state context so dashboards / next-steps can render it truthfully.
+            result['self_heal'] = {
+                'active': True,
+                'last_attempt_at': self_heal_state.get('last_attempt_at'),
+                'attempts': self_heal_state.get('attempts', 0),
+            }
+        else:
+            result['status'] = 'blocked'
+            result['blockers'].append('missing_owner_twitter_handle')
     elif not discovered:
         result['status'] = 'deferred'
         result['blockers'].append('no tweet URLs discovered; complete guided browser step or provide guided manifest')

@@ -213,6 +213,62 @@ def _load_agent_identity() -> dict[str, Any]:
     return {"username": None, "profile_url": None, "source": "unresolved"}
 
 
+def _load_owner_binding_status() -> dict[str, Any]:
+    """Compact owner-binding status for the dashboard.
+
+    Reads two files:
+      - ``config/agency-identity.json`` — owner.twitter_handle / twitter_id /
+        verified / binding_source / last_verified_at
+      - ``runtime/shared/identity-sync.json`` — heartbeat self-heal state
+        (last_attempt_at, last_success_at, attempts, last_error, disabled)
+
+    Returns a dict with:
+      status:          verified | declared | unresolved | unknown
+      twitter_handle:  str | None
+      twitter_id:      str | None
+      source:          str | None  (binding_source from identity JSON)
+      verified:        bool
+      last_verified_at:str | None
+      self_heal:       dict   (schema identity.sync.v1; may be empty)
+
+    Cheap to call on every /api/status hit; both files are small and cached
+    by the OS. See docs/design/x-sync-twitter-binding-fix.md §4.5/§4.4.
+    """
+    identity = _load(WORKSPACE / "config" / "agency-identity.json")
+    owner: dict[str, Any] = {}
+    if isinstance(identity, dict):
+        owner = identity.get("owner") or {}
+
+    handle = owner.get("twitter_handle")
+    twitter_id = owner.get("twitter_id")
+    verified = bool(owner.get("verified"))
+    source = owner.get("binding_source")
+    last_verified_at = owner.get("last_verified_at")
+
+    if verified and handle:
+        status = "verified"
+    elif handle:
+        status = "declared"
+    elif isinstance(identity, dict):
+        status = "unresolved"
+    else:
+        status = "unknown"
+
+    sync_state = _load(WORKSPACE / "runtime" / "shared" / "identity-sync.json")
+    if not isinstance(sync_state, dict):
+        sync_state = {}
+
+    return {
+        "status": status,
+        "twitter_handle": handle,
+        "twitter_id": twitter_id,
+        "source": source,
+        "verified": verified,
+        "last_verified_at": last_verified_at,
+        "self_heal": sync_state,
+    }
+
+
 def _mtime_iso(path: Path) -> str | None:
     """Return file mtime as ISO string, or None if missing."""
     try:
@@ -1645,9 +1701,16 @@ def api_status():
         last_cycle_id=strategy_exp.get("last_cycle_id"),
     )
 
+    # Owner binding surface: read directly from the workspace identity JSON +
+    # identity-sync.json so the dashboard tells the truth about whether heartbeat
+    # self-heal has confirmed the TagClaw /me binding. See docs/design/
+    # x-sync-twitter-binding-fix.md §4.5 for the status value contract.
+    owner_binding = _load_owner_binding_status()
+
     return JSONResponse({
         "fetched_at": now_utc,
         "agent_identity": agent_identity,
+        "owner_binding": owner_binding,
         "is_bootstrap": _is_bootstrap,
         "runtime_status": runtime_status,
         "health": health,

@@ -39,6 +39,16 @@ TAGCLAW_ONBOARD_POLL=false
 SKIP_TAGCLAW_ONBOARD=false
 TAGCLAW_ONBOARD_STATUS="not_requested"
 
+# ── Owner twitter binding inputs (PR-B: cloud-headless non-interactive first) ──
+# Priority: --owner-twitter-handle > OWNER_TWITTER_HANDLE env > config/owner.local.json
+# (TTY prompt is the weakest fallback, gated on [ -t 0 ] && ! FORCE_NON_INTERACTIVE)
+# Any non-empty source lands in skill .env as TAGCLAW_EXPECTED_TWITTER_HANDLE,
+# which refresh-agency-identity.sh picks up as binding_source=operator.declared.
+OWNER_TWITTER_HANDLE_ARG=""
+OWNER_TWITTER_ID_ARG=""
+OWNER_TWITTER_HANDLE_SOURCE=""   # flag | env | file | tty | none
+# See docs/design/x-sync-twitter-binding-fix.md §4.2 for the full fallback chain.
+
 # ── Install state tracking (for machine-readable output contract) ─────────────
 TAGCLAW_JOINED=false
 CREDENTIALS_EXIST=false
@@ -57,6 +67,11 @@ INTRO_POST_TICK_STATUS=""         # resolved | fallback | unresolved | not_attem
 INTRO_POST_TICK_SOURCE=""         # explicit | raw_trending | raw_inference | validated_fallback
 INTRO_POST_TICK_CANDIDATES=""     # JSON array of top candidates (for diagnostics)
 
+# ── Owner binding state (PR-B: populated after install, used for next-steps/UX) ──
+OWNER_BINDING_STATUS="unknown"       # verified | declared | unresolved | unknown
+OWNER_BINDING_REASON=""              # awaiting_tagclaw_me_or_post_verify | verified_via_me | declared_pending_verify | empty
+OWNER_BINDING_SELF_HEAL="heartbeat"  # heartbeat | disabled
+
 # ── Parse args ────────────────────────────────────────────────────────────────
 
 while [ "$#" -gt 0 ]; do
@@ -68,6 +83,10 @@ while [ "$#" -gt 0 ]; do
     --tagclaw-description) TAGCLAW_ONBOARD_DESCRIPTION="${2:-}"; shift 2 ;;
     --tagclaw-poll) TAGCLAW_ONBOARD_POLL=true; shift ;;
     --skip-tagclaw-onboarding) SKIP_TAGCLAW_ONBOARD=true; shift ;;
+    --owner-twitter-handle=*) OWNER_TWITTER_HANDLE_ARG="${1#--owner-twitter-handle=}"; shift ;;
+    --owner-twitter-handle) OWNER_TWITTER_HANDLE_ARG="${2:-}"; shift 2 ;;
+    --owner-twitter-id=*) OWNER_TWITTER_ID_ARG="${1#--owner-twitter-id=}"; shift ;;
+    --owner-twitter-id) OWNER_TWITTER_ID_ARG="${2:-}"; shift 2 ;;
     *) log_warn "Unknown argument: $1"; shift ;;
   esac
 done
@@ -87,6 +106,163 @@ if [ -f "$INSTALLED_FILE" ]; then
     log_info "Upgrading from $installed_ver to $AGENCY_VERSION"
   fi
 fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 0.5 collect_owner_twitter_binding — resolve owner twitter handle from the
+#     non-interactive priority chain and persist to skill .env as
+#     TAGCLAW_EXPECTED_TWITTER_HANDLE (operator-declared fallback).
+#
+#     Priority (see docs/design/x-sync-twitter-binding-fix.md §4.2):
+#       1. --owner-twitter-handle flag (OWNER_TWITTER_HANDLE_ARG)
+#       2. OWNER_TWITTER_HANDLE env var
+#       3. config/owner.local.json (gitignored, IaC-friendly)
+#       4. TTY prompt (only if [ -t 0 ] && [ -z "$FORCE_NON_INTERACTIVE" ])
+#
+#     This only writes the *expected* handle. The actual verified binding comes
+#     from TagClaw /me via refresh-agency-identity.sh --verify-api (triggered
+#     by tagclaw-onboard.sh and by the heartbeat self-heal in PR-B).
+# ──────────────────────────────────────────────────────────────────────────────
+
+_sanitize_twitter_handle() {
+  python3 - <<'PY' "$1"
+import re, sys
+raw = sys.argv[1].strip().lstrip("@")
+# Strip URL prefixes if operator pasted a profile link.
+for prefix in ("https://x.com/", "https://twitter.com/", "http://x.com/", "http://twitter.com/", "x.com/", "twitter.com/"):
+    if raw.lower().startswith(prefix.lower()):
+        raw = raw[len(prefix):]
+        break
+# Twitter handle: 1-15 chars, alphanumeric + underscore.
+if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", raw):
+    print("")
+else:
+    print(raw)
+PY
+}
+
+_sanitize_twitter_id() {
+  python3 - <<'PY' "$1"
+import re, sys
+raw = sys.argv[1].strip()
+# Twitter user IDs are numeric; permit 1-25 digits defensively.
+if not re.fullmatch(r"[0-9]{1,25}", raw):
+    print("")
+else:
+    print(raw)
+PY
+}
+
+collect_owner_twitter_binding() {
+  local workspace
+  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+  local skill_env="$workspace/skills/tagclaw/.env"
+  mkdir -p "$workspace/skills/tagclaw" 2>/dev/null || true
+
+  local raw_handle="" raw_id="" source=""
+
+  # 1. flag
+  if [ -n "$OWNER_TWITTER_HANDLE_ARG" ]; then
+    raw_handle="$OWNER_TWITTER_HANDLE_ARG"
+    source="flag"
+  fi
+  if [ -n "$OWNER_TWITTER_ID_ARG" ]; then
+    raw_id="$OWNER_TWITTER_ID_ARG"
+  fi
+
+  # 2. env
+  if [ -z "$raw_handle" ] && [ -n "${OWNER_TWITTER_HANDLE:-}" ]; then
+    raw_handle="$OWNER_TWITTER_HANDLE"
+    source="env"
+  fi
+  if [ -z "$raw_id" ] && [ -n "${OWNER_TWITTER_ID:-}" ]; then
+    raw_id="$OWNER_TWITTER_ID"
+  fi
+
+  # 3. config/owner.local.json (gitignored file; IaC-friendly)
+  local owner_local="$AGENCY_DIR/config/owner.local.json"
+  if [ -z "$raw_handle" ] && [ -f "$owner_local" ]; then
+    local file_handle file_id
+    file_handle="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); o=(d.get('owner') or {}); print((o.get('twitter_handle') or '').strip())" "$owner_local" 2>/dev/null || echo "")"
+    file_id="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); o=(d.get('owner') or {}); print((o.get('twitter_id') or '').strip())" "$owner_local" 2>/dev/null || echo "")"
+    if [ -n "$file_handle" ]; then
+      raw_handle="$file_handle"
+      source="file"
+    fi
+    if [ -z "$raw_id" ] && [ -n "$file_id" ]; then
+      raw_id="$file_id"
+    fi
+  fi
+
+  # 4. TTY prompt — weakest fallback, gated hard on interactive-only.
+  if [ -z "$raw_handle" ] && [ -t 0 ] && [ -z "${FORCE_NON_INTERACTIVE:-}" ]; then
+    printf "[install] Owner X/Twitter handle (for binding; leave blank to defer): " >&2
+    IFS= read -r raw_handle || raw_handle=""
+    if [ -n "$raw_handle" ]; then
+      source="tty"
+    fi
+  fi
+
+  if [ -z "$raw_handle" ]; then
+    OWNER_TWITTER_HANDLE_SOURCE="none"
+    log_info "Owner X binding: not supplied at install; will resolve via /me or heartbeat self-heal"
+    return 0
+  fi
+
+  local clean_handle clean_id
+  clean_handle="$(_sanitize_twitter_handle "$raw_handle")"
+  if [ -z "$clean_handle" ]; then
+    log_warn "Owner X handle '$raw_handle' failed format validation (expected 1-15 chars [A-Za-z0-9_]); ignored"
+    OWNER_TWITTER_HANDLE_SOURCE="none"
+    return 0
+  fi
+  clean_id=""
+  if [ -n "$raw_id" ]; then
+    clean_id="$(_sanitize_twitter_id "$raw_id")"
+    if [ -z "$clean_id" ]; then
+      log_warn "Owner X id '$raw_id' failed format validation (expected numeric); ignoring id, keeping handle"
+    fi
+  fi
+
+  OWNER_TWITTER_HANDLE_SOURCE="$source"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    log_info "[DRY RUN] Would write TAGCLAW_EXPECTED_TWITTER_HANDLE=$clean_handle (source=$source) to $skill_env"
+    [ -n "$clean_id" ] && log_info "[DRY RUN] Would write TAGCLAW_EXPECTED_TWITTER_ID=$clean_id"
+    return 0
+  fi
+
+  python3 - <<'PY' "$skill_env" "$clean_handle" "$clean_id"
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1])
+handle = sys.argv[2]
+tid = sys.argv[3]
+data = {}
+if path.exists():
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or '=' not in s:
+            continue
+        k, v = s.split('=', 1)
+        k = k.strip()
+        v = v.strip()
+        if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+            v = v[1:-1]
+        data[k] = v
+if handle:
+    data['TAGCLAW_EXPECTED_TWITTER_HANDLE'] = handle
+if tid:
+    data['TAGCLAW_EXPECTED_TWITTER_ID'] = tid
+def fmt(v):
+    if re.fullmatch(r'[A-Za-z0-9_./:@+\-]+', v):
+        return v
+    import json
+    return json.dumps(v)
+path.parent.mkdir(parents=True, exist_ok=True)
+text = ''.join('{}={}\n'.format(k, fmt(v)) for k, v in sorted(data.items()))
+path.write_text(text)
+PY
+  log_ok "Owner X binding declared: handle=$clean_handle (source=$source); will be upgraded to verified when /me confirms"
+}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. load_tagclaw_skill
@@ -1626,6 +1802,10 @@ main() {
   echo ""
 
   load_tagclaw_skill
+  # Non-interactive owner twitter binding collection runs BEFORE onboarding so
+  # TAGCLAW_EXPECTED_TWITTER_HANDLE is already in skill .env when
+  # refresh-agency-identity.sh executes later. See §4.2 of the design doc.
+  collect_owner_twitter_binding
   run_auto_tagclaw_onboarding
 
   # ── P1-A: Early warning when credentials / identity unresolved ──────────────
@@ -1680,11 +1860,68 @@ main() {
       CREDENTIALS_EXIST=true
     fi
 
+    # ── Resolve owner_binding status from workspace identity JSON ───────────
+    # Reads owner.verified / owner.twitter_handle / owner.binding_source written
+    # by refresh-agency-identity.sh and maps to a compact status the next-steps
+    # builder, summary box, and dashboard can all consume. See §4.5 of the
+    # design doc for the UX contract: cloud install NEVER fails on unresolved
+    # binding alone — heartbeat self-heal picks it up.
+    _resolve_owner_binding() {
+      local ws_ident="$workspace/config/agency-identity.json"
+      if [ ! -f "$ws_ident" ]; then
+        OWNER_BINDING_STATUS="unresolved"
+        OWNER_BINDING_REASON="identity_not_written"
+        return 0
+      fi
+      local _summary
+      _summary="$(python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception as e:
+    print('error|' + str(e))
+    raise SystemExit(0)
+o = d.get('owner') or {}
+handle = (o.get('twitter_handle') or '').strip()
+verified = bool(o.get('verified'))
+src = (o.get('binding_source') or '').strip()
+print('ok|' + str(verified) + '|' + handle + '|' + src)
+" "$ws_ident" 2>/dev/null)"
+      local _ok="${_summary%%|*}"
+      if [ "$_ok" != "ok" ]; then
+        OWNER_BINDING_STATUS="unknown"
+        OWNER_BINDING_REASON="identity_parse_error"
+        return 0
+      fi
+      local _rest="${_summary#ok|}"
+      local _verified="${_rest%%|*}"; _rest="${_rest#*|}"
+      local _handle="${_rest%%|*}"; _rest="${_rest#*|}"
+      local _src="$_rest"
+      if [ "$_verified" = "True" ]; then
+        OWNER_BINDING_STATUS="verified"
+        OWNER_BINDING_REASON="verified_via_me"
+      elif [ -n "$_handle" ]; then
+        OWNER_BINDING_STATUS="declared"
+        OWNER_BINDING_REASON="declared_pending_verify"
+      else
+        OWNER_BINDING_STATUS="unresolved"
+        OWNER_BINDING_REASON="awaiting_tagclaw_me_or_post_verify"
+      fi
+    }
+    _resolve_owner_binding
+
     # ── P0-C: Compute truthful install status ───────────────────────────────
     # "verified" requires: identity resolved + credentials exist + dashboard running
     #            + crons registered OR acceptably deferred
     # "partial"  is anything less
     # "failed"   only if core install steps (runtime/wiki/autoresearch) failed
+    #
+    # IMPORTANT: OWNER_BINDING_STATUS is deliberately NOT a gating factor.
+    # Per design §4.5 + §7 #4, cloud headless installs must exit 0 even when
+    # owner binding is still unresolved — heartbeat self-heal will upgrade
+    # identity JSON once TagClaw /me returns the binding. Blocking install on
+    # this would regress every deployment where the operator posts the
+    # verification tweet asynchronously.
     local INSTALL_STATUS="partial"
     local _crons_acceptable=false
     if [ "$CRONS_REGISTERED" = "true" ]; then
@@ -1803,9 +2040,20 @@ print(json.dumps({
         "Verify $workspace/skills/tagclaw/.env contains TAGCLAW_API_KEY and $workspace/skills/tagclaw-wallet/.env contains the wallet bootstrap fields"
     fi
 
+    # Guided X sync next-step text depends on whether the blocker is an
+    # unresolved owner binding (auto-heals via heartbeat — no operator action
+    # required) or something downstream. See design §4.5.
     if [ "$X_TWEETS_SEED_STATUS" = "deferred" ] || [ "$X_TWEETS_SEED_STATUS" = "blocked" ] || [ "$X_TWEETS_SEED_STATUS" = "failed" ]; then
-      _emit_step_simple "guided_x_sync" \
-        "Complete guided X sync bootstrap: provide owner.twitter_handle, optionally create runtime/shared/guided-x-urls.json from a browser-guided session, then run: python3 $AGENCY_DIR/scripts/sync_guided_x_tweets.py --workspace $workspace --lookback-days 3 --include-replies --json"
+      if [ "$OWNER_BINDING_STATUS" = "unresolved" ]; then
+        _emit_step_simple "owner_binding_pending" \
+          "Owner X binding not yet resolved. Will auto-heal on next heartbeat once TagClaw /me returns the handle. No operator action required; optional manual path: rerun install.sh with --owner-twitter-handle, or bash $workspace/scripts/tagclaw-onboard.sh post-verify-finalize --workspace $workspace"
+      elif [ "$OWNER_BINDING_STATUS" = "declared" ]; then
+        _emit_step_simple "owner_binding_declared_pending_verify" \
+          "Owner X handle declared (source=$OWNER_TWITTER_HANDLE_SOURCE) but not yet verified by TagClaw /me. Heartbeat self-heal will upgrade to verified once /me confirms. No action required."
+      else
+        _emit_step_simple "guided_x_sync" \
+          "Complete guided X sync bootstrap: optionally create runtime/shared/guided-x-urls.json from a browser-guided session, then run: python3 $AGENCY_DIR/scripts/sync_guided_x_tweets.py --workspace $workspace --lookback-days 3 --include-replies --json"
+      fi
     fi
 
     if [ "$CRONS_REGISTERED" != "true" ] && [ "$TAGCLAW_STATUS" = "active" ]; then
@@ -2089,7 +2337,7 @@ print(json.dumps(d, indent=2))
         _bootstrap_summary="failed"
       fi
     fi
-    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: ${_cron_summary}. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}. Bootstrap: ${_bootstrap_summary}. Raw seed: ${RAW_SEED_STATUS}. Guided X sync: ${X_TWEETS_SEED_STATUS}. Guided X wiki compile: ${X_TWEETS_COMPILE_STATUS} (${X_TWEETS_COMPILED_COUNT}). Intro post: ${INTRO_POST_STATUS}."
+    local INSTALL_SUMMARY="Self-IP Agency v${AGENCY_VERSION} installed (status: ${INSTALL_STATUS}). TagClaw onboarding: ${TAGCLAW_ONBOARD_STATUS}. Identity: ${IDENTITY_RESOLVED}, Credentials: ${CREDENTIALS_EXIST}, Dashboard: ${DASHBOARD_STATUS}, Public dashboard: ${_public_summary}, Crons: ${_cron_summary}, Owner binding: ${OWNER_BINDING_STATUS}. Readiness: main=${MAIN_READY} bookmarker=${BOOKMARKER_READY} trader=${TRADER_READY}. Bootstrap: ${_bootstrap_summary}. Raw seed: ${RAW_SEED_STATUS}. Guided X sync: ${X_TWEETS_SEED_STATUS}. Guided X wiki compile: ${X_TWEETS_COMPILE_STATUS} (${X_TWEETS_COMPILED_COUNT}). Intro post: ${INTRO_POST_STATUS}."
 
     # ── Update .installed marker with bootstrap results ───────────────────
     # The initial write (above) ran before self-checks so cycle scripts see
@@ -2232,6 +2480,13 @@ d = {
     'intro_post_tick': '$INTRO_POST_TICK',
     'intro_post_tick_status': '$INTRO_POST_TICK_STATUS',
     'intro_post_tick_source': '$INTRO_POST_TICK_SOURCE',
+    'owner_binding': {
+        'status': '$OWNER_BINDING_STATUS',
+        'reason': '$OWNER_BINDING_REASON',
+        'self_heal': '$OWNER_BINDING_SELF_HEAL',
+        'declared_source': '$OWNER_TWITTER_HANDLE_SOURCE',
+    },
+    'install_report_url': None,
     'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'version': '$AGENCY_VERSION'
 }
@@ -2498,12 +2753,20 @@ print(json.dumps(d, indent=2))
       *)       echo "  ║    - Not attempted" ;;
     esac
     echo "  ║"
+    echo "  ║  Owner X binding:"
+    case "$OWNER_BINDING_STATUS" in
+      verified)   echo "  ║    ✓ Verified via TagClaw /me" ;;
+      declared)   echo "  ║    ⚠ Declared (source: ${OWNER_TWITTER_HANDLE_SOURCE:-?}) — heartbeat will verify" ;;
+      unresolved) echo "  ║    - Unresolved (will auto-heal on next heartbeat; pass --owner-twitter-handle on rerun to declare)" ;;
+      *)          echo "  ║    - Unknown" ;;
+    esac
+    echo "  ║"
     echo "  ║  Guided X sync:"
     case "$X_TWEETS_SEED_STATUS" in
       ok)       echo "  ║    ✓ Synced owner X raw artifacts" ;;
       partial)  echo "  ║    ⚠ Partial sync (some tweet fetches failed)" ;;
-      deferred) echo "  ║    - Deferred (guided session or URLs not yet available)" ;;
-      blocked)  echo "  ║    ✗ Blocked (handle missing or no discoverable URLs)" ;;
+      deferred) echo "  ║    - Deferred (guided session or URLs not yet available; heartbeat self-heal active if awaiting owner binding)" ;;
+      blocked)  echo "  ║    ✗ Blocked (unrecoverable — see blockers array)" ;;
       failed)   echo "  ║    ✗ Sync failed (non-fatal)" ;;
       *)        echo "  ║    - Not attempted" ;;
     esac
