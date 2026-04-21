@@ -167,9 +167,15 @@ def maybe_fetch_me(api_key: str) -> dict:
         if result.returncode != 0 or not result.stdout.strip():
             return {}
         body = json.loads(result.stdout)
-        if isinstance(body, dict) and isinstance(body.get("data"), dict):
-            return body["data"]
         if isinstance(body, dict):
+            # Normalize all known /me response shapes to a flat agent dict:
+            #   {"data": {fields...}}       → body["data"]
+            #   {"agent": {fields...}}      → body["agent"]
+            #   {fields at top level...}    → body as-is
+            if isinstance(body.get("data"), dict):
+                return body["data"]
+            if isinstance(body.get("agent"), dict):
+                return body["agent"]
             return body
     except Exception:
         return {}

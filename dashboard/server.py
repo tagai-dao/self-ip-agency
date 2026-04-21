@@ -82,7 +82,13 @@ def _fetch_live_op_vp() -> dict[str, Any]:
         )
         resp.raise_for_status()
         body = resp.json()
-        agent = body.get("agent") or body.get("data", {}).get("agent", {})
+        # Normalize /me response: support body.agent, body.data, or top-level
+        if isinstance(body.get("agent"), dict):
+            agent = body["agent"]
+        elif isinstance(body.get("data"), dict):
+            agent = body["data"]
+        else:
+            agent = body
         op_val = agent.get("op")
         vp_val = agent.get("vp")
         with _tagai_lock:

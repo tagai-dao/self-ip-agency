@@ -141,7 +141,13 @@ def fetch_live_op_vp() -> tuple[float | None, float | None]:
         if proc.returncode != 0:
             return None, None
         data = json.loads(proc.stdout.strip())
-        agent = data.get('agent') or data
+        # Normalize /me response: support body.agent, body.data, or top-level
+        if isinstance(data.get('agent'), dict):
+            agent = data['agent']
+        elif isinstance(data.get('data'), dict):
+            agent = data['data']
+        else:
+            agent = data
         op = agent.get('op')
         vp = agent.get('vp')
         return (float(op) if op is not None else None), (float(vp) if vp is not None else None)
