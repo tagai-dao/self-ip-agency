@@ -107,28 +107,30 @@ fi
 log_ok "openclaw CLI available: $(openclaw --version 2>&1 || echo 'unknown')"
 
 # ── Scheduler reachability with retries ──────────────────────────────────────
+# Uses multi-signal probe (cron list + health --json + cron status) to correctly
+# distinguish "reachable with zero jobs" from "truly unreachable".
 log_info "Checking scheduler reachability (max ${MAX_RETRIES} attempts, ${RETRY_INTERVAL}s interval)..."
 
 SCHEDULER_REACHABLE=false
 for _attempt in $(seq 1 "$MAX_RETRIES"); do
-  if openclaw cron list >/dev/null 2>&1; then
+  if probe_scheduler_reachable "finalize-attempt-$_attempt"; then
     SCHEDULER_REACHABLE=true
     break
   fi
   # On first failure, try starting the gateway
   if [ "$_attempt" -eq 1 ]; then
-    log_info "Scheduler not immediately reachable — attempting gateway start..."
+    log_info "Scheduler not immediately reachable ($_PROBE_RESULT) — attempting gateway start..."
     openclaw gateway start >/dev/null 2>&1 || true
   fi
   if [ "$_attempt" -lt "$MAX_RETRIES" ]; then
-    log_info "Attempt ${_attempt}/${MAX_RETRIES}: scheduler not reachable, retrying in ${RETRY_INTERVAL}s..."
+    log_info "Attempt ${_attempt}/${MAX_RETRIES}: scheduler not reachable ($_PROBE_RESULT), retrying in ${RETRY_INTERVAL}s..."
     sleep "$RETRY_INTERVAL"
   fi
 done
 
 if [ "$SCHEDULER_REACHABLE" != "true" ]; then
-  log_warn "Scheduler not reachable after ${MAX_RETRIES} attempts"
-  echo '{"status":"scheduler_unreachable","message":"OpenClaw scheduler not reachable after retries. Check: openclaw gateway status"}'
+  log_warn "Scheduler not reachable after ${MAX_RETRIES} attempts (last probe: $_PROBE_RESULT)"
+  echo "{\"status\":\"scheduler_unreachable\",\"probe_result\":\"${_PROBE_RESULT}\",\"message\":\"OpenClaw scheduler not reachable after retries. Check: openclaw gateway status\"}"
   exit 2
 fi
 

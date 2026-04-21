@@ -601,8 +601,9 @@ _detect_cron_registration_mode() {
   if ! command -v systemctl >/dev/null 2>&1 && ! command -v launchctl >/dev/null 2>&1; then
     # Additional check: if openclaw CLI exists but gateway is structurally unavailable
     if command -v openclaw >/dev/null 2>&1; then
-      # CLI exists — try a lightweight probe (cron list, not full health)
-      if openclaw cron list >/dev/null 2>&1; then
+      # CLI exists — use multi-signal probe (cron list + health --json fallback)
+      # to correctly detect reachable-but-empty scheduler
+      if probe_scheduler_reachable "detect-mode"; then
         CRON_REGISTRATION_MODE="local-cli"
         return 0
       fi
@@ -692,9 +693,9 @@ _attempt_deferred_cron_finalization() {
     return 1
   fi
 
-  # Gate: scheduler must be reachable (lightweight probe)
-  if ! openclaw cron list >/dev/null 2>&1; then
-    log_info "Deferred finalization: scheduler not reachable — skipping auto-finalization"
+  # Gate: scheduler must be reachable (multi-signal probe)
+  if ! probe_scheduler_reachable "deferred-finalize"; then
+    log_info "Deferred finalization: scheduler not reachable ($_PROBE_RESULT) — skipping auto-finalization"
     return 1
   fi
 
@@ -909,11 +910,9 @@ register_crons() {
   log_ok "openclaw CLI healthy — version: $cli_version_out"
 
   # ── Gateway reachability ───────────────────────────────────────────────
-  # Try lightweight cron list first; fall back to health --json + gateway start
+  # Use multi-signal probe that correctly handles reachable-but-empty scheduler
   local gw_ready=false
-  if openclaw cron list >/dev/null 2>&1; then
-    gw_ready=true
-  elif openclaw health --json >"$gateway_log" 2>&1; then
+  if probe_scheduler_reachable "register-crons"; then
     gw_ready=true
   fi
 
@@ -929,7 +928,7 @@ register_crons() {
     local _gw_try
     for _gw_try in 1 2 3 4 5 6 7 8 9 10; do
       sleep 1
-      if openclaw cron list >/dev/null 2>&1 || openclaw health --json >>"$gateway_log" 2>&1; then
+      if probe_scheduler_reachable "register-crons-retry-$_gw_try"; then
         gw_ready=true
         break
       fi
