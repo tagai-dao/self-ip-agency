@@ -243,6 +243,236 @@ print('Updated runtime-status.json')
 " 2>&1
 }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 2.5: Owner binding self-heal (PR-B)
+#
+# Checks whether TagClaw /me can now confirm the owner.twitter_handle that
+# was null at install time. Fully idempotent; opt-out via config. Errors are
+# isolated — /me network failures NEVER pollute HEARTBEAT_STATUS and NEVER
+# get classified as scheduler_unreachable (see PR #25 / §4.7 of the design).
+#
+# Triggers refresh-agency-identity.sh --verify-api when ALL of:
+#   - TAGCLAW_STATUS == "active" in skill .env
+#   - owner.verified != true in workspace config/agency-identity.json
+#   - identity-sync.json does not say disabled
+#   - last_attempt_at was not within the throttle window
+#
+# On success writes runtime/shared/events/owner-binding-resolved.json and
+# flips identity-sync.json:verified=true so future heartbeats skip /me.
+#
+# Design refs: docs/design/x-sync-twitter-binding-fix.md §4.3 + §4.4.
+# ──────────────────────────────────────────────────────────────────────────────
+
+owner_binding_self_heal() {
+  [ "$DRY_RUN" = "true" ] && { log_info "[dry-run] skip owner-binding self-heal"; return 0; }
+
+  local RUNTIME_SHARED="$WORKSPACE/runtime/shared"
+  local EVENTS_DIR="$RUNTIME_SHARED/events"
+  local SYNC_FILE="$RUNTIME_SHARED/identity-sync.json"
+  mkdir -p "$RUNTIME_SHARED" "$EVENTS_DIR" 2>/dev/null || true
+
+  # Locate refresh helper (prefer workspace deploy copy, fall back to repo)
+  local REFRESH_SCRIPT=""
+  for candidate in \
+    "$WORKSPACE/scripts/refresh-agency-identity.sh" \
+    "$SCRIPT_DIR/refresh-agency-identity.sh" \
+    "${REPO_DIR:+$REPO_DIR/scripts/refresh-agency-identity.sh}"; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      REFRESH_SCRIPT="$candidate"
+      break
+    fi
+  done
+  if [ -z "$REFRESH_SCRIPT" ]; then
+    log_warn "owner-binding self-heal: refresh-agency-identity.sh not found; skipping (non-fatal)"
+    return 0
+  fi
+
+  # Orchestration + state decisions live in Python for quote safety + atomic JSON.
+  # Returns one of: SKIP_VERIFIED / SKIP_DISABLED / SKIP_NOT_ACTIVE / SKIP_THROTTLED
+  #                 / RUN / ERROR_READING_IDENTITY
+  local DECISION
+  DECISION="$(WORKSPACE="$WORKSPACE" python3 - <<'PY'
+import json, os, pathlib, time
+workspace = pathlib.Path(os.environ["WORKSPACE"])
+
+def parse_dotenv(p):
+    data = {}
+    if not p.exists():
+        return data
+    try:
+        txt = p.read_text()
+    except OSError:
+        return data
+    for line in txt.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        v = v.strip()
+        if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+            v = v[1:-1]
+        data[k.strip()] = v
+    return data
+
+skill_env = parse_dotenv(workspace / "skills/tagclaw/.env")
+status = (skill_env.get("TAGCLAW_STATUS") or "").strip().lower()
+if status != "active":
+    print("SKIP_NOT_ACTIVE")
+    raise SystemExit(0)
+
+ident_path = workspace / "config/agency-identity.json"
+verified = False
+try:
+    if ident_path.exists():
+        d = json.loads(ident_path.read_text(encoding="utf-8"))
+        o = d.get("owner") or {}
+        verified = bool(o.get("verified"))
+except Exception:
+    print("ERROR_READING_IDENTITY")
+    raise SystemExit(0)
+
+if verified:
+    print("SKIP_VERIFIED")
+    raise SystemExit(0)
+
+sync_path = workspace / "runtime/shared/identity-sync.json"
+state = {}
+if sync_path.exists():
+    try:
+        state = json.loads(sync_path.read_text(encoding="utf-8"))
+    except Exception:
+        state = {}
+
+if state.get("disabled") is True:
+    print("SKIP_DISABLED")
+    raise SystemExit(0)
+
+# Throttle: minimum 60s between attempts to prevent concurrent cron collisions.
+# Per user decision (§7 #4 locked-in): no exponential backoff until verified.
+last_ts = state.get("last_attempt_at") or ""
+throttle_sec = 60
+now = int(time.time())
+try:
+    import datetime as _dt
+    if last_ts:
+        t = _dt.datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+        if (now - int(t.timestamp())) < throttle_sec:
+            print("SKIP_THROTTLED")
+            raise SystemExit(0)
+except Exception:
+    pass
+
+print("RUN")
+PY
+)"
+
+  case "$DECISION" in
+    SKIP_VERIFIED)      return 0 ;;
+    SKIP_DISABLED)      return 0 ;;
+    SKIP_NOT_ACTIVE)    return 0 ;;
+    SKIP_THROTTLED)     return 0 ;;
+    ERROR_READING_IDENTITY)
+      log_warn "owner-binding self-heal: could not parse identity JSON (non-fatal)"
+      return 0 ;;
+    RUN)  ;;
+    *)
+      log_warn "owner-binding self-heal: unknown decision '$DECISION' (non-fatal)"
+      return 0 ;;
+  esac
+
+  log_info "owner-binding self-heal: TagClaw status=active and identity not yet verified — probing /me"
+
+  # Pre-run: stamp attempt timestamp so concurrent heartbeats throttle each other.
+  WORKSPACE="$WORKSPACE" python3 - <<'PY' >/dev/null 2>&1 || true
+import json, os, pathlib, datetime
+ws = pathlib.Path(os.environ["WORKSPACE"])
+p = ws / "runtime/shared/identity-sync.json"
+try:
+    state = json.loads(p.read_text()) if p.exists() else {}
+except Exception:
+    state = {}
+state["schema"] = "identity.sync.v1"
+state["last_attempt_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+state["attempts"] = int(state.get("attempts", 0)) + 1
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(json.dumps(state, indent=2))
+PY
+
+  # Run the refresh helper. /me network errors MUST NOT propagate — we catch
+  # rc and record it in identity-sync.json.last_error without touching the
+  # heartbeat's own status.
+  local rc=0
+  bash "$REFRESH_SCRIPT" --workspace "$WORKSPACE" --verify-api --quiet >/tmp/.self-ip-self-heal-$$.log 2>&1 || rc=$?
+  local log_tail
+  log_tail="$(tail -5 /tmp/.self-ip-self-heal-$$.log 2>/dev/null || true)"
+  rm -f /tmp/.self-ip-self-heal-$$.log 2>/dev/null || true
+
+  WORKSPACE="$WORKSPACE" REFRESH_RC="$rc" REFRESH_LOG="$log_tail" python3 - <<'PY' 2>&1 || log_warn "owner-binding self-heal: state update failed (non-fatal)"
+import json, os, pathlib, datetime
+ws = pathlib.Path(os.environ["WORKSPACE"])
+rc = int(os.environ.get("REFRESH_RC", "1"))
+log_tail = os.environ.get("REFRESH_LOG", "")
+
+sync_path = ws / "runtime/shared/identity-sync.json"
+try:
+    state = json.loads(sync_path.read_text())
+except Exception:
+    state = {}
+
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+ident_path = ws / "config/agency-identity.json"
+verified = False
+handle = None
+twitter_id = None
+source = None
+try:
+    if ident_path.exists():
+        d = json.loads(ident_path.read_text(encoding="utf-8"))
+        o = d.get("owner") or {}
+        verified = bool(o.get("verified"))
+        handle = o.get("twitter_handle")
+        twitter_id = o.get("twitter_id")
+        source = o.get("binding_source")
+except Exception:
+    pass
+
+if rc == 0 and verified:
+    state.update({
+        "schema": "identity.sync.v1",
+        "verified": True,
+        "last_success_at": now,
+        "last_error": None,
+        "source": source,
+    })
+    # Event file: consumed by dashboard / ops hooks.
+    events_dir = ws / "runtime/shared/events"
+    events_dir.mkdir(parents=True, exist_ok=True)
+    ev = {
+        "schema": "owner-binding-resolved.v1",
+        "resolved_at": now,
+        "twitter_handle": handle,
+        "twitter_id": twitter_id,
+        "source": source,
+    }
+    (events_dir / "owner-binding-resolved.json").write_text(json.dumps(ev, indent=2))
+    print(f"[OK] owner-binding self-heal resolved: handle={handle} (source={source})")
+else:
+    state.update({
+        "schema": "identity.sync.v1",
+        "verified": False,
+        "last_error": f"rc={rc}" + (f" detail={log_tail[:200]!r}" if log_tail else ""),
+    })
+    print(f"[INFO] owner-binding self-heal deferred (rc={rc}, verified={verified}); will retry next heartbeat")
+
+sync_path.parent.mkdir(parents=True, exist_ok=True)
+sync_path.write_text(json.dumps(state, indent=2))
+PY
+
+  # Intentionally swallow rc — self-heal failures must not fail the heartbeat.
+  return 0
+}
+
 update_runtime_status_post_cycle() {
   local RUNTIME_SHARED="$WORKSPACE/runtime/shared"
   mkdir -p "$RUNTIME_SHARED"
@@ -303,6 +533,9 @@ main() {
   fi
 
   # Full heartbeat cycle
+  # PR-B: owner-binding self-heal runs first so input packet / runtime see
+  # any freshly-verified binding. Failures here are isolated and non-fatal.
+  owner_binding_self_heal || true
   build_input_packet
   run_main_runtime
   update_runtime_status_post_cycle

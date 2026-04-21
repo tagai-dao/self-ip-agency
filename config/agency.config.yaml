@@ -89,6 +89,20 @@ dashboard:
     provider: "cloudflare"
     mode: "quick"
 
+# Identity self-heal (PR-B)
+# Heartbeat-driven self-heal for owner X/Twitter binding. When TagClaw status
+# is "active" but agency-identity.json:owner.verified is not yet true, each
+# main-heartbeat.sh run calls refresh-agency-identity.sh --verify-api to
+# probe TagClaw /me and backfill ownerTwitterHandle/Id. See
+# docs/design/x-sync-twitter-binding-fix.md §4.4 and
+# docs/ops/owner-binding-hooks.md.
+#
+# Ops can also disable at runtime by writing {"disabled":true} to
+# <workspace>/runtime/shared/identity-sync.json.
+identity:
+  self_heal:
+    enabled: true     # master toggle; flip to false to halt heartbeat /me probing
+
 # Announce settings (OPTIONAL — not required for local deployments)
 # Uncomment and configure only if you want cycle results announced to a channel.
 # Without this, all cycle scripts run locally and write to runtime/*/ only.

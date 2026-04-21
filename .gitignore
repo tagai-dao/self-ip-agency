@@ -1,6 +1,7 @@
 # Secrets — NEVER commit these
 config/credentials.json
 config/secrets.env
+config/owner.local.json
 *.key
 *.pem
 .env

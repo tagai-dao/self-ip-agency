@@ -197,18 +197,61 @@ wallet_env = parse_dotenv(workspace / "skills/tagclaw-wallet/.env")
 username = skill_env.get("TAGCLAW_AGENT_USERNAME") or skill_env.get("TAGCLAW_AGENT_NAME") or ""
 eth_addr = skill_env.get("TAGCLAW_ETH_ADDR") or wallet_env.get("TAGCLAW_ETH_ADDR") or ""
 profile_url = skill_env.get("TAGCLAW_PROFILE_URL") or ""
-owner_twitter_id = skill_env.get("TAGCLAW_OWNER_TWITTER_ID") or ""
-owner_twitter_handle = skill_env.get("TAGCLAW_OWNER_TWITTER_HANDLE") or ""
 api_key = skill_env.get("TAGCLAW_API_KEY") or ""
 
+# ── Owner twitter binding: priority chain (see docs/design/x-sync-twitter-binding-fix.md §4.2) ──
+# 1. /me canonical (verified=true)
+# 2. skill .env persisted TAGCLAW_OWNER_TWITTER_* (persisted from prior /me or register)
+# 3. operator-declared TAGCLAW_EXPECTED_TWITTER_HANDLE (verified=false, pending heartbeat upgrade)
+#
+# verified=True only when /me actually returned the handle *in this run*; persisted
+# .env values keep their previous verified state only if written by a prior run
+# that set verified=true (we do not track that here yet; treat as unverified carryover
+# to force heartbeat to re-confirm via /me).
+owner_twitter_id = skill_env.get("TAGCLAW_OWNER_TWITTER_ID") or ""
+owner_twitter_handle = skill_env.get("TAGCLAW_OWNER_TWITTER_HANDLE") or ""
+expected_handle = (skill_env.get("TAGCLAW_EXPECTED_TWITTER_HANDLE") or "").strip().lstrip("@")
+
+owner_twitter_handle_source = ""
+owner_twitter_id_source = ""
+if owner_twitter_handle:
+    owner_twitter_handle_source = "tagclaw.env.persisted"
+if owner_twitter_id:
+    owner_twitter_id_source = "tagclaw.env.persisted"
+
 me = maybe_fetch_me(api_key)
+me_verified_this_run = False
 if me:
     # API-enriched fields only fill gaps — don't overwrite real .env state.
     username = username or me.get("username") or me.get("agentUsername") or ""
     eth_addr = eth_addr or me.get("ethAddr") or me.get("eth_addr") or ""
     profile_url = profile_url or me.get("profileUrl") or me.get("profile_url") or ""
-    owner_twitter_id = owner_twitter_id or me.get("ownerTwitterId") or me.get("owner_twitter_id") or ""
-    owner_twitter_handle = owner_twitter_handle or me.get("ownerTwitterHandle") or me.get("owner_twitter_handle") or ""
+    _me_twitter_id = me.get("ownerTwitterId") or me.get("owner_twitter_id") or ""
+    _me_twitter_handle = me.get("ownerTwitterHandle") or me.get("owner_twitter_handle") or ""
+    if _me_twitter_handle:
+        # /me wins: backend has confirmed the binding.
+        owner_twitter_handle = _me_twitter_handle
+        owner_twitter_handle_source = "tagclaw.me.verified"
+        me_verified_this_run = True
+    if _me_twitter_id:
+        owner_twitter_id = _me_twitter_id
+        owner_twitter_id_source = "tagclaw.me.verified"
+
+# Operator-declared fallback: only if /me and .env both left handle empty.
+# This preserves operator intent (e.g. "I know my handle, /me will catch up")
+# while heartbeat self-heal keeps probing /me until verified=true.
+if not owner_twitter_handle and expected_handle:
+    owner_twitter_handle = expected_handle
+    owner_twitter_handle_source = "operator.declared"
+
+# "verified" is True only when /me returned the binding in THIS run. Carryover
+# from .env stays unverified so heartbeat keeps retrying — a conservative stance
+# that the backend is the source of truth.
+verified = me_verified_this_run
+last_verified_at = None
+if verified:
+    from datetime import datetime, timezone
+    last_verified_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 # Sensible fallback for profile URL when server didn't provide one.
 if not profile_url and username:
@@ -228,6 +271,14 @@ identity = {
         "twitter_id": owner_twitter_id or None,
         "twitter_handle": owner_twitter_handle or None,
         "platform": "X (Twitter)",
+        # Optional provenance fields (agency.identity.v1-compatible additions).
+        # Existing consumers (sync_guided_x_tweets.py, verify_wiki_contract.py,
+        # run_bookmarker_runtime_v1.py, dashboard/server.py) only .get() the
+        # two canonical fields above, so these extras are backward-compatible.
+        "binding_source": owner_twitter_handle_source or None,
+        "binding_id_source": owner_twitter_id_source or None,
+        "verified": bool(verified),
+        "last_verified_at": last_verified_at,
     },
     "wallet": {
         "address": eth_addr or None,
