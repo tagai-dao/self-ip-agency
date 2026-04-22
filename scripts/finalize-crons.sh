@@ -152,8 +152,10 @@ fi
 
 log_info "Found ${JOB_COUNT} jobs to register"
 
-# Staging area for stderr capture — kept until end of script for diagnostic output
-_STAGE_DIR="$(mktemp -d -t finalize-crons.XXXXXX)"
+# Staging area for stderr capture — kept until end of script for diagnostic output.
+# Use explicit path form (not `mktemp -d -t PREFIX`) because BSD and GNU mktemp
+# interpret `-t` differently; this form is unambiguous on both.
+_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/finalize-crons.XXXXXX")"
 trap 'rm -rf "$_STAGE_DIR"' EXIT
 
 # ── Remove existing jobs (idempotent) ────────────────────────────────────────
@@ -176,7 +178,12 @@ done
 LAST_REGISTER_ERR_TAIL=""
 register_one_with_retry() {
   local name="$1" schedule="$2" session="$3" message="$4"
-  local err_file="$_STAGE_DIR/add-${name}.err"
+  # Sanitize name for filesystem use (defend against path traversal if name
+  # contains '/' or '..'). Alphanumerics / underscore / dash only; everything
+  # else becomes '_'. Hex-suffix to keep distinct sanitized names distinct.
+  local safe_name
+  safe_name="$(printf '%s' "$name" | tr -c 'a-zA-Z0-9_-' '_')"
+  local err_file="$_STAGE_DIR/add-${safe_name}.err"
   local attempt max_attempts=3
 
   for attempt in 1 2 3; do
@@ -199,7 +206,9 @@ register_one_with_retry() {
     fi
   done
 
-  LAST_REGISTER_ERR_TAIL="$(tr -d '\r' < "$err_file" 2>/dev/null | tail -n 3 | tr '\n' ' | ' | sed 's/ | $//')"
+  # Join last 3 stderr lines with ' | '. awk (not tr) because `tr '\n' ' | '`
+  # only uses the first char of set2 (space), dropping the pipe.
+  LAST_REGISTER_ERR_TAIL="$(tr -d '\r' < "$err_file" 2>/dev/null | tail -n 3 | awk 'NR>1{printf " | "} {printf "%s",$0}')"
   return 1
 }
 
@@ -208,7 +217,11 @@ register_one_with_retry() {
 # actually get created (observed with gateway flaps).
 verify_registered() {
   local name="$1"
-  openclaw cron list 2>/dev/null | grep -qE "(^|[[:space:]\"'])${name}([[:space:]\"']|$)"
+  # Escape regex metacharacters in name so names containing '.', '*', '[', etc.
+  # don't produce false matches or break the regex.
+  local name_re
+  name_re="$(printf '%s' "$name" | sed 's/[][\\.^$*+?(){}|/]/\\&/g')"
+  openclaw cron list 2>/dev/null | grep -qE "(^|[[:space:]\"'])${name_re}([[:space:]\"']|$)"
 }
 
 # ── Register each job (with retry + verification) ───────────────────────────
@@ -238,9 +251,14 @@ while IFS=$'\t' read -r name schedule session message; do
   [ -n "$LAST_REGISTER_ERR_TAIL" ] && log_warn "  ↳ ${LAST_REGISTER_ERR_TAIL}"
   FAILED=$((FAILED + 1))
   FAILED_NAMES="${FAILED_NAMES:+$FAILED_NAMES, }$name"
-  # JSON-escape the stderr tail for structured output
-  _esc="$(printf '%s' "$LAST_REGISTER_ERR_TAIL" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" 2>/dev/null || printf '""')"
-  FAILED_DETAILS_JSON="${FAILED_DETAILS_JSON}${_sep}{\"name\":\"${name}\",\"stderr_tail\":${_esc}}"
+  # Build the failed-details entry with python json.dumps so that BOTH the name
+  # and the stderr_tail are JSON-escaped. A pathologically-named job (containing
+  # '"' or '\\') would otherwise emit malformed JSON.
+  _entry="$(TAIL="$LAST_REGISTER_ERR_TAIL" NAME="$name" python3 -c "
+import json, os
+print(json.dumps({'name': os.environ['NAME'], 'stderr_tail': os.environ['TAIL']}))
+" 2>/dev/null || printf '{"name":"?","stderr_tail":"?"}')"
+  FAILED_DETAILS_JSON="${FAILED_DETAILS_JSON}${_sep}${_entry}"
   _sep=","
 done < <(python3 -c "
 import json
