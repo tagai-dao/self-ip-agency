@@ -54,7 +54,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 # ── Live TagAI OP/VP cache ─────────────────────────────────────────────────
 _TAGAI_BASE_URL = "https://bsc-api.tagai.fun"
 _TAGAI_CREDS_PATH = os.path.expanduser("~/.config/tagclaw/credentials.json")
-_tagai_cache: dict[str, Any] = {"op": None, "vp": None, "ts": 0.0}
+_tagai_cache: dict[str, Any] = {"op": None, "vp": None, "ts": 0.0, "error": None}
 _tagai_lock = threading.Lock()
 _TAGAI_TTL = 120  # seconds
 
@@ -64,41 +64,138 @@ _CURATE_PREVIEW_TTL = 180  # seconds
 
 
 def _fetch_live_op_vp() -> dict[str, Any]:
-    """Return {"op": float|None, "vp": float|None} from TagAI API, cached."""
+    """Return live OP/VP balance from TagAI /me, with diagnostic context.
+
+    Shape: ``{"op": float|None, "vp": float|None, "source": str, "error": dict|None}``
+
+    Source values:
+      - ``live``  — fetched this call
+      - ``cache`` — returned from TTL cache
+      - ``stale`` — cache miss fell back to pre-existing cached value after a fetch error
+      - ``null``  — no cached value and fetch failed, or api key missing, or /me returned null
+
+    The ``error`` dict (when present) carries ``kind`` (``missing_creds`` |
+    ``missing_api_key`` | ``http_error`` | ``network_error`` | ``decode_error`` |
+    ``null_from_api`` | ``unknown``), a short ``message``, and optionally
+    ``status`` / ``body_snippet``. This lets the dashboard distinguish "API
+    refused our token" from "freshly registered agent with no activity yet"
+    — they used to both render as a bare dash.
+    """
     now = time.monotonic()
     with _tagai_lock:
         if now - _tagai_cache["ts"] < _TAGAI_TTL:
-            return {"op": _tagai_cache["op"], "vp": _tagai_cache["vp"]}
+            return {
+                "op": _tagai_cache["op"],
+                "vp": _tagai_cache["vp"],
+                "source": "cache",
+                "error": _tagai_cache.get("error"),
+            }
+
+    def _stale_fallback(err: dict) -> dict[str, Any]:
+        with _tagai_lock:
+            cached_op = _tagai_cache.get("op")
+            cached_vp = _tagai_cache.get("vp")
+            _tagai_cache["error"] = err  # remember the latest failure
+        return {
+            "op": cached_op,
+            "vp": cached_vp,
+            "source": "stale" if (cached_op is not None or cached_vp is not None) else "null",
+            "error": err,
+        }
+
+    try:
+        creds_raw = Path(_TAGAI_CREDS_PATH).read_text()
+    except FileNotFoundError:
+        return _stale_fallback({
+            "kind": "missing_creds",
+            "message": f"Credentials file not found at {_TAGAI_CREDS_PATH}. Re-run install.",
+        })
+    except Exception as e:
+        return _stale_fallback({
+            "kind": "unknown",
+            "message": f"Could not read credentials: {type(e).__name__}: {e}",
+        })
+
+    try:
+        creds = json.loads(creds_raw)
+    except Exception as e:
+        return _stale_fallback({
+            "kind": "decode_error",
+            "message": f"Credentials file is not valid JSON: {e}",
+        })
+
+    api_key = creds.get("api_key") or creds.get("apiKey") or creds.get("token")
+    if not api_key:
+        return _stale_fallback({
+            "kind": "missing_api_key",
+            "message": "Credentials file has no api_key / apiKey / token field.",
+        })
+
     try:
         import requests as _req
-        creds = json.loads(Path(_TAGAI_CREDS_PATH).read_text())
-        api_key = creds.get("api_key") or creds.get("apiKey") or creds.get("token")
-        if not api_key:
-            return {"op": None, "vp": None}
         resp = _req.get(
             f"{_TAGAI_BASE_URL}/tagclaw/me",
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=10,
         )
-        resp.raise_for_status()
+    except Exception as e:
+        return _stale_fallback({
+            "kind": "network_error",
+            "message": f"Could not reach TagAI /me: {type(e).__name__}: {e}",
+        })
+
+    if not resp.ok:
+        try:
+            body_snippet = resp.text[:400]
+        except Exception:
+            body_snippet = ""
+        return _stale_fallback({
+            "kind": "http_error",
+            "status": resp.status_code,
+            "message": f"TagAI /me returned HTTP {resp.status_code}",
+            "body_snippet": body_snippet,
+        })
+
+    try:
         body = resp.json()
-        # Normalize /me: agent > data.agent > data > bare (same as
-        # adapters.tagclaw.extract_me_agent precedence).
-        if isinstance(body.get("agent"), dict):
-            agent = body["agent"]
-        elif isinstance(body.get("data"), dict):
-            d = body["data"]
-            agent = d["agent"] if isinstance(d.get("agent"), dict) else d
-        else:
-            agent = body
-        op_val = agent.get("op")
-        vp_val = agent.get("vp")
-        with _tagai_lock:
-            _tagai_cache.update({"op": op_val, "vp": vp_val, "ts": time.monotonic()})
-        return {"op": op_val, "vp": vp_val}
-    except Exception:
-        # On failure, return stale cache if available, else None
-        return {"op": _tagai_cache.get("op"), "vp": _tagai_cache.get("vp")}
+    except Exception as e:
+        return _stale_fallback({
+            "kind": "decode_error",
+            "status": resp.status_code,
+            "message": f"TagAI /me response was not JSON: {e}",
+        })
+
+    # Normalize /me: agent > data.agent > data > bare (same as
+    # adapters.tagclaw.extract_me_agent precedence).
+    if isinstance(body.get("agent"), dict):
+        agent = body["agent"]
+    elif isinstance(body.get("data"), dict):
+        d = body["data"]
+        agent = d["agent"] if isinstance(d.get("agent"), dict) else d
+    else:
+        agent = body
+
+    op_val = agent.get("op")
+    vp_val = agent.get("vp")
+    err: dict | None = None
+    if op_val is None and vp_val is None:
+        # API responded OK but both fields are null. Most common cause on a
+        # freshly installed agent: nothing has happened yet. Flag it so the
+        # dashboard can hint at that instead of implying a failure.
+        err = {
+            "kind": "null_from_api",
+            "status": resp.status_code,
+            "message": "TagAI /me returned success but op/vp are null (likely no activity yet on this agent).",
+        }
+
+    with _tagai_lock:
+        _tagai_cache.update({
+            "op": op_val,
+            "vp": vp_val,
+            "ts": time.monotonic(),
+            "error": err,
+        })
+    return {"op": op_val, "vp": vp_val, "source": "live", "error": err}
 
 
 
@@ -1414,7 +1511,17 @@ def _build_bookmarker_social_pipeline(
                 "id": "social_drafts",
                 "label": "Social Drafts",
                 "status": "ok" if draft_list else "empty",
-                "data": {"count": len(draft_list), "types": draft_types, "x_items_seen": x_items_seen},
+                "data": {
+                    "count": len(draft_list),
+                    "types": draft_types,
+                    "x_items_seen": x_items_seen,
+                    # Bookmarker v1 runtime writes these when curation/like
+                    # fails so the UI can explain *why* drafts is empty.
+                    # Absent on older runtimes → UI should treat missing as
+                    # "no diagnostic info available".
+                    "diagnostic": drafts.get("diagnostic"),
+                    "failed_attempts": drafts.get("failed_attempts") or [],
+                },
             },
             {
                 "id": "autonomy_intent",
@@ -2649,6 +2756,10 @@ def api_agent_health():
             "vp": _live["vp"] if _live["vp"] is not None else auto_intent.get("vp"),
             "op_budget": (budget_alloc.get("allocations") or {}).get("bookmarker", {}).get("op_budget"),
             "vp_budget": (budget_alloc.get("allocations") or {}).get("bookmarker", {}).get("vp_budget"),
+            # Surface fetch provenance + error reason so the UI can distinguish
+            # "API refused us" from "API worked but no activity yet".
+            "op_vp_source": _live.get("source"),
+            "op_vp_error": _live.get("error"),
         })(),
         "trader": {
             "role": "maximize TAS_trade",

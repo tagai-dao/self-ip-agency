@@ -1796,7 +1796,29 @@ function renderBookmarkerTab(bm) {
     const dObj = bm.social_drafts || {};
     const dList = dObj.drafts || [];
     if (!dList.length) {
-      pipeDrafts.innerHTML = '<div class="muted small">No drafts</div>';
+      // Drill-down view when drafts is empty: show the diagnostic + a few
+      // failed attempts with their HTTP status/message so operators know
+      // what to fix without SSH'ing to inspect logs.
+      const bmSocial = ((bm.social_pipeline || {}).steps || []).find(s => s.id === 'social_drafts');
+      const stepData = (bmSocial && bmSocial.data) || {};
+      const diag = stepData.diagnostic;
+      const failed = stepData.failed_attempts || [];
+      let html = '<div class="muted small">No drafts</div>';
+      if (diag) {
+        html = `<div class="clr-warn small"><strong>${escHtml(diag.summary || 'no drafts')}</strong></div>` +
+          `<div class="muted small" style="margin-top:.3rem">${escHtml(diag.hint || '')}</div>`;
+        if (failed.length) {
+          const rows = failed.slice(0, 3).map(a => {
+            const err = a.curate_error || a.like_error || {};
+            const sts = err.status != null ? `HTTP ${err.status}` : (err.kind || 'err');
+            const msg = (err.message || err.body_snippet || '').slice(0, 120);
+            return `<div class="list-item small"><div class="item-left"><div class="item-title">${escHtml(a.post_id)}</div><div class="item-sub">${escHtml(msg)}</div></div><div class="item-right">${escHtml(sts)}</div></div>`;
+          }).join('');
+          html += `<div style="margin-top:.4rem">${rows}</div>`;
+          if (failed.length > 3) html += `<div class="muted small">+${failed.length - 3} more</div>`;
+        }
+      }
+      pipeDrafts.innerHTML = html;
     } else {
       pipeDrafts.innerHTML = renderMiniFeed(dList.map(d => ({
         title: (d.text || '').slice(0, 72) + ((d.text || '').length > 72 ? '…' : ''),
@@ -1999,6 +2021,17 @@ function renderPipeline(elId, pipeline, agent) {
       detail = `${d.count || 0} drafts`;
       const first = ((d.drafts || [])[0] || {});
       if (first.type || first.tick) metaLine = [first.type, first.tick].filter(Boolean).join(' · ');
+      // When drafts is empty AND the runtime published a diagnostic, surface
+      // the reason inline on the card. This is the main fix for the
+      // "Social: empty — now what?" dead-end dashboards used to show.
+      if ((d.count || 0) === 0 && d.diagnostic) {
+        const diag = d.diagnostic;
+        const failed = (d.failed_attempts || []).length;
+        const hint = escHtml(diag.hint || diag.summary || 'see detail');
+        metaLine = `<span class="clr-warn">⚠ ${escHtml(diag.summary || 'no drafts')}</span>` +
+          (failed ? `<span class="muted"> — ${failed} failed attempts</span>` : '') +
+          `<div class="muted small" style="margin-top:.2rem">${hint}</div>`;
+      }
     } else if (agent === 'bookmarker' && step.id === 'autonomy_intent') {
       const d = step.data || {};
       detail = `${escHtml(d.mode || '—')}`;
@@ -2722,15 +2755,44 @@ function renderAgentOperatingCards(agents) {
     const roleDisplay = agentId === 'claude_dispatch' ? langText('开发执行器', 'Dispatch Executor') : (translateLiteral(a.role || '') || a.role || humanize(agentId));
     const slots = [];
     // For bookmarker, show live resource pool separately from allocated budget.
-    if (agentId === 'bookmarker' && (a.op != null || a.vp != null || a.op_budget != null || a.vp_budget != null)) {
+    if (agentId === 'bookmarker' && (a.op != null || a.vp != null || a.op_budget != null || a.vp_budget != null || a.op_vp_error)) {
       const opVal = a.op != null ? Number(a.op).toFixed(1) : '—';
       const vpVal = a.vp != null ? Number(a.vp).toFixed(1) : '—';
       const opBudget = a.op_budget != null ? Number(a.op_budget).toFixed(1) : '—';
       const vpBudget = a.vp_budget != null ? Number(a.vp_budget).toFixed(1) : '—';
-      slots.push(`<div class="aoc-slot"><span class="aoc-label">${langText('OP（实时）', 'OP (live)')}</span><span class="aoc-value">${escHtml(opVal)}</span></div>`);
-      slots.push(`<div class="aoc-slot"><span class="aoc-label">${langText('VP（实时）', 'VP (live)')}</span><span class="aoc-value">${escHtml(vpVal)}</span></div>`);
+      // Render a small ⚠ marker next to OP/VP when the live fetch failed
+      // or returned null-with-a-reason. Hovering shows the cause.
+      // Previously these just displayed a bare dash with no indication of
+      // whether the agent has zero activity or the API refused credentials.
+      const err = a.op_vp_error || null;
+      const src = a.op_vp_source || null;
+      let liveMark = '';
+      let liveHint = '';
+      if (err) {
+        const kind = err.kind || 'error';
+        const msg = err.message || '';
+        const label = {
+          missing_creds: langText('凭据文件缺失', 'creds missing'),
+          missing_api_key: langText('API 密钥缺失', 'api key missing'),
+          http_error: `HTTP ${err.status || '?'}`,
+          network_error: langText('网络错误', 'network error'),
+          decode_error: langText('响应解码失败', 'decode error'),
+          null_from_api: langText('无活动数据', 'no activity yet'),
+          unknown: langText('未知错误', 'unknown'),
+        }[kind] || kind;
+        // null_from_api is an informational state, not a failure — different icon.
+        const icon = kind === 'null_from_api' ? 'ℹ' : '⚠';
+        const cls = kind === 'null_from_api' ? 'muted' : 'clr-warn';
+        liveMark = ` <span class="${cls}" style="font-size:.85em" title="${escHtml(msg)}">${icon}</span>`;
+        liveHint = `<div class="muted small" style="grid-column:1/-1;margin-top:.2rem">${escHtml(label)}${msg ? ' — ' + escHtml(msg.slice(0, 200)) : ''}</div>`;
+      } else if (src === 'stale') {
+        liveMark = ` <span class="muted" style="font-size:.85em" title="${escHtml('cached — last successful fetch')}">⋯</span>`;
+      }
+      slots.push(`<div class="aoc-slot"><span class="aoc-label">${langText('OP（实时）', 'OP (live)')}</span><span class="aoc-value">${escHtml(opVal)}${liveMark}</span></div>`);
+      slots.push(`<div class="aoc-slot"><span class="aoc-label">${langText('VP（实时）', 'VP (live)')}</span><span class="aoc-value">${escHtml(vpVal)}${liveMark}</span></div>`);
       slots.push(`<div class="aoc-slot"><span class="aoc-label">${langText('OP 预算', 'OP budget')}</span><span class="aoc-value">${escHtml(opBudget)}</span></div>`);
       slots.push(`<div class="aoc-slot"><span class="aoc-label">${langText('VP 预算', 'VP budget')}</span><span class="aoc-value">${escHtml(vpBudget)}</span></div>`);
+      if (liveHint) slots.push(liveHint);
       el.classList.remove('aoc-7col');
       el.classList.add('aoc-9col');
     } else {
