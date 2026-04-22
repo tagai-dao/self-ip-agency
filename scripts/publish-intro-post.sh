@@ -342,6 +342,54 @@ PYMARKER
 
   if [[ "$MARKER_WRITE_OK" == "ok" ]]; then
     log_ok "Wrote intro post marker: $MARKER_FILE"
+
+    # ── Append intro post event to social-history.json (durable timeline source) ──
+    SOCIAL_HISTORY="$WORKSPACE/runtime/shared/social-history.json"
+    AGENT_USERNAME="$AGENT_USERNAME" INTRO_TICK="$INTRO_TICK" TWEET_ID="$TWEET_ID" SOCIAL_HISTORY="$SOCIAL_HISTORY" python3 - <<'PYHISTORY' || log_warn "social-history append failed (non-fatal)"
+import json, os, tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+sh_path = Path(os.environ["SOCIAL_HISTORY"])
+tweet_id = os.environ.get("TWEET_ID", "")
+event_id = f"intro:{tweet_id}" if tweet_id else f"intro:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
+
+# Load existing social-history (or create minimal structure)
+if sh_path.exists():
+    try:
+        data = json.loads(sh_path.read_text(encoding="utf-8"))
+    except Exception:
+        data = {"schema": "social-history.v1", "items": []}
+else:
+    sh_path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"schema": "social-history.v1", "items": []}
+
+if not isinstance(data, dict):
+    data = {"schema": "social-history.v1", "items": []}
+items = data.setdefault("items", [])
+
+# Deduplicate: skip if this intro event is already recorded
+for ev in items:
+    if ev.get("id") == event_id:
+        break
+else:
+    items.append({
+        "id": event_id,
+        "type": "intro_post",
+        "result_status": "ok",
+        "executed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "target_key": os.environ.get("INTRO_TICK", ""),
+        "note": f"Self-introduction posted on {os.environ.get('INTRO_TICK', '')}",
+        "request": {},
+        "remote": {"tweet_id": tweet_id},
+    })
+    # Atomic write
+    with tempfile.NamedTemporaryFile("w", dir=sh_path.parent, suffix=".tmp", delete=False) as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        tmp = f.name
+    os.replace(tmp, str(sh_path))
+PYHISTORY
+
     exit 0
   else
     # Post succeeded but marker write failed — truthful status model (P0-A5)
