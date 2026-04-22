@@ -152,7 +152,13 @@ fi
 
 log_info "Found ${JOB_COUNT} jobs to register"
 
+# Staging area for stderr capture — kept until end of script for diagnostic output
+_STAGE_DIR="$(mktemp -d -t finalize-crons.XXXXXX)"
+trap 'rm -rf "$_STAGE_DIR"' EXIT
+
 # ── Remove existing jobs (idempotent) ────────────────────────────────────────
+# stderr goes to the stage dir for later inspection; rm failures are usually
+# just "job doesn't exist" and safe to ignore.
 python3 -c "
 import json
 with open('$INTENT_PATH') as f:
@@ -160,29 +166,82 @@ with open('$INTENT_PATH') as f:
 for j in d.get('jobs', []):
     print(j['name'])
 " 2>/dev/null | while IFS= read -r job_name; do
-  [ -n "$job_name" ] && openclaw cron rm "$job_name" >/dev/null 2>&1 || true
+  [ -n "$job_name" ] && openclaw cron rm "$job_name" >/dev/null 2>>"$_STAGE_DIR/rm.err" || true
 done
 
-# ── Register each job ───────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────────────────
+# register_one_with_retry: retries transient failures (gateway/connection
+# resets, normal-closure websocket drops, timeouts). Captures stderr tail on
+# final failure into $LAST_REGISTER_ERR_TAIL for diagnostic surfacing.
+LAST_REGISTER_ERR_TAIL=""
+register_one_with_retry() {
+  local name="$1" schedule="$2" session="$3" message="$4"
+  local err_file="$_STAGE_DIR/add-${name}.err"
+  local attempt max_attempts=3
+
+  for attempt in 1 2 3; do
+    # Back off before attempts 2 and 3; attempt 1 is immediate
+    case "$attempt" in
+      2) sleep 2 ;;
+      3) sleep 5 ;;
+    esac
+    if openclaw cron add \
+      --name "$name" \
+      --cron "$schedule" \
+      --session "$session" \
+      --message "$message" >/dev/null 2>"$err_file"; then
+      return 0
+    fi
+    if [ "$attempt" -lt "$max_attempts" ]; then
+      local hint
+      hint="$(tr -d '\r' < "$err_file" 2>/dev/null | tr '\n' ' ' | cut -c1-100)"
+      log_info "  attempt ${attempt}/${max_attempts} failed (${hint:-no stderr}); retrying..."
+    fi
+  done
+
+  LAST_REGISTER_ERR_TAIL="$(tr -d '\r' < "$err_file" 2>/dev/null | tail -n 3 | tr '\n' ' | ' | sed 's/ | $//')"
+  return 1
+}
+
+# verify_registered: post-check that the job actually exists in scheduler.
+# Handles CLI versions where `cron add` may report non-zero but the job did
+# actually get created (observed with gateway flaps).
+verify_registered() {
+  local name="$1"
+  openclaw cron list 2>/dev/null | grep -qE "(^|[[:space:]\"'])${name}([[:space:]\"']|$)"
+}
+
+# ── Register each job (with retry + verification) ───────────────────────────
 REGISTERED=0
 FAILED=0
 FAILED_NAMES=""
+FAILED_DETAILS_JSON="["
+_sep=""
 
 while IFS=$'\t' read -r name schedule session message; do
   [ -z "$name" ] && continue
   log_info "Registering ${name} (${schedule})..."
-  if openclaw cron add \
-    --name "$name" \
-    --cron "$schedule" \
-    --session "$session" \
-    --message "$message" >/dev/null 2>&1; then
+  if register_one_with_retry "$name" "$schedule" "$session" "$message"; then
     log_ok "Registered: ${name}"
     REGISTERED=$((REGISTERED + 1))
-  else
-    log_warn "Failed to register: ${name}"
-    FAILED=$((FAILED + 1))
-    FAILED_NAMES="${FAILED_NAMES:+$FAILED_NAMES, }$name"
+    continue
   fi
+
+  # Add reported failure. Cross-check: did it actually land anyway?
+  if verify_registered "$name"; then
+    log_ok "Registered: ${name} (verified via cron list despite add-rc; likely gateway flap)"
+    REGISTERED=$((REGISTERED + 1))
+    continue
+  fi
+
+  log_warn "Failed to register: ${name}"
+  [ -n "$LAST_REGISTER_ERR_TAIL" ] && log_warn "  ↳ ${LAST_REGISTER_ERR_TAIL}"
+  FAILED=$((FAILED + 1))
+  FAILED_NAMES="${FAILED_NAMES:+$FAILED_NAMES, }$name"
+  # JSON-escape the stderr tail for structured output
+  _esc="$(printf '%s' "$LAST_REGISTER_ERR_TAIL" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))" 2>/dev/null || printf '""')"
+  FAILED_DETAILS_JSON="${FAILED_DETAILS_JSON}${_sep}{\"name\":\"${name}\",\"stderr_tail\":${_esc}}"
+  _sep=","
 done < <(python3 -c "
 import json
 with open('$INTENT_PATH') as f:
@@ -190,6 +249,7 @@ with open('$INTENT_PATH') as f:
 for j in d.get('jobs', []):
     print(f\"{j['name']}\t{j['schedule']}\t{j['session']}\t{j['message']}\")
 " 2>/dev/null)
+FAILED_DETAILS_JSON="${FAILED_DETAILS_JSON}]"
 
 # ── Update artifacts on success ─────────────────────────────────────────────
 if [ "$FAILED" -eq 0 ] && [ "$REGISTERED" -gt 0 ]; then
@@ -250,6 +310,6 @@ os.replace(tmp, p)
   exit 0
 else
   log_warn "${REGISTERED}/${JOB_COUNT} jobs registered, ${FAILED} failed: ${FAILED_NAMES}"
-  echo "{\"status\":\"partial\",\"registered\":${REGISTERED},\"failed\":${FAILED},\"failed_names\":\"${FAILED_NAMES}\",\"message\":\"Some jobs failed to register.\"}"
+  echo "{\"status\":\"partial\",\"registered\":${REGISTERED},\"failed\":${FAILED},\"failed_names\":\"${FAILED_NAMES}\",\"failed_details\":${FAILED_DETAILS_JSON},\"message\":\"Some jobs failed to register. See failed_details[].stderr_tail for underlying errors; if it mentions 'gateway' or 'connection', this was a transient OpenClaw gateway drop — re-run the script to retry.\"}"
   exit 3
 fi
