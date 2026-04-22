@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -91,50 +92,103 @@ def resolve_api_key() -> str:
     return ""
 
 
-def tagclaw_get(endpoint: str, api_key: str,
-                base_url: str = "https://bsc-api.tagai.fun/tagclaw") -> dict | list | None:
-    """HTTP GET against TagClaw API. Returns parsed JSON or None.
+def tagclaw_request(
+    method: str,
+    endpoint: str,
+    api_key: str,
+    data: dict | None = None,
+    base_url: str = "https://bsc-api.tagai.fun/tagclaw",
+    timeout: float = 15,
+) -> tuple[dict | list | None, dict | None]:
+    """HTTP request against TagClaw API. Returns (result_or_none, error_or_none).
 
-    ``base_url`` may be overridden to reach sibling namespaces on the same
-    host (e.g. the ``/curation`` endpoints).
+    Unlike the thin ``tagclaw_get`` / ``tagclaw_post`` wrappers below, this
+    function preserves error context so callers can surface actionable
+    diagnostics instead of the previous silent-None behavior (which made
+    auth/rate-limit/network failures indistinguishable from "API returned
+    null" and an empty dashboard).
+
+    On success: ``(parsed_json, None)``.
+    On failure: ``(None, {"kind": ..., "status": ..., "body": ..., "message": ...})``.
     """
     import urllib.request
     import urllib.error
 
+    method_upper = method.upper()
+    if method_upper == "POST":
+        # Ensure trailing slash to avoid 301 redirect that drops POST body
+        endpoint = endpoint.rstrip("/") + "/"
     url = f"{base_url}{endpoint}"
-    req = urllib.request.Request(url)
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    req = urllib.request.Request(url, data=body, method=method_upper)
     if api_key:
         req.add_header("Authorization", f"Bearer {api_key}")
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
 
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            try:
+                return json.loads(raw), None
+            except Exception as e:
+                return None, {
+                    "kind": "decode_error",
+                    "status": resp.status,
+                    "body": raw[:400],
+                    "message": f"JSON decode failed: {e}",
+                    "url": url,
+                }
+    except urllib.error.HTTPError as e:
+        # HTTP response with error status (401/403/429/5xx). Keep a short body
+        # snippet for diagnostic surfacing.
+        try:
+            body_snippet = e.read().decode("utf-8", errors="replace")[:400]
+        except Exception:
+            body_snippet = ""
+        return None, {
+            "kind": "http_error",
+            "status": int(getattr(e, "code", 0) or 0),
+            "body": body_snippet,
+            "message": f"HTTP {e.code} on {method_upper} {url}",
+            "url": url,
+        }
+    except urllib.error.URLError as e:
+        # Network-level (DNS, connection refused, timeout).
+        return None, {
+            "kind": "network_error",
+            "status": None,
+            "body": "",
+            "message": f"URL error: {getattr(e, 'reason', e)}",
+            "url": url,
+        }
+    except Exception as e:
+        return None, {
+            "kind": "unknown",
+            "status": None,
+            "body": "",
+            "message": f"{type(e).__name__}: {e}",
+            "url": url,
+        }
+
+
+def tagclaw_get(endpoint: str, api_key: str,
+                base_url: str = "https://bsc-api.tagai.fun/tagclaw") -> dict | list | None:
+    """HTTP GET against TagClaw API. Returns parsed JSON or None.
+
+    Thin wrapper over ``tagclaw_request`` preserved for existing callers
+    that don't need error diagnostics. For curation/diagnostic paths, call
+    ``tagclaw_request`` directly to get structured errors.
+    """
+    result, _err = tagclaw_request("GET", endpoint, api_key, base_url=base_url)
+    return result
 
 
 def tagclaw_post(endpoint: str, api_key: str, data: dict) -> dict | None:
-    """HTTP POST against TagClaw API."""
-    import urllib.request
-    import urllib.error
-
-    base_url = "https://bsc-api.tagai.fun/tagclaw"
-    # Ensure trailing slash to avoid 301 redirect which drops POST body
-    endpoint = endpoint.rstrip("/") + "/"
-    url = f"{base_url}{endpoint}"
-    body = json.dumps(data).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST")
-    if api_key:
-        req.add_header("Authorization", f"Bearer {api_key}")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "application/json")
-
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
+    """HTTP POST against TagClaw API. Thin wrapper over ``tagclaw_request``."""
+    result, _err = tagclaw_request("POST", endpoint, api_key, data=data)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -456,37 +510,74 @@ def run_curation_cycle() -> dict:
     candidates = scored[:max_curations]
 
     # 4. Execute curation actions
+    # Classify HTTP errors as transient (retry) vs permanent (don't retry).
+    def _is_transient(err: dict | None) -> bool:
+        if not err:
+            return False
+        if err.get("kind") in ("network_error", "decode_error"):
+            return True
+        s = err.get("status") or 0
+        return s in (408, 425, 429, 500, 502, 503, 504)
+
+    def _try_once(endpoint: str, post_id: str) -> tuple[dict | None, dict | None]:
+        return tagclaw_request("POST", endpoint, api_key, {"postId": post_id})
+
+    def _try_with_retry(endpoint: str, post_id: str) -> tuple[dict | None, dict | None]:
+        """Attempt endpoint up to 3 times on transient errors (0s / +2s / +5s)."""
+        last_err: dict | None = None
+        for attempt in (1, 2, 3):
+            if attempt == 2:
+                time.sleep(2)
+            elif attempt == 3:
+                time.sleep(5)
+            result, err = _try_once(endpoint, post_id)
+            if result is not None:
+                return result, None
+            last_err = err
+            if not _is_transient(err):
+                break
+        return None, last_err
+
     for score_val, post in candidates:
         post_id = post.get("id") or post.get("postId") or post.get("post_id")
         if not post_id:
             continue
+        post_id_str = str(post_id)
 
-        # Try curate action
-        result = tagclaw_post("/curate", api_key, {"postId": str(post_id)})
+        # Try curate first
+        result, curate_err = _try_with_retry("/curate", post_id_str)
         if result is not None:
             actions_taken.append({
                 "action": "curate",
-                "post_id": str(post_id),
+                "post_id": post_id_str,
                 "score": round(score_val, 2),
-                "status": "ok"
+                "status": "ok",
             })
-        else:
-            # Fallback: try like
-            result = tagclaw_post("/like", api_key, {"postId": str(post_id)})
-            if result is not None:
-                actions_taken.append({
-                    "action": "like",
-                    "post_id": str(post_id),
-                    "score": round(score_val, 2),
-                    "status": "ok"
-                })
-            else:
-                actions_taken.append({
-                    "action": "curate",
-                    "post_id": str(post_id),
-                    "score": round(score_val, 2),
-                    "status": "failed"
-                })
+            continue
+
+        # Fallback: try like
+        result, like_err = _try_with_retry("/like", post_id_str)
+        if result is not None:
+            actions_taken.append({
+                "action": "like",
+                "post_id": post_id_str,
+                "score": round(score_val, 2),
+                "status": "ok",
+                # Note: curate was tried first and failed — keep that context.
+                "fallback_from_curate": True,
+                "curate_error": curate_err,
+            })
+            continue
+
+        # Both failed — keep the error chain so the dashboard can explain why.
+        actions_taken.append({
+            "action": "curate",
+            "post_id": post_id_str,
+            "score": round(score_val, 2),
+            "status": "failed",
+            "curate_error": curate_err,
+            "like_error": like_err,
+        })
 
     # 5. Build result
     ok_actions = [a for a in actions_taken if a["status"] == "ok"]
@@ -959,19 +1050,89 @@ def publish_bookmarker_canonical(result: dict, ts_now: str) -> None:
 
     # ── social-drafts.json ───────────────────────────────────────────────
     drafts = []
+    failed_attempts: list[dict] = []
     for action in actions:
         if action.get("status") == "ok":
             drafts.append({
                 "post_id": action.get("post_id", ""),
                 "action": action.get("action", "curate"),
                 "score": action.get("score", 0),
+                "fallback_from_curate": bool(action.get("fallback_from_curate")),
             })
+        else:
+            # Surface the actual HTTP/network error so the dashboard can show
+            # operators *why* no drafts were produced instead of just "empty".
+            curate_err = action.get("curate_error") or {}
+            like_err = action.get("like_error") or {}
+            failed_attempts.append({
+                "post_id": action.get("post_id", ""),
+                "score": action.get("score", 0),
+                "curate_error": {
+                    "kind": curate_err.get("kind"),
+                    "status": curate_err.get("status"),
+                    "message": curate_err.get("message"),
+                    "body_snippet": (curate_err.get("body") or "")[:160],
+                } if curate_err else None,
+                "like_error": {
+                    "kind": like_err.get("kind"),
+                    "status": like_err.get("status"),
+                    "message": like_err.get("message"),
+                    "body_snippet": (like_err.get("body") or "")[:160],
+                } if like_err else None,
+            })
+
+    # Synthesize a diagnostic summary the dashboard can surface inline when
+    # drafts is empty. Examples:
+    #   - all 3 returned 401 → "auth_failed"
+    #   - all 3 network errors → "tagai_api_unreachable"
+    #   - 0 attempts → "no_candidates"
+    drafts_diagnostic: dict | None = None
+    if not drafts:
+        if not failed_attempts:
+            drafts_diagnostic = {
+                "summary": "no_candidates",
+                "hint": (
+                    "No posts were selected for curation this cycle. "
+                    "Check X Sync feed ingestion and scoring thresholds."
+                ),
+            }
+        else:
+            kinds = {(a.get("curate_error") or {}).get("kind") for a in failed_attempts}
+            statuses = {(a.get("curate_error") or {}).get("status") for a in failed_attempts}
+            kinds.discard(None)
+            statuses.discard(None)
+            summary = "all_curations_failed"
+            hint = "Every curate + like attempt returned an error. See failed_attempts[] for the underlying HTTP response."
+            if statuses and statuses.issubset({401, 403}):
+                summary = "auth_failed"
+                hint = (
+                    "TagClaw API rejected this agent's credentials (401/403). "
+                    "Verify skills/tagclaw/.env has a valid TAGCLAW_API_KEY."
+                )
+            elif kinds and kinds == {"network_error"}:
+                summary = "tagai_api_unreachable"
+                hint = (
+                    "All attempts failed with network-level errors. "
+                    "Check outbound connectivity to bsc-api.tagai.fun."
+                )
+            elif statuses and 429 in statuses:
+                summary = "rate_limited"
+                hint = "TagClaw API returned HTTP 429. The agent exceeded the rate limit — backoff until next cycle."
+            drafts_diagnostic = {
+                "summary": summary,
+                "hint": hint,
+                "error_kinds": sorted(k for k in kinds if k),
+                "http_statuses": sorted(s for s in statuses if s),
+            }
+
     social_drafts = {
         "schema": "bookmarker.social-drafts.v1",
         "generated_at": ts_now,
         "updated_at": ts_now,
         "status": status,
         "drafts": drafts,
+        "failed_attempts": failed_attempts,
+        "diagnostic": drafts_diagnostic,
     }
     atomic_write_json(RUNTIME_BOOKMARKER / "social-drafts.json", social_drafts)
 
