@@ -562,6 +562,26 @@ if [ -f "$AGENCY_DIR/config/cron-jobs.json" ]; then
   done
 fi
 
+# ── Scheduler state: verify each job is actually registered in openclaw ──
+# install.sh used to report success on `cron add` exit-0 even when the job
+# was silently dropped. This catches the residual mismatch — if it fails,
+# operator should re-run install.sh or bash scripts/finalize-crons.sh.
+if command -v openclaw >/dev/null 2>&1 && openclaw --version >/dev/null 2>&1; then
+  if probe_scheduler_reachable "doctor" >/dev/null 2>&1; then
+    for j in main-heartbeat bookmarker-cycle trader-cycle; do
+      if verify_registered "$j"; then
+        ok "cron registered in scheduler: $j"
+      else
+        warn "cron NOT in openclaw cron list: $j — run: bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $WORKSPACE"
+      fi
+    done
+  else
+    warn "openclaw scheduler unreachable — cannot verify cron registration state"
+  fi
+else
+  warn "openclaw CLI unavailable — cannot verify cron registration state"
+fi
+
 echo ""
 
 # ── 10. Key scripts ─────────────────────────────────────────────────────────

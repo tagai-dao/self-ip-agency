@@ -1153,67 +1153,91 @@ register_crons() {
   fi
   log_ok "OpenClaw scheduler reachable — proceeding with cron registration"
 
-  # Auto-register cron jobs
-  local cron_ok=true
+  # Auto-register cron jobs, using verify_registered (from lib/common.sh) to
+  # confirm each add actually persisted. The CLI has been observed to exit 0
+  # on adds that silently get dropped by the scheduler (plugin config
+  # mismatch, gateway flap mid-persist), which previously made the installer
+  # report CRONS_REGISTERED=true while `openclaw cron list` stayed empty.
   _detect_cron_add_flags
 
-  # Remove existing jobs first (idempotent: ignore errors if not present)
+  # Staging dir for per-job stderr (required by register_one_with_retry).
+  _STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/install-crons.XXXXXX")"
+  # shellcheck disable=SC2064  # intentional expansion at trap-install time
+  trap "rm -rf \"$_STAGE_DIR\"" EXIT
+
+  # Remove existing jobs first (idempotent)
   for job_name in main-heartbeat bookmarker-cycle trader-cycle; do
     openclaw cron rm "$job_name" >>"$cron_log" 2>&1 || true
   done
+  sleep 1
 
-  log_info "Registering main-heartbeat (*/10 * * * *)..."
-  # shellcheck disable=SC2086  # CRON_ADD_EXTRA_FLAGS is intentionally word-split
-  if openclaw cron add \
-    --name "main-heartbeat" \
-    --cron "*/10 * * * *" \
-    --session isolated \
-    --message "Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh" \
-    $CRON_ADD_EXTRA_FLAGS >>"$cron_log" 2>&1; then
-    log_ok "Registered cron: main-heartbeat"
-  else
-    log_warn "Failed to register cron: main-heartbeat"
-    cron_ok=false
-  fi
-
-  log_info "Registering bookmarker-cycle (*/30 * * * *)..."
-  # shellcheck disable=SC2086
-  if openclaw cron add \
-    --name "bookmarker-cycle" \
-    --cron "*/30 * * * *" \
-    --session isolated \
-    --message "Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh" \
-    $CRON_ADD_EXTRA_FLAGS >>"$cron_log" 2>&1; then
-    log_ok "Registered cron: bookmarker-cycle"
-  else
-    log_warn "Failed to register cron: bookmarker-cycle"
-    cron_ok=false
-  fi
-
-  log_info "Registering trader-cycle (0 * * * *)..."
-  # shellcheck disable=SC2086
-  if openclaw cron add \
-    --name "trader-cycle" \
-    --cron "0 * * * *" \
-    --session isolated \
-    --message "Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh" \
-    $CRON_ADD_EXTRA_FLAGS >>"$cron_log" 2>&1; then
-    log_ok "Registered cron: trader-cycle"
-  else
-    log_warn "Failed to register cron: trader-cycle"
-    cron_ok=false
-  fi
-
-  if [ "$cron_ok" = "true" ]; then
-    CRONS_REGISTERED=true
-    CRON_REGISTRATION_MODE="local-cli"
-    log_ok "All 3 cron jobs registered successfully"
-    return 0
-  else
-    log_warn "Some cron jobs failed to register — check openclaw cron list"
-    log_warn "Detailed cron registration log: $cron_log"
+  # Post-rm residual check — if rm silently failed, proceeding would allow a
+  # stale job to false-positive a subsequent failed add.
+  local residual=""
+  for job_name in main-heartbeat bookmarker-cycle trader-cycle; do
+    if verify_registered "$job_name"; then
+      residual="${residual:+$residual, }$job_name"
+    fi
+  done
+  if [ -n "$residual" ]; then
+    log_warn "cron rm did not clear: $residual — scheduler flap; deferring to finalize-crons.sh"
+    CRON_REGISTRATION_MODE="deferred-tool"
+    _write_cron_intent_artifact "$workspace"
+    log_info "Finalize later with: bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace"
     return 1
   fi
+
+  # spec: name|schedule|session|message
+  local specs=(
+    "main-heartbeat|*/10 * * * *|isolated|Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh"
+    "bookmarker-cycle|*/30 * * * *|isolated|Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh"
+    "trader-cycle|0 * * * *|isolated|Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh"
+  )
+
+  local registered=()
+  local failed=()
+  local spec name sched sess msg
+  for spec in "${specs[@]}"; do
+    IFS='|' read -r name sched sess msg <<< "$spec"
+    log_info "Registering $name ($sched)..."
+    if register_one_with_retry "$name" "$sched" "$sess" "$msg"; then
+      sleep 1  # propagation delay before cron list reflects the add
+      if verify_registered "$name"; then
+        registered+=("$name")
+        log_ok "Registered + verified cron: $name"
+      else
+        failed+=("$name:add-zero-but-invisible")
+        log_warn "cron add $name returned 0 but job not visible in openclaw cron list — treating as failed"
+      fi
+    else
+      # register_one_with_retry may still have succeeded on a final attempt
+      # that the CLI reported as failed; verify before giving up.
+      if verify_registered "$name"; then
+        registered+=("$name")
+        log_ok "Registered cron: $name (CLI reported error but job is visible)"
+      else
+        failed+=("$name:$LAST_REGISTER_ERR_KIND")
+        log_warn "Failed to register cron: $name ($LAST_REGISTER_ERR_KIND)"
+        [ -n "$LAST_REGISTER_ERR_TAIL" ] && log_warn "  stderr tail: $LAST_REGISTER_ERR_TAIL"
+      fi
+    fi
+  done
+
+  if [ "${#failed[@]}" -eq 0 ]; then
+    CRONS_REGISTERED=true
+    CRON_REGISTRATION_MODE="local-cli"
+    log_ok "All 3 cron jobs registered and verified in scheduler"
+    return 0
+  fi
+
+  log_warn "Cron registration partial: succeeded=${#registered[@]}/3, failed=${failed[*]}"
+  log_warn "Detailed cron registration log: $cron_log"
+  # Drop to deferred-tool so the install contract reflects reality and the
+  # operator gets a concrete finalize command.
+  CRON_REGISTRATION_MODE="deferred-tool"
+  _write_cron_intent_artifact "$workspace"
+  log_info "Finalize later with: bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace"
+  return 1
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2071,7 +2095,7 @@ print(json.dumps({
 
     if [ "$CREDENTIALS_EXIST" = "true" ]; then
       _emit_step_simple "verify_env_files" \
-        "Verify $workspace/skills/tagclaw/.env contains TAGCLAW_API_KEY and $workspace/skills/tagclaw-wallet/.env contains the wallet bootstrap fields"
+        "Verify $workspace/skills/tagclaw/.env contains TAGCLAW_API_KEY; confirm $workspace/skills/tagclaw-wallet/.env exists with mode 600 (do not cat its contents — it holds Steem private keys)"
     fi
 
     # Guided X sync next-step text depends on whether the blocker is an

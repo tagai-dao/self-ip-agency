@@ -380,12 +380,16 @@ register_account() {
     log_warn "No --description supplied. Using default description."
   fi
 
-  local payload_json
-  payload_json="$(python3 - <<'PY' "$WALLET_ENV" "$effective_name" "$effective_desc"
+  local payload_file body_file http_code
+  payload_file="$(mktemp)"
+  chmod 600 "$payload_file"
+  body_file="$(mktemp)"
+  # Keys never touch shell variables or argv — Python writes the payload
+  # directly to a 600-mode temp file, curl reads it with @file, and we rm it.
+  python3 - "$WALLET_ENV" "$effective_name" "$effective_desc" "$payload_file" <<'PY'
 import json, pathlib, sys
-path = pathlib.Path(sys.argv[1])
-name = sys.argv[2]
-description = sys.argv[3]
+wallet_env, name, description, out_path = sys.argv[1:5]
+path = pathlib.Path(wallet_env)
 data = {}
 for line in path.read_text().splitlines():
     s = line.strip()
@@ -406,13 +410,11 @@ payload = {
         'memo': data.get('TAGCLAW_STEEM_MEMO'),
     },
 }
-print(json.dumps(payload))
+pathlib.Path(out_path).write_text(json.dumps(payload))
 PY
-)"
 
-  local body_file http_code
-  body_file="$(mktemp)"
-  http_code="$(curl -sS -o "$body_file" -w '%{http_code}' -X POST "$TAGCLAW_API/register" -H 'Content-Type: application/json' -d "$payload_json")"
+  http_code="$(curl -sS -o "$body_file" -w '%{http_code}' -X POST "$TAGCLAW_API/register" -H 'Content-Type: application/json' --data-binary "@$payload_file")"
+  rm -f "$payload_file"
   if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
     log_err "TagClaw register failed (HTTP $http_code)"
     python3 - <<'PY' "$body_file" >&2
