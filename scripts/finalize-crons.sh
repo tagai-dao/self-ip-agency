@@ -172,11 +172,36 @@ if [ -x "$_REPAIR_TOOL" ]; then
     _REPAIR_STATUS="$(printf '%s' "$_DOCTOR_OUTPUT" | python3 -c 'import sys,json; print(json.load(sys.stdin)["status"])' 2>/dev/null || echo "unknown")"
     case "$_REPAIR_STATUS" in
       ok) ;;
-      mismatches_found|orphans_found|doctor_warnings)
+      mismatches_found|orphans_found|unactivated_plugins|doctor_warnings)
         _DOCTOR_HAS_PLUGIN_WARNING=1
-        log_warn "Plugin entries check: ${_REPAIR_STATUS}. These are a common root cause of cron registration failure."
-        log_warn "Run for fix instructions:  bash $(printf '%q' "$_REPAIR_TOOL")"
-        log_warn "Full diagnostic will be included in the partial-failure JSON if any cron adds fail." ;;
+        log_warn "Plugin entries check: ${_REPAIR_STATUS}. This is a common root cause of cron registration failure."
+        # Surface the first specific fix command inline so agents don't have to
+        # shell out to the repair tool to see the action. Only show one line
+        # (the rest is in the tool's full report).
+        _TOP_FIX="$(printf '%s' "$_DOCTOR_OUTPUT" | python3 -c '
+import sys, json
+r = json.load(sys.stdin)
+for m in r.get("mismatches", []):
+    cmds = m.get("fix_commands") or []
+    if cmds:
+        print(f"MISMATCH {m[\"config_key\"]}.{m[\"field\"]}: {cmds[0]}")
+        sys.exit(0)
+for o in r.get("orphans", []):
+    cmds = o.get("fix_commands") or []
+    if cmds:
+        print(f"ORPHAN {o[\"config_key\"]}: {cmds[0]}")
+        sys.exit(0)
+for u in r.get("unactivated_plugins", []):
+    fix = u.get("fix_command")
+    if fix:
+        print(f"NEEDS ACTIVATION {u[\"plugin_id\"]}: {fix}")
+        sys.exit(0)
+' 2>/dev/null || true)"
+        if [ -n "$_TOP_FIX" ]; then
+          log_warn "Suggested fix (one jq command): ${_TOP_FIX}"
+        fi
+        log_warn "Full report: bash $(printf '%q' "$_REPAIR_TOOL")"
+        log_warn "If any cron adds fail, the partial-failure JSON will include the full repair diagnostic." ;;
       *) ;;  # parse errors or unknown — include silently in diagnostic
     esac
   fi

@@ -150,14 +150,86 @@ for key, cfg in entries.items():
 
 doctor_plugin_lines = [
     ln.strip() for ln in doctor_output.splitlines()
-    if re.search(r"plugin", ln, re.IGNORECASE) and re.search(r"mismatch|not.*found|failed|error", ln, re.IGNORECASE)
+    if re.search(r"plugin", ln, re.IGNORECASE) and re.search(r"mismatch|not.*found|failed|error|not.*loaded|not.*in.*allow|disabled", ln, re.IGNORECASE)
 ]
+
+# ── Reverse scan: plugins discovered on disk but not activated in config ───
+# The mismatch/orphan loops above iterate openclaw.json entries. That misses
+# the clawdi-observed case: a plugin physically installed (so it shows up in
+# `openclaw plugins list --json`) with status != "loaded", but NO entry in
+# plugins.entries and NOT in plugins.allow. The scheduler then rejects cron
+# registrations with plugin_config_mismatch referencing that plugin.
+#
+# To avoid false-positives against the legitimately-disabled-bundled-plugins
+# (on a fresh mac mini: 77 of 82 plugins are discovered-but-disabled by
+# design), we only report a plugin as "unactivated" when BOTH:
+#   1. Status is not "loaded"
+#   2. `openclaw plugins doctor` specifically called it out
+# That second condition is the trust signal — doctor is the CLI's own
+# authority on what's problematic.
+allow_list = set((oc.get("plugins") or {}).get("allow") or [])
+unactivated = []
+
+def _doctor_mentions(pid: str, name) -> bool:
+    needles = [pid]
+    if name:
+        needles.append(name)
+    for ln in doctor_plugin_lines:
+        lnl = ln.lower()
+        for n in needles:
+            if n and n.lower() in lnl:
+                return True
+    return False
+
+for plugin in plugins_data.get("plugins", []):
+    pid = plugin.get("id")
+    if not pid:
+        continue
+    status = plugin.get("status") or ""
+    if status == "loaded":
+        continue
+    if pid in entries:
+        # Has an entry already; covered by mismatch loop. Skip to avoid
+        # double-reporting.
+        continue
+    if not _doctor_mentions(pid, plugin.get("name")):
+        continue
+    real_name = plugin.get("name") or pid
+    # Single jq command to atomically whitelist + enable. Using `//` defaults
+    # keeps the command idempotent even if plugins.allow or entries is absent.
+    combined_fix = (
+        f'jq \'.plugins.allow = ((.plugins.allow // []) + ["{pid}"] | unique) '
+        f'| .plugins.entries = (.plugins.entries // {{}}) '
+        f'| .plugins.entries["{pid}"] = ((.plugins.entries["{pid}"] // {{}}) | .enabled = true)\' '
+        f'"{oc_path}" > /tmp/oc.json && mv /tmp/oc.json "{oc_path}"'
+    )
+    unactivated.append({
+        "plugin_id": pid,
+        "plugin_name": real_name,
+        "status": status,
+        "origin": plugin.get("origin"),
+        "in_allow": pid in allow_list,
+        "root_dir": plugin.get("rootDir"),
+        "config_schema": plugin.get("configSchema"),
+        "fix_command": combined_fix,
+        "next_steps": [
+            "After applying:",
+            "  1. If the plugin needs config (workspaceDir, apiKey, etc.),",
+            f"     run: openclaw plugins inspect {pid}",
+            "     then add the required fields under",
+            f"     plugins.entries[\"{pid}\"].config in openclaw.json",
+            "  2. Restart OpenClaw.",
+            "  3. Re-run: bash scripts/finalize-crons.sh",
+        ],
+    })
 
 status = "ok"
 if mismatches:
     status = "mismatches_found"
 elif orphans:
     status = "orphans_found"
+elif unactivated:
+    status = "unactivated_plugins"
 elif doctor_plugin_lines:
     status = "doctor_warnings"
 
@@ -168,6 +240,7 @@ print(json.dumps({
     "loaded_plugins": len(plugins_by_id),
     "mismatches": mismatches,
     "orphans": orphans,
+    "unactivated_plugins": unactivated,
     "doctor_plugin_warnings": doctor_plugin_lines,
 }, ensure_ascii=False, indent=2))
 PY
@@ -226,8 +299,25 @@ for o in r.get("orphans", []):
         print(f"    $ {cmd}")
     print()
 
-if r.get("doctor_plugin_warnings"):
-    print("openclaw plugins doctor warnings (not auto-diagnosed):")
+for u in r.get("unactivated_plugins", []):
+    print(f'NEEDS ACTIVATION: {u["plugin_id"]}  (status={u["status"]}, origin={u.get("origin")})')
+    print(f'    plugin name: {u["plugin_name"]!r}')
+    print(f'    root dir   : {u.get("root_dir")}')
+    print(f'    in allow   : {u["in_allow"]}')
+    has_schema = u.get("config_schema")
+    if has_schema:
+        print(f'    config_schema: true — plugin has configurable options')
+    print()
+    print("  Fix (one jq command adds to plugins.allow AND enables the entry):")
+    print(f'    $ {u["fix_command"]}')
+    print()
+    for ln in u.get("next_steps", []):
+        print(f"    {ln}")
+    print()
+
+if r.get("doctor_plugin_warnings") and not r.get("mismatches") and not r.get("orphans") and not r.get("unactivated_plugins"):
+    # Only surface raw doctor lines when we couldn't auto-classify them.
+    print("openclaw plugins doctor warnings (no matching plugin found in list — investigate manually):")
     for ln in r["doctor_plugin_warnings"][:10]:
         print(f"    {ln}")
 PY
