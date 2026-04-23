@@ -140,6 +140,23 @@ fi
 
 log_ok "Scheduler reachable"
 
+# ── Preflight: openclaw doctor (informational — captures plugin warnings) ──
+# If `openclaw doctor` exists on this CLI, run it and save its output. We do
+# NOT abort on doctor warnings here (doctor may warn about unrelated things);
+# instead we hand the captured output to the partial-failure diagnostic so
+# that when a cron add later fails with plugin_config_mismatch, the operator
+# has the exact doctor output alongside the stderr tail.
+_DOCTOR_OUTPUT=""
+_DOCTOR_HAS_PLUGIN_WARNING=0
+if openclaw doctor --help >/dev/null 2>&1; then
+  _DOCTOR_OUTPUT="$(openclaw doctor 2>&1 | head -c 4000 || true)"
+  if printf '%s' "$_DOCTOR_OUTPUT" | grep -qiE 'plugin.*(mismatch|not found|entry hint)'; then
+    _DOCTOR_HAS_PLUGIN_WARNING=1
+    log_warn "openclaw doctor reports plugin warnings — plugin config mismatches are a common root cause of cron registration failure."
+    log_warn "Doctor output will be included in the partial-failure diagnostic if any cron adds fail."
+  fi
+fi
+
 # ── Read jobs from intent artifact ──────────────────────────────────────────
 JOB_COUNT="$(INTENT_PATH="$INTENT_PATH" python3 -c "
 import json, os
@@ -164,11 +181,73 @@ trap 'rm -rf "$_STAGE_DIR"' EXIT
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 # (Defined before the rm loop so post-rm verification can use verify_registered.)
+
+# classify_cron_error STDERR_TEXT → prints one classification token to stdout.
 #
+# Classifications (grouped by retry-worthiness):
+#   PERMANENT (no point retrying — fix the config, not the connection):
+#     plugin_config_mismatch — openclaw.json entry ≠ plugin package.json name
+#     plugin_not_found       — referenced plugin isn't installed/registered
+#     permission_denied      — auth, 401/403, invalid api key
+#     schema_invalid         — bad request, validation error, 400
+#   TRANSIENT (the retry loop's reason to exist):
+#     gateway_flap           — connect/reset/normal-closure/timeout
+#   unknown                  — default; retried once in case it's flaky
+classify_cron_error() {
+  local t
+  t="$(printf '%s' "${1-}" | tr '[:upper:]' '[:lower:]')"
+  case "$t" in
+    *"plugin"*"mismatch"*|*"entry hint"*"manifest"*|*"plugin id"*"mismatch"*)
+      echo "plugin_config_mismatch" ;;
+    *"plugin"*"not found"*|*"plugin"*"not registered"*|*"unknown plugin"*)
+      echo "plugin_not_found" ;;
+    *"permission denied"*|*"unauthorized"*|*"invalid api key"*|*" 401"*|*" 403"*)
+      echo "permission_denied" ;;
+    *"schema"*"invalid"*|*"validation"*"error"*|*"bad request"*|*" 400"*)
+      echo "schema_invalid" ;;
+    *"gateway connect failed"*|*"gateway closed"*|*"normal closure"*|*"econnreset"*|*"timed out"*|*"timeout"*|*"connection refused"*|*"connection reset"*)
+      echo "gateway_flap" ;;
+    *)
+      echo "unknown" ;;
+  esac
+}
+
+is_permanent_kind() {
+  case "$1" in
+    plugin_config_mismatch|plugin_not_found|permission_denied|schema_invalid) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# kind_to_hint CLASSIFICATION → prints the operator-facing fix hint.
+kind_to_hint() {
+  case "$1" in
+    plugin_config_mismatch)
+      echo "Plugin id mismatch between openclaw.json and the plugin's package.json \"name\". Fix: align \`plugins.entries.<id>.entry\` in ~/.openclaw/openclaw.json with the plugin manifest's name, or run \`openclaw doctor\`. Then re-run this script." ;;
+    plugin_not_found)
+      echo "Scheduler references a plugin that isn't installed/registered. Fix: install the plugin (\`openclaw plugin install ...\`) or remove the stale entry from ~/.openclaw/openclaw.json." ;;
+    permission_denied)
+      echo "Scheduler rejected the registration. Fix: check OpenClaw auth / API key. Run \`openclaw auth status\` or re-authenticate." ;;
+    schema_invalid)
+      echo "Scheduler rejected the cron job shape (bad request / schema violation). Fix: update OpenClaw CLI (\`pnpm up -g openclaw@latest\`) — the installer may target a field the CLI no longer accepts." ;;
+    gateway_flap)
+      echo "All errors are transient OpenClaw gateway drops. Re-run this script — the retry loop already absorbs single flaps, but the gateway was unstable throughout this run." ;;
+    mixed_failures)
+      echo "Failures have multiple root causes. See failed_details[].kind/stderr_tail per job." ;;
+    unknown)
+      echo "Unrecognized error. See failed_details[].stderr_tail for the raw CLI output." ;;
+    *)
+      echo "" ;;
+  esac
+}
+
 # register_one_with_retry: retries transient failures (gateway/connection
-# resets, normal-closure websocket drops, timeouts). Captures stderr tail on
-# final failure into $LAST_REGISTER_ERR_TAIL for diagnostic surfacing.
+# resets, normal-closure websocket drops, timeouts). Captures stderr tail and
+# a classification for the *final* failed attempt. Permanent errors break the
+# retry loop immediately (no point sleeping through 3 identical plugin-id
+# mismatches).
 LAST_REGISTER_ERR_TAIL=""
+LAST_REGISTER_ERR_KIND="unknown"
 register_one_with_retry() {
   local name="$1" schedule="$2" session="$3" message="$4"
   # Sanitize name for filesystem use (defend against path traversal if name
@@ -180,6 +259,7 @@ register_one_with_retry() {
   safe_name="$(printf '%s' "$name" | tr -c 'a-zA-Z0-9_-' '_')"
   local err_file="$_STAGE_DIR/add-${safe_name}.err"
   local attempt max_attempts=3
+  local last_kind="unknown"
 
   for attempt in 1 2 3; do
     # Back off before attempts 2 and 3; attempt 1 is immediate
@@ -194,16 +274,28 @@ register_one_with_retry() {
       --message "$message" >/dev/null 2>"$err_file"; then
       return 0
     fi
+
+    # Classify this attempt's error so we can fail-fast on permanent errors.
+    local err_body
+    err_body="$(cat "$err_file" 2>/dev/null || true)"
+    last_kind="$(classify_cron_error "$err_body")"
+    if is_permanent_kind "$last_kind"; then
+      local hint
+      hint="$(printf '%s' "$err_body" | tr -d '\r' | tr '\n' ' ' | cut -c1-120)"
+      log_info "  attempt ${attempt}/${max_attempts} failed with ${last_kind} — permanent, aborting retry (${hint:-no stderr})"
+      break
+    fi
     if [ "$attempt" -lt "$max_attempts" ]; then
       local hint
-      hint="$(tr -d '\r' < "$err_file" 2>/dev/null | tr '\n' ' ' | cut -c1-100)"
-      log_info "  attempt ${attempt}/${max_attempts} failed (${hint:-no stderr}); retrying..."
+      hint="$(printf '%s' "$err_body" | tr -d '\r' | tr '\n' ' ' | cut -c1-100)"
+      log_info "  attempt ${attempt}/${max_attempts} failed (${last_kind}, ${hint:-no stderr}); retrying..."
     fi
   done
 
   # Join last 3 stderr lines with ' | '. awk (not tr) because `tr '\n' ' | '`
   # only uses the first char of set2 (space), dropping the pipe.
   LAST_REGISTER_ERR_TAIL="$(tr -d '\r' < "$err_file" 2>/dev/null | tail -n 3 | awk 'NR>1{printf " | "} {printf "%s",$0}')"
+  LAST_REGISTER_ERR_KIND="$last_kind"
   return 1
 }
 
@@ -276,6 +368,7 @@ fi
 REGISTERED=0
 FAILED=0
 FAILED_NAMES=""
+FAILED_KINDS=""
 FAILED_DETAILS_JSON="["
 _sep=""
 
@@ -295,17 +388,19 @@ while IFS=$'\t' read -r name schedule session message; do
     continue
   fi
 
-  log_warn "Failed to register: ${name}"
+  log_warn "Failed to register: ${name} [${LAST_REGISTER_ERR_KIND}]"
   [ -n "$LAST_REGISTER_ERR_TAIL" ] && log_warn "  ↳ ${LAST_REGISTER_ERR_TAIL}"
   FAILED=$((FAILED + 1))
   FAILED_NAMES="${FAILED_NAMES:+$FAILED_NAMES, }$name"
-  # Build the failed-details entry with python json.dumps so that BOTH the name
-  # and the stderr_tail are JSON-escaped. A pathologically-named job (containing
-  # '"' or '\\') would otherwise emit malformed JSON.
-  _entry="$(TAIL="$LAST_REGISTER_ERR_TAIL" NAME="$name" python3 -c "
+  # Track per-job kinds for the aggregate diagnostic.
+  FAILED_KINDS="${FAILED_KINDS:+$FAILED_KINDS }${LAST_REGISTER_ERR_KIND}"
+  # Build the failed-details entry with python json.dumps so that name,
+  # stderr_tail, AND kind are JSON-escaped. A pathologically-named job
+  # (containing '"' or '\\') would otherwise emit malformed JSON.
+  _entry="$(TAIL="$LAST_REGISTER_ERR_TAIL" NAME="$name" KIND="$LAST_REGISTER_ERR_KIND" python3 -c "
 import json, os
-print(json.dumps({'name': os.environ['NAME'], 'stderr_tail': os.environ['TAIL']}))
-" 2>/dev/null || printf '{"name":"?","stderr_tail":"?"}')"
+print(json.dumps({'name': os.environ['NAME'], 'stderr_tail': os.environ['TAIL'], 'kind': os.environ['KIND']}))
+" 2>/dev/null || printf '{"name":"?","stderr_tail":"?","kind":"unknown"}')"
   FAILED_DETAILS_JSON="${FAILED_DETAILS_JSON}${_sep}${_entry}"
   _sep=","
 done < <(INTENT_PATH="$INTENT_PATH" python3 -c "
@@ -375,23 +470,69 @@ os.replace(tmp, p)
   echo "{\"status\":\"ok\",\"registered\":${REGISTERED},\"message\":\"All cron jobs registered successfully.\"}"
   exit 0
 else
+  # Aggregate failed kinds into a single summary classification. If every
+  # failure classifies the same way, surface that kind directly. Otherwise,
+  # "mixed_failures" signals the operator to inspect failed_details[].kind
+  # per job.
+  _AGG_KIND="unknown"
+  if [ -n "$FAILED_KINDS" ]; then
+    _UNIQ_KINDS="$(printf '%s\n' $FAILED_KINDS | sort -u | tr '\n' ' ' | sed 's/ $//')"
+    # shellcheck disable=SC2086
+    set -- $_UNIQ_KINDS
+    if [ "$#" -eq 1 ]; then
+      _AGG_KIND="$1"
+    else
+      _AGG_KIND="mixed_failures"
+    fi
+  fi
+  _AGG_HINT="$(kind_to_hint "$_AGG_KIND")"
+
   log_warn "${REGISTERED}/${JOB_COUNT} jobs registered, ${FAILED} failed: ${FAILED_NAMES}"
-  # Build the final partial-failure JSON with python so failed_names (free-text)
-  # is JSON-escaped alongside failed_details. Prior versions interpolated
-  # ${FAILED_NAMES} as a raw bash string, breaking JSON if a name contained
-  # '"' or '\\'.
-  _PARTIAL_JSON="$(REGISTERED="$REGISTERED" FAILED="$FAILED" FAILED_NAMES="$FAILED_NAMES" FAILED_DETAILS="$FAILED_DETAILS_JSON" python3 -c "
+
+  # Human-readable summary block on stderr so operators reading terminal
+  # output see the fix hint without having to parse the JSON stdout. This
+  # is the piece that was missing — clawdi's agent had to recognise
+  # "plugin id mismatch" and derive the fix itself last time.
+  {
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "❌ ${FAILED}/${JOB_COUNT} cron jobs failed to register."
+    echo ""
+    echo "Root cause (aggregate classification): ${_AGG_KIND}"
+    if [ -n "$_AGG_HINT" ]; then
+      # Wrap the hint at ~72 chars for terminal readability using fold.
+      printf '%s\n' "$_AGG_HINT" | fold -s -w 72 | sed 's/^/  /'
+    fi
+    if [ "$_DOCTOR_HAS_PLUGIN_WARNING" -eq 1 ] && [ -n "$_DOCTOR_OUTPUT" ]; then
+      echo ""
+      echo "openclaw doctor output (plugin warnings — likely relevant):"
+      printf '%s\n' "$_DOCTOR_OUTPUT" | head -n 20 | sed 's/^/  /'
+    fi
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+  } >&2
+
+  # Structured JSON to stdout (unchanged consumers get the same top-level
+  # fields; new `diagnostic` + per-job `kind` are additive).
+  _PARTIAL_JSON="$(REGISTERED="$REGISTERED" FAILED="$FAILED" FAILED_NAMES="$FAILED_NAMES" FAILED_DETAILS="$FAILED_DETAILS_JSON" AGG_KIND="$_AGG_KIND" AGG_HINT="$_AGG_HINT" DOCTOR_OUT="$_DOCTOR_OUTPUT" DOCTOR_WARN="$_DOCTOR_HAS_PLUGIN_WARNING" python3 -c "
 import json, os
+diagnostic = {
+    'summary': os.environ['AGG_KIND'],
+    'hint': os.environ['AGG_HINT'],
+}
+if os.environ.get('DOCTOR_WARN') == '1' and os.environ.get('DOCTOR_OUT'):
+    diagnostic['doctor_output'] = os.environ['DOCTOR_OUT']
 print(json.dumps({
     'status': 'partial',
     'registered': int(os.environ['REGISTERED']),
     'failed': int(os.environ['FAILED']),
     'failed_names': os.environ['FAILED_NAMES'],
     'failed_details': json.loads(os.environ['FAILED_DETAILS']),
+    'diagnostic': diagnostic,
     'message': (
-        'Some jobs failed to register. See failed_details[].stderr_tail for '
-        \"underlying errors; if it mentions 'gateway' or 'connection', this was \"
-        'a transient OpenClaw gateway drop — re-run the script to retry.'
+        'Some jobs failed to register. See diagnostic.summary for the aggregate '
+        'root cause and diagnostic.hint for the fix. Per-job kind + stderr_tail '
+        'in failed_details[] for debugging mixed failures.'
     ),
 }))
 " 2>/dev/null || printf '{\"status\":\"partial\",\"registered\":%d,\"failed\":%d,\"message\":\"partial (json encoder failed)\"}' "$REGISTERED" "$FAILED")"
