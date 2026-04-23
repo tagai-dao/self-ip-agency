@@ -155,20 +155,38 @@ else
   log_warn "openclaw CLI does NOT support --no-deliver. Cron run status may show 'error' on delivery failures even when script succeeds. Consider upgrading: pnpm up -g openclaw@latest"
 fi
 
-# ── Preflight: openclaw doctor (informational — captures plugin warnings) ──
-# If `openclaw doctor` exists on this CLI, run it and save its output. We do
-# NOT abort on doctor warnings here (doctor may warn about unrelated things);
-# instead we hand the captured output to the partial-failure diagnostic so
-# that when a cron add later fails with plugin_config_mismatch, the operator
-# has the exact doctor output alongside the stderr tail.
+# ── Preflight: plugin-entries diagnostic (informational) ──────────────────
+# `scripts/repair-plugin-entries.sh` cross-references openclaw.json's
+# `plugins.entries` against the CLI's authoritative `openclaw plugins list
+# --json` output + `openclaw plugins doctor`, and prints actionable jq
+# commands for any mismatches/orphans. When cron registration later fails
+# with `plugin_config_mismatch`, we surface this preflight report in the
+# partial-failure diagnostic so the operator doesn't have to spend 30+
+# minutes figuring out which jq edit will unblock them.
 _DOCTOR_OUTPUT=""
 _DOCTOR_HAS_PLUGIN_WARNING=0
-if openclaw doctor --help >/dev/null 2>&1; then
+_REPAIR_TOOL="$SCRIPT_DIR/repair-plugin-entries.sh"
+if [ -x "$_REPAIR_TOOL" ]; then
+  _DOCTOR_OUTPUT="$(bash "$_REPAIR_TOOL" --json 2>/dev/null || true)"
+  if [ -n "$_DOCTOR_OUTPUT" ]; then
+    _REPAIR_STATUS="$(printf '%s' "$_DOCTOR_OUTPUT" | python3 -c 'import sys,json; print(json.load(sys.stdin)["status"])' 2>/dev/null || echo "unknown")"
+    case "$_REPAIR_STATUS" in
+      ok) ;;
+      mismatches_found|orphans_found|doctor_warnings)
+        _DOCTOR_HAS_PLUGIN_WARNING=1
+        log_warn "Plugin entries check: ${_REPAIR_STATUS}. These are a common root cause of cron registration failure."
+        log_warn "Run for fix instructions:  bash $(printf '%q' "$_REPAIR_TOOL")"
+        log_warn "Full diagnostic will be included in the partial-failure JSON if any cron adds fail." ;;
+      *) ;;  # parse errors or unknown — include silently in diagnostic
+    esac
+  fi
+elif openclaw doctor --help >/dev/null 2>&1; then
+  # Fallback to plain `openclaw doctor` if the repair tool isn't where we
+  # expect (e.g., someone invoked finalize-crons.sh from an older checkout).
   _DOCTOR_OUTPUT="$(openclaw doctor 2>&1 | head -c 4000 || true)"
   if printf '%s' "$_DOCTOR_OUTPUT" | grep -qiE 'plugin.*(mismatch|not found|entry hint)'; then
     _DOCTOR_HAS_PLUGIN_WARNING=1
     log_warn "openclaw doctor reports plugin warnings — plugin config mismatches are a common root cause of cron registration failure."
-    log_warn "Doctor output will be included in the partial-failure diagnostic if any cron adds fail."
   fi
 fi
 
@@ -238,7 +256,7 @@ is_permanent_kind() {
 kind_to_hint() {
   case "$1" in
     plugin_config_mismatch)
-      echo "Plugin id mismatch between openclaw.json and the plugin's package.json \"name\". Fix: align \`plugins.entries.<id>.entry\` in ~/.openclaw/openclaw.json with the plugin manifest's name, or run \`openclaw doctor\`. Then re-run this script." ;;
+      echo "Plugin id mismatch between openclaw.json and the plugin's package.json \"name\". Run \`bash scripts/repair-plugin-entries.sh\` — it prints the exact jq commands to fix your config. Then restart OpenClaw and re-run this script." ;;
     plugin_not_found)
       echo "Scheduler references a plugin that isn't installed/registered. Fix: install the plugin (\`openclaw plugin install ...\`) or remove the stale entry from ~/.openclaw/openclaw.json." ;;
     permission_denied)
