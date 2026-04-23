@@ -155,20 +155,38 @@ else
   log_warn "openclaw CLI does NOT support --no-deliver. Cron run status may show 'error' on delivery failures even when script succeeds. Consider upgrading: pnpm up -g openclaw@latest"
 fi
 
-# ── Preflight: openclaw doctor (informational — captures plugin warnings) ──
-# If `openclaw doctor` exists on this CLI, run it and save its output. We do
-# NOT abort on doctor warnings here (doctor may warn about unrelated things);
-# instead we hand the captured output to the partial-failure diagnostic so
-# that when a cron add later fails with plugin_config_mismatch, the operator
-# has the exact doctor output alongside the stderr tail.
+# ── Preflight: plugin-entries diagnostic (informational) ──────────────────
+# `scripts/repair-plugin-entries.sh` cross-references openclaw.json's
+# `plugins.entries` against the CLI's authoritative `openclaw plugins list
+# --json` output + `openclaw plugins doctor`, and prints actionable jq
+# commands for any mismatches/orphans. When cron registration later fails
+# with `plugin_config_mismatch`, we surface this preflight report in the
+# partial-failure diagnostic so the operator doesn't have to spend 30+
+# minutes figuring out which jq edit will unblock them.
 _DOCTOR_OUTPUT=""
 _DOCTOR_HAS_PLUGIN_WARNING=0
-if openclaw doctor --help >/dev/null 2>&1; then
+_REPAIR_TOOL="$SCRIPT_DIR/repair-plugin-entries.sh"
+if [ -x "$_REPAIR_TOOL" ]; then
+  _DOCTOR_OUTPUT="$(bash "$_REPAIR_TOOL" --json 2>/dev/null || true)"
+  if [ -n "$_DOCTOR_OUTPUT" ]; then
+    _REPAIR_STATUS="$(printf '%s' "$_DOCTOR_OUTPUT" | python3 -c 'import sys,json; print(json.load(sys.stdin)["status"])' 2>/dev/null || echo "unknown")"
+    case "$_REPAIR_STATUS" in
+      ok) ;;
+      mismatches_found|orphans_found|doctor_warnings)
+        _DOCTOR_HAS_PLUGIN_WARNING=1
+        log_warn "Plugin entries check: ${_REPAIR_STATUS}. These are a common root cause of cron registration failure."
+        log_warn "Run for fix instructions:  bash $(printf '%q' "$_REPAIR_TOOL")"
+        log_warn "Full diagnostic will be included in the partial-failure JSON if any cron adds fail." ;;
+      *) ;;  # parse errors or unknown — include silently in diagnostic
+    esac
+  fi
+elif openclaw doctor --help >/dev/null 2>&1; then
+  # Fallback to plain `openclaw doctor` if the repair tool isn't where we
+  # expect (e.g., someone invoked finalize-crons.sh from an older checkout).
   _DOCTOR_OUTPUT="$(openclaw doctor 2>&1 | head -c 4000 || true)"
   if printf '%s' "$_DOCTOR_OUTPUT" | grep -qiE 'plugin.*(mismatch|not found|entry hint)'; then
     _DOCTOR_HAS_PLUGIN_WARNING=1
     log_warn "openclaw doctor reports plugin warnings — plugin config mismatches are a common root cause of cron registration failure."
-    log_warn "Doctor output will be included in the partial-failure diagnostic if any cron adds fail."
   fi
 fi
 
@@ -195,10 +213,139 @@ _STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/finalize-crons.XXXXXX")"
 trap 'rm -rf "$_STAGE_DIR"' EXIT
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
-# classify_cron_error / is_permanent_kind / kind_to_hint / register_one_with_retry
-# / verify_registered are defined in lib/common.sh and shared with install.sh.
-# This keeps finalize-crons.sh and install.sh:register_crons on identical
-# classification + post-add verification logic.
+# (Defined before the rm loop so post-rm verification can use verify_registered.)
+
+# classify_cron_error STDERR_TEXT → prints one classification token to stdout.
+#
+# Classifications (grouped by retry-worthiness):
+#   PERMANENT (no point retrying — fix the config, not the connection):
+#     plugin_config_mismatch — openclaw.json entry ≠ plugin package.json name
+#     plugin_not_found       — referenced plugin isn't installed/registered
+#     permission_denied      — auth, 401/403, invalid api key
+#     schema_invalid         — bad request, validation error, 400
+#   TRANSIENT (the retry loop's reason to exist):
+#     gateway_flap           — connect/reset/normal-closure/timeout
+#   unknown                  — default; retried once in case it's flaky
+classify_cron_error() {
+  local t
+  t="$(printf '%s' "${1-}" | tr '[:upper:]' '[:lower:]')"
+  case "$t" in
+    *"plugin"*"mismatch"*|*"entry hint"*"manifest"*|*"plugin id"*"mismatch"*)
+      echo "plugin_config_mismatch" ;;
+    *"plugin"*"not found"*|*"plugin"*"not registered"*|*"unknown plugin"*)
+      echo "plugin_not_found" ;;
+    *"permission denied"*|*"unauthorized"*|*"invalid api key"*|*" 401"*|*" 403"*)
+      echo "permission_denied" ;;
+    *"schema"*"invalid"*|*"validation"*"error"*|*"bad request"*|*" 400"*)
+      echo "schema_invalid" ;;
+    *"gateway connect failed"*|*"gateway closed"*|*"normal closure"*|*"econnreset"*|*"timed out"*|*"timeout"*|*"connection refused"*|*"connection reset"*)
+      echo "gateway_flap" ;;
+    *)
+      echo "unknown" ;;
+  esac
+}
+
+is_permanent_kind() {
+  case "$1" in
+    plugin_config_mismatch|plugin_not_found|permission_denied|schema_invalid) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# kind_to_hint CLASSIFICATION → prints the operator-facing fix hint.
+kind_to_hint() {
+  case "$1" in
+    plugin_config_mismatch)
+      echo "Plugin id mismatch between openclaw.json and the plugin's package.json \"name\". Run \`bash scripts/repair-plugin-entries.sh\` — it prints the exact jq commands to fix your config. Then restart OpenClaw and re-run this script." ;;
+    plugin_not_found)
+      echo "Scheduler references a plugin that isn't installed/registered. Fix: install the plugin (\`openclaw plugin install ...\`) or remove the stale entry from ~/.openclaw/openclaw.json." ;;
+    permission_denied)
+      echo "Scheduler rejected the registration. Fix: check OpenClaw auth / API key. Run \`openclaw auth status\` or re-authenticate." ;;
+    schema_invalid)
+      echo "Scheduler rejected the cron job shape (bad request / schema violation). Fix: update OpenClaw CLI (\`pnpm up -g openclaw@latest\`) — the installer may target a field the CLI no longer accepts." ;;
+    gateway_flap)
+      echo "All errors are transient OpenClaw gateway drops. Re-run this script — the retry loop already absorbs single flaps, but the gateway was unstable throughout this run." ;;
+    mixed_failures)
+      echo "Failures have multiple root causes. See failed_details[].kind/stderr_tail per job." ;;
+    unknown)
+      echo "Unrecognized error. See failed_details[].stderr_tail for the raw CLI output." ;;
+    *)
+      echo "" ;;
+  esac
+}
+
+# register_one_with_retry: retries transient failures (gateway/connection
+# resets, normal-closure websocket drops, timeouts). Captures stderr tail and
+# a classification for the *final* failed attempt. Permanent errors break the
+# retry loop immediately (no point sleeping through 3 identical plugin-id
+# mismatches).
+LAST_REGISTER_ERR_TAIL=""
+LAST_REGISTER_ERR_KIND="unknown"
+register_one_with_retry() {
+  local name="$1" schedule="$2" session="$3" message="$4"
+  # Sanitize name for filesystem use (defend against path traversal if name
+  # contains '/' or '..'). Alphanumerics / underscore / dash only; everything
+  # else becomes '_'. Names that only differ in non-alnum chars will collide
+  # on err_file, which is acceptable for current installer inputs (three
+  # fixed names) and logged distinctly anyway.
+  local safe_name
+  safe_name="$(printf '%s' "$name" | tr -c 'a-zA-Z0-9_-' '_')"
+  local err_file="$_STAGE_DIR/add-${safe_name}.err"
+  local attempt max_attempts=3
+  local last_kind="unknown"
+
+  for attempt in 1 2 3; do
+    # Back off before attempts 2 and 3; attempt 1 is immediate
+    case "$attempt" in
+      2) sleep 2 ;;
+      3) sleep 5 ;;
+    esac
+    # shellcheck disable=SC2086  # $CRON_ADD_EXTRA_FLAGS is either "" or "--no-deliver"
+    if openclaw cron add \
+      --name "$name" \
+      --cron "$schedule" \
+      --session "$session" \
+      --message "$message" \
+      $CRON_ADD_EXTRA_FLAGS >/dev/null 2>"$err_file"; then
+      return 0
+    fi
+
+    # Classify this attempt's error so we can fail-fast on permanent errors.
+    local err_body
+    err_body="$(cat "$err_file" 2>/dev/null || true)"
+    last_kind="$(classify_cron_error "$err_body")"
+    if is_permanent_kind "$last_kind"; then
+      local hint
+      hint="$(printf '%s' "$err_body" | tr -d '\r' | tr '\n' ' ' | cut -c1-120)"
+      log_info "  attempt ${attempt}/${max_attempts} failed with ${last_kind} — permanent, aborting retry (${hint:-no stderr})"
+      break
+    fi
+    if [ "$attempt" -lt "$max_attempts" ]; then
+      local hint
+      hint="$(printf '%s' "$err_body" | tr -d '\r' | tr '\n' ' ' | cut -c1-100)"
+      log_info "  attempt ${attempt}/${max_attempts} failed (${last_kind}, ${hint:-no stderr}); retrying..."
+    fi
+  done
+
+  # Join last 3 stderr lines with ' | '. awk (not tr) because `tr '\n' ' | '`
+  # only uses the first char of set2 (space), dropping the pipe.
+  LAST_REGISTER_ERR_TAIL="$(tr -d '\r' < "$err_file" 2>/dev/null | tail -n 3 | awk 'NR>1{printf " | "} {printf "%s",$0}')"
+  LAST_REGISTER_ERR_KIND="$last_kind"
+  return 1
+}
+
+# verify_registered: post-check that a job name exists in scheduler.
+# Used both for post-rm residual detection and for post-add success
+# confirmation when the CLI reports non-zero but the job did get created
+# (observed with gateway flaps).
+verify_registered() {
+  local name="$1"
+  # Escape regex metacharacters in name so names containing '.', '*', '[', etc.
+  # don't produce false matches or break the regex.
+  local name_re
+  name_re="$(printf '%s' "$name" | sed 's/[][\\.^$*+?(){}|/]/\\&/g')"
+  openclaw cron list 2>/dev/null | grep -qE "(^|[[:space:]\"'])${name_re}([[:space:]\"']|$)"
+}
 
 # ── Remove existing jobs (idempotent) ────────────────────────────────────────
 # stderr goes to the stage dir for later inspection; rm failures when the job
