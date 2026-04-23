@@ -56,6 +56,23 @@ IDENTITY_RESOLVED=false
 CRONS_REGISTERED=false
 CRON_REGISTRATION_MODE=""        # local-cli | deferred-tool | blocked
 CRON_INTENT_PATH=""              # path to .install-cron-jobs.json when deferred
+# `--no-deliver` (when the CLI supports it) tells OpenClaw's scheduler NOT to
+# attempt announcing run summaries over the outbound mux. Our three cron jobs
+# write results to runtime/ JSONs — announce delivery is overhead that causes
+# false `error` run states on deployments where the outbound route isn't
+# bound (`mux outbound failed (403): route not bound`). Detected lazily at
+# first cron-add site so the probe only runs when needed.
+CRON_ADD_EXTRA_FLAGS=""
+CRON_ADD_EXTRA_FLAGS_PROBED=false
+_detect_cron_add_flags() {
+  [ "$CRON_ADD_EXTRA_FLAGS_PROBED" = "true" ] && return 0
+  CRON_ADD_EXTRA_FLAGS_PROBED=true
+  if command -v openclaw >/dev/null 2>&1 && openclaw cron add --help 2>&1 | grep -q -- '--no-deliver'; then
+    CRON_ADD_EXTRA_FLAGS="--no-deliver"
+  else
+    log_warn "openclaw CLI does NOT support --no-deliver. Cron run status may show 'error' on delivery failures even when script succeeds. Consider upgrading: pnpm up -g openclaw@latest"
+  fi
+}
 RAW_SEED_STATUS="not_attempted"  # ok | partial | failed | not_attempted
 X_TWEETS_SEED_STATUS="not_attempted"   # ok | partial | deferred | blocked | failed | not_attempted | dry-run
 X_TWEETS_COMPILE_STATUS="not_attempted" # ok | deferred | failed | not_attempted | dry-run
@@ -830,7 +847,7 @@ d = {
             'timeout_seconds': 300,
         },
     ],
-    'finalize_command': 'openclaw cron add --name \"{name}\" --cron \"{schedule}\" --session {session} --message \"{message}\"',
+    'finalize_command': 'openclaw cron add --name \"{name}\" --cron \"{schedule}\" --session {session} --message \"{message}\" --no-deliver',
     'finalize_script': 'bash scripts/finalize-crons.sh --workspace $workspace',
     'notes': 'Installer-side CLI cron auto-registration was not available in this environment. Run finalize_script when the scheduler is reachable, or use finalize_command for individual jobs.',
 }
@@ -910,14 +927,17 @@ for j in d.get('jobs', []):
   local registered_count=0
   local failed_jobs=""
 
+  _detect_cron_add_flags
   while IFS=$'\t' read -r name schedule session message; do
     [ -z "$name" ] && continue
     log_info "Deferred finalization: registering $name ($schedule)..."
+    # shellcheck disable=SC2086  # CRON_ADD_EXTRA_FLAGS is intentionally word-split
     if openclaw cron add \
       --name "$name" \
       --cron "$schedule" \
       --session "$session" \
-      --message "$message" >>"$cron_log" 2>&1; then
+      --message "$message" \
+      $CRON_ADD_EXTRA_FLAGS >>"$cron_log" 2>&1; then
       log_ok "Deferred finalization: registered $name"
       registered_count=$((registered_count + 1))
     else
@@ -979,19 +999,26 @@ _print_manual_cron_commands() {
   echo "    --name \"main-heartbeat\" \\"
   echo "    --cron \"*/10 * * * *\" \\"
   echo "    --session isolated \\"
-  echo "    --message \"Run the main heartbeat cycle: bash $ws/scripts/main-heartbeat.sh\""
+  echo "    --message \"Run the main heartbeat cycle: bash $ws/scripts/main-heartbeat.sh\" \\"
+  echo "    --no-deliver"
   echo ""
   echo "  openclaw cron add \\"
   echo "    --name \"bookmarker-cycle\" \\"
   echo "    --cron \"*/30 * * * *\" \\"
   echo "    --session isolated \\"
-  echo "    --message \"Run the bookmarker curation cycle: bash $ws/scripts/bookmarker-cycle.sh\""
+  echo "    --message \"Run the bookmarker curation cycle: bash $ws/scripts/bookmarker-cycle.sh\" \\"
+  echo "    --no-deliver"
   echo ""
   echo "  openclaw cron add \\"
   echo "    --name \"trader-cycle\" \\"
   echo "    --cron \"0 * * * *\" \\"
   echo "    --session isolated \\"
-  echo "    --message \"Run the trader operations cycle: bash $ws/scripts/trader-cycle.sh\""
+  echo "    --message \"Run the trader operations cycle: bash $ws/scripts/trader-cycle.sh\" \\"
+  echo "    --no-deliver"
+  echo ""
+  echo "  (The --no-deliver flag disables announce delivery, which avoids false"
+  echo "  'error' run states when the outbound mux route is not bound. Required for"
+  echo "  correct cron status reporting — see VERSION 2.5.5+ release notes.)"
   echo ""
   echo "  ══════════════════════════════════════════════════════════"
   echo ""
@@ -1128,6 +1155,7 @@ register_crons() {
 
   # Auto-register cron jobs
   local cron_ok=true
+  _detect_cron_add_flags
 
   # Remove existing jobs first (idempotent: ignore errors if not present)
   for job_name in main-heartbeat bookmarker-cycle trader-cycle; do
@@ -1135,11 +1163,13 @@ register_crons() {
   done
 
   log_info "Registering main-heartbeat (*/10 * * * *)..."
+  # shellcheck disable=SC2086  # CRON_ADD_EXTRA_FLAGS is intentionally word-split
   if openclaw cron add \
     --name "main-heartbeat" \
     --cron "*/10 * * * *" \
     --session isolated \
-    --message "Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh" >>"$cron_log" 2>&1; then
+    --message "Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh" \
+    $CRON_ADD_EXTRA_FLAGS >>"$cron_log" 2>&1; then
     log_ok "Registered cron: main-heartbeat"
   else
     log_warn "Failed to register cron: main-heartbeat"
@@ -1147,11 +1177,13 @@ register_crons() {
   fi
 
   log_info "Registering bookmarker-cycle (*/30 * * * *)..."
+  # shellcheck disable=SC2086
   if openclaw cron add \
     --name "bookmarker-cycle" \
     --cron "*/30 * * * *" \
     --session isolated \
-    --message "Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh" >>"$cron_log" 2>&1; then
+    --message "Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh" \
+    $CRON_ADD_EXTRA_FLAGS >>"$cron_log" 2>&1; then
     log_ok "Registered cron: bookmarker-cycle"
   else
     log_warn "Failed to register cron: bookmarker-cycle"
@@ -1159,11 +1191,13 @@ register_crons() {
   fi
 
   log_info "Registering trader-cycle (0 * * * *)..."
+  # shellcheck disable=SC2086
   if openclaw cron add \
     --name "trader-cycle" \
     --cron "0 * * * *" \
     --session isolated \
-    --message "Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh" >>"$cron_log" 2>&1; then
+    --message "Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh" \
+    $CRON_ADD_EXTRA_FLAGS >>"$cron_log" 2>&1; then
     log_ok "Registered cron: trader-cycle"
   else
     log_warn "Failed to register cron: trader-cycle"
