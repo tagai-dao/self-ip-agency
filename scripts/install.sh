@@ -776,6 +776,20 @@ install_autoresearch() {
 _detect_cron_registration_mode() {
   local workspace="$1"
 
+  # Explicit override for environments where the shell CLI has narrower
+  # pairing scopes than the agent runtime that will finalize cron jobs.
+  case "${SELF_IP_AGENCY_CRON_REGISTRATION_MODE:-}" in
+    local-cli|deferred-tool|blocked)
+      CRON_REGISTRATION_MODE="$SELF_IP_AGENCY_CRON_REGISTRATION_MODE"
+      return 0
+      ;;
+    "")
+      ;;
+    *)
+      log_warn "Ignoring invalid SELF_IP_AGENCY_CRON_REGISTRATION_MODE=$SELF_IP_AGENCY_CRON_REGISTRATION_MODE"
+      ;;
+  esac
+
   # Signal 1: explicit cloud env vars (clawdi, cloud-run, etc.)
   if [ -n "${CLAWDI_CLOUD_ENV:-}" ] || [ -n "${CLAWDI_SESSION_ID:-}" ] || \
      [ -n "${CLOUD_RUN_JOB:-}" ] || [ -n "${K_SERVICE:-}" ] || \
@@ -829,6 +843,7 @@ d = {
             'name': 'main-heartbeat',
             'schedule': '*/10 * * * *',
             'session': 'isolated',
+            'command': 'bash $workspace/scripts/main-heartbeat.sh',
             'message': 'Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh',
             'timeout_seconds': 120,
         },
@@ -836,6 +851,7 @@ d = {
             'name': 'bookmarker-cycle',
             'schedule': '*/30 * * * *',
             'session': 'isolated',
+            'command': 'bash $workspace/scripts/bookmarker-cycle.sh',
             'message': 'Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh',
             'timeout_seconds': 180,
         },
@@ -843,13 +859,20 @@ d = {
             'name': 'trader-cycle',
             'schedule': '0 * * * *',
             'session': 'isolated',
+            'command': 'bash $workspace/scripts/trader-cycle.sh',
             'message': 'Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh',
             'timeout_seconds': 300,
         },
     ],
+    'approval': {
+        'required': True,
+        'reply_text': '同意创建 cron',
+        'prompt': 'Reply "同意创建 cron" to authorize the agent/tool path to create these three OpenClaw cron jobs.',
+        'tg_channel_supported_if': 'The Telegram channel is connected to an already-approved OpenClaw agent/operator that can execute native cron tools. If it is only a shell CLI device with operator.read, the user must approve the pending OpenClaw device scope upgrade first.',
+    },
     'finalize_command': 'openclaw cron add --name \"{name}\" --cron \"{schedule}\" --session {session} --message \"{message}\" --no-deliver',
     'finalize_script': 'bash scripts/finalize-crons.sh --workspace $workspace',
-    'notes': 'Installer-side CLI cron auto-registration was not available in this environment. Run finalize_script when the scheduler is reachable, or use finalize_command for individual jobs.',
+    'notes': 'Installer-side CLI cron auto-registration was not available in this environment. Prefer the agent/tool path after user approval; use finalize_script only as a CLI fallback after any required OpenClaw device scope-upgrade approval.',
 }
 print(json.dumps(d, indent=2))
 ")"
@@ -2117,7 +2140,7 @@ print(json.dumps({
     if [ "$CRONS_REGISTERED" != "true" ] && [ "$TAGCLAW_STATUS" = "active" ]; then
       if [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ]; then
         local _finalize_cmd="bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace"
-        NEXT_STEPS_TEXT+=("Finalize deferred cron registration: ${_finalize_cmd}")
+        NEXT_STEPS_TEXT+=("Reply \"同意创建 cron\" to authorize the agent to create the deferred OpenClaw cron jobs from $CRON_INTENT_PATH. CLI fallback after device approval: ${_finalize_cmd}")
         STEP_KINDS+=("finalize_crons")
         STEP_PAYLOADS+=("$(python3 -c '
 import json, sys
@@ -2125,11 +2148,16 @@ cmd = sys.argv[1]
 intent = sys.argv[2]
 print(json.dumps({
     "kind": "finalize_crons",
-    "title": "Finalize deferred cron registration",
-    "action": f"Finalize deferred cron registration: {cmd}",
+    "title": "Approve deferred cron registration",
+    "action": "Reply \"同意创建 cron\" to authorize the agent/tool path to create the deferred OpenClaw cron jobs.",
     "command": cmd,
     "intent_artifact": intent,
+    "approval_required": True,
+    "approval_reply": "同意创建 cron",
     "auto_dispatchable": True,
+    "preferred_agent_behavior": "Wait for the user to reply exactly \"同意创建 cron\" in this conversation or a connected Telegram channel. Then read intent_artifact and create each jobs[] entry with the native OpenClaw cron tool. Use command only as a CLI fallback after any required OpenClaw device scope-upgrade approval.",
+    "preferred_install_mode": "SELF_IP_AGENCY_CRON_REGISTRATION_MODE=deferred-tool",
+    "tg_channel_behavior": "Supported only when the Telegram channel routes to an already-approved OpenClaw agent/operator with native cron tool access. A read-only CLI device still needs explicit OpenClaw device approval.",
     "exit_codes": {"0": "success", "1": "precondition_failure", "2": "scheduler_unreachable", "3": "partial_registration"},
 }))
 ' "$_finalize_cmd" "$CRON_INTENT_PATH")")
@@ -2596,6 +2624,18 @@ print(json.dumps(d, indent=2))
           echo '   ```'
           echo ""
           echo "   The public URL will be written to \`$DASHBOARD_PUBLIC_STATE_FILE\` under \`public.url\`."
+        elif [ "$_k" = "finalize_crons" ]; then
+          echo "$((md_i + 1)). **Approve deferred cron registration**"
+          echo ""
+          echo "   Reply \`同意创建 cron\` to let the agent create the three OpenClaw cron jobs from:"
+          echo ""
+          echo "   \`$CRON_INTENT_PATH\`"
+          echo ""
+          echo "   If only the shell CLI path is available and OpenClaw reports \`pairing_required\`, approve the pending device scope upgrade first, then run:"
+          echo ""
+          echo '   ```bash'
+          echo "   bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace"
+          echo '   ```'
         else
           echo "$((md_i + 1)). ${NEXT_STEPS_TEXT[$md_i]}"
         fi

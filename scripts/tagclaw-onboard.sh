@@ -651,15 +651,25 @@ PY
   log_info "Re-running installer to register cron jobs and deploy dashboard"
   bash "$repo_install"
 
-  local crons_registered install_status
+  local crons_registered install_status cron_registration_mode cron_registration_status cron_intent_path
   crons_registered="$(read_installed_field crons_registered)"
   install_status="$(read_installed_field install_status)"
+  cron_registration_mode="$(read_installed_field cron_registration_mode)"
+  cron_registration_status="$(read_installed_field cron_registration_status)"
+  cron_intent_path="$(read_installed_field cron_intent_path)"
   if [ "$crons_registered" != "True" ] && [ "$crons_registered" != "true" ]; then
-    log_err "Cron registration did not complete successfully — refusing to continue with dashboard setup"
-    if [ -n "$install_status" ]; then
-      log_warn "Current install status: $install_status"
+    if [ "$cron_registration_mode" = "deferred-tool" ] || [ "$cron_registration_status" = "pending_finalization" ]; then
+      log_warn "Cron registration is deferred to the OpenClaw agent/tool path — continuing dashboard setup"
+      if [ -n "$cron_intent_path" ]; then
+        log_warn "Cron intent artifact: $cron_intent_path"
+      fi
+    else
+      log_err "Cron registration did not complete successfully — refusing to continue with dashboard setup"
+      if [ -n "$install_status" ]; then
+        log_warn "Current install status: $install_status"
+      fi
+      return 1
     fi
-    return 1
   fi
 
   local dashboard_service

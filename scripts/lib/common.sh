@@ -327,6 +327,7 @@ probe_scheduler_reachable() {
 #   PERMANENT (no point retrying — fix config, not connection):
 #     plugin_config_mismatch — openclaw.json entry ≠ plugin package.json name
 #     plugin_not_found       — referenced plugin isn't installed/registered
+#     pairing_required       — CLI device needs a scope-upgrade approval
 #     permission_denied      — auth, 401/403, invalid api key
 #     schema_invalid         — bad request, validation error, 400
 #   TRANSIENT (retry loop's reason to exist):
@@ -340,6 +341,8 @@ classify_cron_error() {
       echo "plugin_config_mismatch" ;;
     *"plugin"*"not found"*|*"plugin"*"not registered"*|*"unknown plugin"*)
       echo "plugin_not_found" ;;
+    *"pairing required"*|*"scope-upgrade"*|*"scope upgrade"*|*"asking for more scopes"*)
+      echo "pairing_required" ;;
     *"permission denied"*|*"unauthorized"*|*"invalid api key"*|*" 401"*|*" 403"*)
       echo "permission_denied" ;;
     *"schema"*"invalid"*|*"validation"*"error"*|*"bad request"*|*" 400"*)
@@ -353,7 +356,7 @@ classify_cron_error() {
 
 is_permanent_kind() {
   case "$1" in
-    plugin_config_mismatch|plugin_not_found|permission_denied|schema_invalid) return 0 ;;
+    plugin_config_mismatch|plugin_not_found|pairing_required|permission_denied|schema_invalid) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -365,6 +368,8 @@ kind_to_hint() {
       echo "Plugin id mismatch between openclaw.json and the plugin's package.json \"name\". Fix: align \`plugins.entries.<id>.entry\` in ~/.openclaw/openclaw.json with the plugin manifest's name, or run \`openclaw doctor\`. Then re-run this script." ;;
     plugin_not_found)
       echo "Scheduler references a plugin that isn't installed/registered. Fix: install the plugin (\`openclaw plugin install ...\`) or remove the stale entry from ~/.openclaw/openclaw.json." ;;
+    pairing_required)
+      echo "The OpenClaw CLI device needs a scope-upgrade approval before shell-driven cron registration can continue. Fix: run \`openclaw devices list --json\`, approve the pending request, then re-run this script. If an agent/tool cron path is available, use the deferred cron intent artifact instead of shelling out through the CLI." ;;
     permission_denied)
       echo "Scheduler rejected the registration. Fix: check OpenClaw auth / API key. Run \`openclaw auth status\` or re-authenticate." ;;
     schema_invalid)
