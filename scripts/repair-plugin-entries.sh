@@ -223,6 +223,68 @@ for plugin in plugins_data.get("plugins", []):
         ],
     })
 
+# ── Per-plugin internal manifest scan ──────────────────────────────────────
+# Observed on clawdi install: `plugin id mismatch (manifest uses "clawdi-plugin",
+# entry hints "openclaw-plugin")` persists even after fixing openclaw.json.
+# Root cause: each plugin has an `openclaw.plugin.json` file in its rootDir
+# with its own `id` field. When a plugin is renamed but openclaw.plugin.json.id
+# isn't updated, OpenClaw warns. The fix belongs to the plugin's own files —
+# not openclaw.json.
+#
+# We deliberately IGNORE `package.json#name` as a mismatch source. npm scoping
+# (`@openclaw/acpx` → plugin id `acpx`) is a legitimate and widespread pattern;
+# OpenClaw doesn't treat it as a mismatch. Flagging it produced false positives
+# on bundled plugins (acpx, amazon-bedrock, etc.) on a known-clean Mac mini.
+#
+# We also gate on `openclaw plugins doctor` explicitly mentioning the plugin.
+# If doctor is quiet about a plugin, any id difference we see is benign.
+manifest_mismatches = []
+for pid, plugin in plugins_by_id.items():
+    root_dir = plugin.get("rootDir")
+    if not root_dir:
+        continue
+    oc_plugin_path = os.path.join(root_dir, "openclaw.plugin.json")
+    if not os.path.exists(oc_plugin_path):
+        continue
+    try:
+        with open(oc_plugin_path) as f:
+            oc_plugin = json.load(f)
+    except Exception:
+        continue
+    oc_plugin_id = oc_plugin.get("id")
+    if not oc_plugin_id or oc_plugin_id == pid:
+        continue  # aligned — no mismatch
+
+    # Only report if doctor flagged this plugin. Keeps us quiet on installs
+    # where an id difference exists but OpenClaw doesn't consider it a bug.
+    if not _doctor_mentions(pid, plugin.get("name")):
+        continue
+
+    manifest_mismatches.append({
+        "plugin_id": pid,
+        "plugin_name": plugin.get("name"),
+        "root_dir": root_dir,
+        "cli_resolved_id": pid,
+        "openclaw_plugin_json_id": oc_plugin_id,
+        "openclaw_plugin_json_path": oc_plugin_path,
+        "fix_commands": [
+            # Align the stale openclaw.plugin.json.id to the CLI-loaded pid
+            f'jq \'.id = "{pid}"\' "{oc_plugin_path}" > /tmp/oc-plugin.json && '
+            f'mv /tmp/oc-plugin.json "{oc_plugin_path}"    '
+            f'# align openclaw.plugin.json.id ({oc_plugin_id!r} → {pid!r}) (recommended)',
+        ],
+        "next_steps": [
+            "After applying:",
+            "  1. Restart OpenClaw (so the scheduler re-reads the plugin manifest).",
+            "  2. Run `openclaw plugins doctor` — the mismatch warning should be gone.",
+            "  3. Re-run: bash scripts/finalize-crons.sh",
+            "",
+            "Why this can't be fixed from openclaw.json: the mismatch lives in the",
+            "plugin's own openclaw.plugin.json file, NOT in your OpenClaw config.",
+            "Adding/removing entries in openclaw.json won't silence this warning.",
+        ],
+    })
+
 status = "ok"
 if mismatches:
     status = "mismatches_found"
@@ -230,6 +292,8 @@ elif orphans:
     status = "orphans_found"
 elif unactivated:
     status = "unactivated_plugins"
+elif manifest_mismatches:
+    status = "plugin_manifest_mismatch"
 elif doctor_plugin_lines:
     status = "doctor_warnings"
 
@@ -241,6 +305,7 @@ print(json.dumps({
     "mismatches": mismatches,
     "orphans": orphans,
     "unactivated_plugins": unactivated,
+    "plugin_manifest_mismatches": manifest_mismatches,
     "doctor_plugin_warnings": doctor_plugin_lines,
 }, ensure_ascii=False, indent=2))
 PY
@@ -315,7 +380,26 @@ for u in r.get("unactivated_plugins", []):
         print(f"    {ln}")
     print()
 
-if r.get("doctor_plugin_warnings") and not r.get("mismatches") and not r.get("orphans") and not r.get("unactivated_plugins"):
+for m in r.get("plugin_manifest_mismatches", []):
+    print(f'MANIFEST MISMATCH: {m["plugin_id"]}  (fix lives in the plugin dir, NOT in openclaw.json)')
+    print(f'    root dir                 : {m["root_dir"]}')
+    print(f'    CLI-resolved id          : {m["cli_resolved_id"]!r}')
+    print(f'    openclaw.plugin.json id  : {m["openclaw_plugin_json_id"]!r}  (stale — causes the warning)')
+    print(f'    file                     : {m["openclaw_plugin_json_path"]}')
+    print()
+    print("  Fix (one jq command, aligns the stale id to the CLI-resolved id):")
+    for cmd in m["fix_commands"]:
+        print(f"    $ {cmd}")
+    print()
+    for ln in m.get("next_steps", []):
+        print(f"    {ln}")
+    print()
+
+if (r.get("doctor_plugin_warnings")
+        and not r.get("mismatches")
+        and not r.get("orphans")
+        and not r.get("unactivated_plugins")
+        and not r.get("plugin_manifest_mismatches")):
     # Only surface raw doctor lines when we couldn't auto-classify them.
     print("openclaw plugins doctor warnings (no matching plugin found in list — investigate manually):")
     for ln in r["doctor_plugin_warnings"][:10]:

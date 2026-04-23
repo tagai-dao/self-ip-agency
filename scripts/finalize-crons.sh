@@ -172,7 +172,7 @@ if [ -x "$_REPAIR_TOOL" ]; then
     _REPAIR_STATUS="$(printf '%s' "$_DOCTOR_OUTPUT" | python3 -c 'import sys,json; print(json.load(sys.stdin)["status"])' 2>/dev/null || echo "unknown")"
     case "$_REPAIR_STATUS" in
       ok) ;;
-      mismatches_found|orphans_found|unactivated_plugins|doctor_warnings)
+      mismatches_found|orphans_found|unactivated_plugins|plugin_manifest_mismatch|doctor_warnings)
         _DOCTOR_HAS_PLUGIN_WARNING=1
         log_warn "Plugin entries check: ${_REPAIR_STATUS}. This is a common root cause of cron registration failure."
         # Surface the first specific fix command inline so agents don't have to
@@ -195,6 +195,11 @@ for u in r.get("unactivated_plugins", []):
     fix = u.get("fix_command")
     if fix:
         print(f"NEEDS ACTIVATION {u[\"plugin_id\"]}: {fix}")
+        sys.exit(0)
+for mm in r.get("plugin_manifest_mismatches", []):
+    cmds = mm.get("fix_commands") or []
+    if cmds:
+        print(f"MANIFEST MISMATCH {mm[\"plugin_id\"]} (in {mm[\"root_dir\"]}): {cmds[0]}")
         sys.exit(0)
 ' 2>/dev/null || true)"
         if [ -n "$_TOP_FIX" ]; then
