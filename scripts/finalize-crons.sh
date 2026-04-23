@@ -140,6 +140,21 @@ fi
 
 log_ok "Scheduler reachable"
 
+# ── Detect supported cron-add flags ─────────────────────────────────────────
+# `--no-deliver` tells the scheduler NOT to attempt announcing run summaries
+# over the outbound mux. Without it, cron jobs whose runs exit 0 still get
+# marked `error` on deployments where the outbound route isn't bound
+# (observed on clawdi installs: `mux outbound failed (403): route not bound`).
+# Our three jobs write results to runtime/ JSONs — the dashboard reads those
+# directly, announce delivery is pure overhead.
+CRON_ADD_EXTRA_FLAGS=""
+if openclaw cron add --help 2>&1 | grep -q -- '--no-deliver'; then
+  CRON_ADD_EXTRA_FLAGS="--no-deliver"
+  log_info "openclaw CLI supports --no-deliver — registering cron jobs with announce disabled."
+else
+  log_warn "openclaw CLI does NOT support --no-deliver. Cron run status may show 'error' on delivery failures even when script succeeds. Consider upgrading: pnpm up -g openclaw@latest"
+fi
+
 # ── Preflight: openclaw doctor (informational — captures plugin warnings) ──
 # If `openclaw doctor` exists on this CLI, run it and save its output. We do
 # NOT abort on doctor warnings here (doctor may warn about unrelated things);
@@ -267,11 +282,13 @@ register_one_with_retry() {
       2) sleep 2 ;;
       3) sleep 5 ;;
     esac
+    # shellcheck disable=SC2086  # $CRON_ADD_EXTRA_FLAGS is either "" or "--no-deliver"
     if openclaw cron add \
       --name "$name" \
       --cron "$schedule" \
       --session "$session" \
-      --message "$message" >/dev/null 2>"$err_file"; then
+      --message "$message" \
+      $CRON_ADD_EXTRA_FLAGS >/dev/null 2>"$err_file"; then
       return 0
     fi
 
