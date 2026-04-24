@@ -1566,12 +1566,33 @@ seed_raw_docs() {
     return 0
   fi
 
-  if bash "$seed_script" --workspace "$workspace" 2>&1; then
+  local seed_timeout="${SELF_IP_AGENCY_RAW_SEED_TIMEOUT_SECONDS:-60}"
+  if python3 - "$seed_script" "$workspace" "$seed_timeout" <<'PY'; then
+import subprocess, sys
+
+script, workspace, timeout_s = sys.argv[1:4]
+try:
+    timeout = int(timeout_s)
+except ValueError:
+    timeout = 60
+
+try:
+    proc = subprocess.run(
+        ["bash", script, "--workspace", workspace],
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        timeout=timeout,
+    )
+    raise SystemExit(proc.returncode)
+except subprocess.TimeoutExpired:
+    print(f"[WARN] Raw docs seeding timed out after {timeout}s; continuing install.", file=sys.stderr)
+    raise SystemExit(124)
+PY
     RAW_SEED_STATUS="ok"
     log_ok "Raw knowledge base seeded"
   else
     RAW_SEED_STATUS="partial"
-    log_warn "Raw seeding had issues (non-fatal) — some sources may be missing"
+    log_warn "Raw seeding had issues or timed out (non-fatal) — some sources may be missing"
   fi
 
   # Check if the summary exists to confirm at least partial success
@@ -1934,8 +1955,6 @@ main() {
   install_runtime
   install_wiki
   install_autoresearch
-  seed_raw_docs
-  sync_guided_x_tweets
 
   # ── Gate: wait for TagClaw verification before registering crons / dashboard ──
   local TAGCLAW_ACTIVATED=false
@@ -1943,6 +1962,7 @@ main() {
     TAGCLAW_ACTIVATED=true
     register_crons || true
     install_dashboard
+    seed_raw_docs
     sync_guided_x_tweets
     compile_x_tweets_wiki
   else
