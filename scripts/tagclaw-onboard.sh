@@ -528,15 +528,28 @@ import json, sys
 print((json.loads(sys.argv[1]).get('TAGCLAW_STATUS') or '').strip())
 PY
 )"
+  local current_username current_profile_url
+  current_username="$(python3 - <<'PY' "$skill_json"
+import json, sys
+print((json.loads(sys.argv[1]).get('TAGCLAW_AGENT_USERNAME') or '').strip())
+PY
+)"
+  current_profile_url="$(python3 - <<'PY' "$skill_json"
+import json, sys
+print((json.loads(sys.argv[1]).get('TAGCLAW_PROFILE_URL') or '').strip())
+PY
+)"
   if [ -z "$api_key" ]; then
     log_err "TAGCLAW_API_KEY not found in $SKILL_ENV. Run the register step first."
     return 1
   fi
 
   log_info "Polling TagClaw status for up to ${TIMEOUT_SECONDS}s"
-  local started now last_status body_file http_code status_json new_status username profile_url
+  local started now last_status last_username last_profile_url body_file http_code status_json new_status username profile_url
   started="$(date +%s)"
   last_status="$current_status"
+  last_username="$current_username"
+  last_profile_url="$current_profile_url"
 
   while true; do
     now="$(date +%s)"
@@ -586,10 +599,24 @@ PY
 
     if [ "$new_status" != "$last_status" ]; then
       log_info "TagClaw status changed: ${last_status:-unknown} → ${new_status:-unknown}"
-      last_status="$new_status"
     fi
 
-    if [ -n "$new_status" ]; then
+    # Only write .env + refresh identity when something actually changed.
+    # Previously this ran every poll iteration (every 10s) once status was
+    # non-empty, causing refresh-agency-identity.sh to hit /me in a loop
+    # and repeatedly rewrite agency-identity.json.
+    local changed=false
+    if [ -n "$new_status" ] && [ "$new_status" != "$last_status" ]; then
+      changed=true
+    fi
+    if [ -n "$username" ] && [ "$username" != "$last_username" ]; then
+      changed=true
+    fi
+    if [ -n "$profile_url" ] && [ "$profile_url" != "$last_profile_url" ]; then
+      changed=true
+    fi
+
+    if [ "$changed" = "true" ]; then
       write_skill_env "$(python3 - <<'PY' "$new_status" "$username" "$profile_url"
 import json, sys
 print(json.dumps({
@@ -599,16 +626,14 @@ print(json.dumps({
 }))
 PY
 )"
-      # Refresh identity JSON whenever poll writes new profile data — username
-      # or profile_url may transition from placeholder to real values here.
       refresh_identity
+      last_status="$new_status"
+      [ -n "$username" ] && last_username="$username"
+      [ -n "$profile_url" ] && last_profile_url="$profile_url"
     fi
 
     if [ "$new_status" = "active" ]; then
       log_ok "TagClaw account is active"
-      # Final refresh once account is active so identity JSON reflects the
-      # fully-verified state (in case earlier refreshes ran before activation).
-      refresh_identity
       return 0
     fi
     sleep "$POLL_INTERVAL_SECONDS"

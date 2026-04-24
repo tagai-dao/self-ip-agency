@@ -1808,66 +1808,61 @@ wait_for_tagclaw_activation() {
     return 1
   fi
 
-  # Status is pending_verification — show the tweet and poll
+  # Status is pending_verification — print the tweet, write the handoff
+  # file, and EXIT. Auto-polling here was useless whenever install was
+  # driven by an agent that captured stdout without surfacing the ACTION
+  # REQUIRED block: the operator never saw the prompt, never posted the
+  # tweet, and the loop burned an hour hitting /status. The two-phase
+  # flow is explicit now:
+  #   phase 1 (this install.sh run) — surface the tweet + exit
+  #   phase 2 (operator runs post-verify-finalize after posting)
+  #     — poll for activation, re-invoke install.sh which reaches active
+  #       branch above and proceeds with crons + dashboard
   local agent_username verification_code profile_url
   agent_username="$(resolve_tagclaw_skill_env_field "TAGCLAW_AGENT_USERNAME" "$workspace")"
   verification_code="$(resolve_tagclaw_skill_env_field "TAGCLAW_VERIFICATION_CODE" "$workspace")"
   profile_url="$(resolve_tagclaw_skill_env_field "TAGCLAW_PROFILE_URL" "$workspace")"
 
-  echo ""
-  echo "  ╔══════════════════════════════════════════════════════════════════════╗"
-  echo "  ║  ACTION REQUIRED: Post verification tweet on X (Twitter)           ║"
-  echo "  ╠══════════════════════════════════════════════════════════════════════╣"
-  echo "  ║                                                                    ║"
-  echo "  ║  Post this exact tweet:                                            ║"
-  echo "  ║                                                                    ║"
-  echo "  ║    I'm claiming my AI agent \"$agent_username\" on @TagClaw"
-  echo "  ║    Verification: \"$verification_code\""
-  echo "  ║                                                                    ║"
-  if [ -n "$profile_url" ]; then
-    echo "  ║  Profile: $profile_url"
-  fi
-  echo "  ║                                                                    ║"
-  echo "  ║  After posting, the installer will automatically detect it and     ║"
-  echo "  ║  continue with cron registration and dashboard setup.              ║"
-  echo "  ║                                                                    ║"
-  echo "  ║  Polling every 10s (timeout: 1h). Press Ctrl+C to abort.           ║"
-  echo "  ╚══════════════════════════════════════════════════════════════════════╝"
-  echo ""
-
-  # Write the tweet to a file for convenience
+  # Write the handoff file FIRST so the artifact exists even if an outer
+  # harness truncates or filters the stdout box below.
   local tweet_file="$workspace/tagclaw-verification-tweet.txt"
   cat > "$tweet_file" <<EOF
 I'm claiming my AI agent "$agent_username" on @TagClaw
 Verification: "$verification_code"
 EOF
-  log_info "Tweet saved to: $tweet_file"
+
+  echo ""
+  echo "  ╔══════════════════════════════════════════════════════════════════════╗"
+  echo "  ║  ACTION REQUIRED: Post verification tweet on X (Twitter)             ║"
+  echo "  ╠══════════════════════════════════════════════════════════════════════╣"
+  echo "  ║"
+  echo "  ║  Post this exact tweet:"
+  echo "  ║"
+  echo "  ║    I'm claiming my AI agent \"$agent_username\" on @TagClaw"
+  echo "  ║    Verification: \"$verification_code\""
+  echo "  ║"
+  echo "  ║  Tweet text also saved to:"
+  echo "  ║    $tweet_file"
+  if [ -n "$profile_url" ]; then
+    echo "  ║"
+    echo "  ║  Profile after activation: $profile_url"
+  fi
+  echo "  ║"
+  echo "  ║  AFTER posting the tweet, finish install by running:"
+  echo "  ║"
+  echo "  ║    bash $workspace/scripts/tagclaw-onboard.sh \\"
+  echo "  ║         post-verify-finalize --workspace $workspace"
+  echo "  ║"
+  echo "  ║  That will poll for activation, register cron jobs, and start the"
+  echo "  ║  dashboard. No need to re-run install.sh manually."
+  echo "  ╚══════════════════════════════════════════════════════════════════════╝"
+  echo ""
+  log_info "Install paused — awaiting X verification tweet. See box above for the finalize command."
 
   if [ "$DRY_RUN" = "true" ]; then
-    log_info "[DRY RUN] Would poll for activation — skipping"
-    return 1
+    log_info "[DRY RUN] Would exit install here pending tweet post"
   fi
-
-  # Use the existing poll-status helper
-  local onboard_script="$AGENCY_DIR/scripts/tagclaw-onboard.sh"
-  if [ ! -f "$onboard_script" ]; then
-    onboard_script="$workspace/scripts/tagclaw-onboard.sh"
-  fi
-
-  if [ ! -f "$onboard_script" ]; then
-    log_warn "tagclaw-onboard.sh not found — cannot auto-poll. Run manually after posting tweet:"
-    echo "  bash scripts/tagclaw-onboard.sh poll-status --workspace $workspace"
-    return 1
-  fi
-
-  log_info "Waiting for TagClaw verification (polling)..."
-  if bash "$onboard_script" poll-status --workspace "$workspace" --timeout-seconds 3600 --poll-interval 10; then
-    log_ok "TagClaw account activated! Continuing with cron and dashboard setup..."
-    return 0
-  else
-    log_warn "TagClaw activation polling ended without activation"
-    return 1
-  fi
+  return 1
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1929,7 +1924,9 @@ main() {
     compile_x_tweets_wiki
   else
     log_warn "Skipping cron registration and dashboard setup — TagClaw not yet activated"
-    log_info "After activation, re-run: bash scripts/install.sh"
+    local _ws_hint
+    _ws_hint="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+    log_info "After posting the verification tweet, run: bash $_ws_hint/scripts/tagclaw-onboard.sh post-verify-finalize --workspace $_ws_hint"
   fi
 
   if [ "$DRY_RUN" = "false" ]; then
