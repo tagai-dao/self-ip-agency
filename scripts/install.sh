@@ -1831,33 +1831,31 @@ I'm claiming my AI agent "$agent_username" on @TagClaw
 Verification: "$verification_code"
 EOF
 
+  # User-facing box: ONLY the tweet content. The operator posts the tweet
+  # and tells the driving agent; the agent is the one that runs the
+  # finalize command afterward, which is surfaced via log_info +
+  # .install-next-steps.{json,md} for the agent (not the user) to read.
   echo ""
   echo "  ╔══════════════════════════════════════════════════════════════════════╗"
-  echo "  ║  ACTION REQUIRED: Post verification tweet on X (Twitter)             ║"
+  echo "  ║  ACTION REQUIRED: Post this tweet on X"
   echo "  ╠══════════════════════════════════════════════════════════════════════╣"
-  echo "  ║"
-  echo "  ║  Post this exact tweet:"
   echo "  ║"
   echo "  ║    I'm claiming my AI agent \"$agent_username\" on @TagClaw"
   echo "  ║    Verification: \"$verification_code\""
   echo "  ║"
-  echo "  ║  Tweet text also saved to:"
-  echo "  ║    $tweet_file"
-  if [ -n "$profile_url" ]; then
-    echo "  ║"
-    echo "  ║  Profile after activation: $profile_url"
-  fi
-  echo "  ║"
-  echo "  ║  AFTER posting the tweet, finish install by running:"
-  echo "  ║"
-  echo "  ║    bash $workspace/scripts/tagclaw-onboard.sh \\"
-  echo "  ║         post-verify-finalize --workspace $workspace"
-  echo "  ║"
-  echo "  ║  That will poll for activation, register cron jobs, and start the"
-  echo "  ║  dashboard. No need to re-run install.sh manually."
   echo "  ╚══════════════════════════════════════════════════════════════════════╝"
   echo ""
-  log_info "Install paused — awaiting X verification tweet. See box above for the finalize command."
+  echo "  Tell the agent once the tweet is live."
+  echo ""
+
+  # Agent-facing breadcrumbs (log_info + contract artifacts, not shown
+  # prominently to the human operator).
+  log_info "Install paused — awaiting X verification tweet"
+  log_info "Tweet body saved to: $tweet_file"
+  if [ -n "$profile_url" ]; then
+    log_info "Profile after activation: $profile_url"
+  fi
+  log_info "Agent: after operator confirms the tweet is posted, run: bash $workspace/scripts/tagclaw-onboard.sh post-verify-finalize --workspace $workspace"
 
   if [ "$DRY_RUN" = "true" ]; then
     log_info "[DRY RUN] Would exit install here pending tweet post"
