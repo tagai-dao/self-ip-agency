@@ -126,6 +126,9 @@ def tagclaw_request(
     if body is not None:
         req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
+    # TagClaw endpoints have been observed to serve curl/browser-style clients
+    # while rejecting or degrading requests from urllib's default user agent.
+    req.add_header("User-Agent", "Mozilla/5.0")
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -183,6 +186,15 @@ def tagclaw_get(endpoint: str, api_key: str,
     """
     result, _err = tagclaw_request("GET", endpoint, api_key, base_url=base_url)
     return result
+
+
+def tagclaw_get_with_error(
+    endpoint: str,
+    api_key: str,
+    base_url: str = "https://bsc-api.tagai.fun/tagclaw",
+) -> tuple[dict | list | None, dict | None]:
+    """GET helper that preserves TagClaw transport/HTTP diagnostics."""
+    return tagclaw_request("GET", endpoint, api_key, base_url=base_url)
 
 
 def tagclaw_post(endpoint: str, api_key: str, data: dict) -> dict | None:
@@ -451,14 +463,18 @@ def run_curation_cycle() -> dict:
     feed_size = 0
 
     # 1. Fetch feed — with schema-aware parse diagnostics
-    feed_raw = tagclaw_get("/feed", api_key)
+    feed_raw, feed_err = tagclaw_get_with_error("/feed", api_key)
     feed_fetch_ok = feed_raw is not None
     feed_response_type: str = type(feed_raw).__name__ if feed_raw is not None else "null"
     feed_response_keys: list[str] = sorted(feed_raw.keys()) if isinstance(feed_raw, dict) else []
     feed_parse_status: str = "pending"
 
     if not feed_fetch_ok:
-        errors.append("Failed to fetch feed from TagClaw API")
+        if feed_err:
+            detail = feed_err.get("message") or feed_err.get("kind") or "unknown transport error"
+            errors.append(f"Failed to fetch feed from TagClaw API: {detail}")
+        else:
+            errors.append("Failed to fetch feed from TagClaw API")
         feed: list = []
         feed_parse_status = "transport_failed"
     elif isinstance(feed_raw, dict):
@@ -663,17 +679,26 @@ def _fetch_own_posts_24h(api_key: str, own_username: str) -> tuple[list[dict], s
         return eligible
 
     # Preferred: authenticated /feed/me
-    resp = tagclaw_get("/feed/me?pages=0&limit=50", api_key) if api_key else None
+    resp, err = tagclaw_get_with_error("/feed/me?pages=0&limit=50", api_key) if api_key else (None, None)
     posts = _coerce(resp)
     if posts:
         return _filter(posts), "/feed/me", None
+    feed_me_err = err.get("message") if isinstance(err, dict) else None
 
     # Fallback: public /feed filtered by username
-    resp = tagclaw_get("/feed", api_key)
+    resp, err = tagclaw_get_with_error("/feed", api_key)
     posts = _coerce(resp)
     if posts:
         return _filter(posts), "/feed", None
+    feed_err = err.get("message") if isinstance(err, dict) else None
 
+    parts = []
+    if feed_me_err:
+        parts.append(f"/feed/me: {feed_me_err}")
+    if feed_err:
+        parts.append(f"/feed: {feed_err}")
+    if parts:
+        return [], "unavailable", " ; ".join(parts)
     return [], "unavailable", "could not fetch /feed/me or /feed"
 
 

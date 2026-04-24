@@ -97,6 +97,8 @@ def tagclaw_get(endpoint: str, api_key: str) -> dict | list | None:
     if api_key:
         req.add_header("Authorization", f"Bearer {api_key}")
     req.add_header("Accept", "application/json")
+    # Match the curl/browser-style request path used elsewhere in the repo.
+    req.add_header("User-Agent", "Mozilla/5.0")
 
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
