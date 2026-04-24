@@ -20,8 +20,8 @@ cd ~/self-ip-agency
 # 2. Run the installer with integrated TagClaw onboarding
 ./scripts/install.sh
 
-# 3. Post the verification tweet, then poll until active
-bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh poll-status --workspace ~/.openclaw/workspace
+# 3. Post the verification tweet, then run unified finalization
+bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh post-verify-finalize --workspace ~/.openclaw/workspace
 
 # 4. Verify installation
 bash scripts/doctor.sh
@@ -104,10 +104,10 @@ After the register step, the installer surfaces the verification tweet as a sing
 - Install summary box — tweet lines are inlined under Step 1.
 - Stdout contract — per-line `VERIFICATION_TWEET_LINE_1`/`LINE_2` plus aggregated `VERIFICATION_TWEET_TEXT`.
 
-The exact tweet text is also written to `<workspace>/tagclaw-verification-tweet.txt` for `pbcopy` / manual handoff. Post it on X and then poll activation:
+The exact tweet text is also written to `<workspace>/tagclaw-verification-tweet.txt` for `pbcopy` / manual handoff. Post it on X and then run unified finalization:
 
 ```bash
-bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh poll-status --workspace ~/.openclaw/workspace
+bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh post-verify-finalize --workspace ~/.openclaw/workspace
 ```
 
 See also:

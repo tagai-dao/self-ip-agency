@@ -72,8 +72,8 @@ Commands:
   wallet-install Clone or update tagclaw-wallet into <workspace>/skills/tagclaw-wallet
   wallet-init    Run the upstream wallet setup.sh flow
   register       Register a TagClaw account using the current wallet .env
-  poll-status    Poll TagClaw activation status and update skills/tagclaw/.env
-  post-verify-finalize  Poll until active, then finish crons + dashboard + public URL
+  poll-status    Unified post-tweet flow: poll activation, finalize crons, then start dashboard
+  post-verify-finalize  Alias of poll-status (kept for backward compatibility)
   full           Run skills + wallet-install + wallet-init + register (+ optional poll)
 
 Examples:
@@ -217,6 +217,50 @@ except Exception:
 value = data.get(field)
 print('' if value is None else value)
 PY
+}
+
+read_cron_intent_path() {
+  local from_installed fallback
+  from_installed="$(read_installed_field cron_intent_path)"
+  fallback="$WORKSPACE/.install-cron-jobs.json"
+  if [ -n "$from_installed" ] && [ -f "$from_installed" ]; then
+    echo "$from_installed"
+    return 0
+  fi
+  if [ -f "$fallback" ]; then
+    echo "$fallback"
+    return 0
+  fi
+  echo ""
+  return 1
+}
+
+show_cron_authorization_prompt() {
+  local intent_path="$1"
+  log_warn "Cron registration is not finalized yet."
+  if [ -n "$intent_path" ] && [ -f "$intent_path" ]; then
+    log_warn "Prepared cron intent: $intent_path"
+    python3 - <<'PY' "$intent_path"
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    print("Could not parse cron intent artifact.")
+    raise SystemExit(0)
+jobs = data.get("jobs") or []
+if not jobs:
+    print("Pending cron jobs: <none detected in artifact>")
+else:
+    print("Pending cron jobs:")
+    for i, j in enumerate(jobs, 1):
+        name = (j.get("name") or "").strip()
+        schedule = (j.get("schedule") or "").strip()
+        print(f"  {i}. {name}  ({schedule})")
+PY
+  fi
+  log_warn "Please authorize cron creation by replying: 同意创建 cron"
+  log_warn "After authorization, re-run: bash $WORKSPACE/scripts/tagclaw-onboard.sh post-verify-finalize --workspace $WORKSPACE"
 }
 
 write_skill_env() {
@@ -681,20 +725,36 @@ PY
   install_status="$(read_installed_field install_status)"
   cron_registration_mode="$(read_installed_field cron_registration_mode)"
   cron_registration_status="$(read_installed_field cron_registration_status)"
-  cron_intent_path="$(read_installed_field cron_intent_path)"
+  cron_intent_path="$(read_cron_intent_path || true)"
   if [ "$crons_registered" != "True" ] && [ "$crons_registered" != "true" ]; then
-    if [ "$cron_registration_mode" = "deferred-tool" ] || [ "$cron_registration_status" = "pending_finalization" ]; then
-      log_warn "Cron registration is deferred to the OpenClaw agent/tool path — continuing dashboard setup"
-      if [ -n "$cron_intent_path" ]; then
-        log_warn "Cron intent artifact: $cron_intent_path"
-      fi
-    else
-      log_err "Cron registration did not complete successfully — refusing to continue with dashboard setup"
-      if [ -n "$install_status" ]; then
-        log_warn "Current install status: $install_status"
-      fi
-      return 1
+    local finalize_script finalize_out
+    finalize_script="$WORKSPACE/scripts/finalize-crons.sh"
+    if [ ! -f "$finalize_script" ]; then
+      finalize_script="$(cd "$(dirname "$repo_install")" && pwd)/finalize-crons.sh"
     fi
+
+    if [ -f "$finalize_script" ]; then
+      log_info "Cron jobs not finalized yet — attempting immediate cron finalization"
+      if finalize_out="$(bash "$finalize_script" --workspace "$WORKSPACE" 2>&1)"; then
+        log_ok "Cron finalization completed"
+      else
+        log_warn "$finalize_out"
+      fi
+    fi
+  fi
+
+  crons_registered="$(read_installed_field crons_registered)"
+  cron_registration_mode="$(read_installed_field cron_registration_mode)"
+  cron_registration_status="$(read_installed_field cron_registration_status)"
+  cron_intent_path="$(read_cron_intent_path || true)"
+  if [ "$crons_registered" != "True" ] && [ "$crons_registered" != "true" ]; then
+    if [ -n "$install_status" ]; then
+      log_warn "Current install status: $install_status"
+    fi
+    log_warn "Cron state: mode=${cron_registration_mode:-unknown}, status=${cron_registration_status:-unknown}"
+    log_err "Cron registration did not complete successfully — refusing to continue with dashboard setup"
+    show_cron_authorization_prompt "$cron_intent_path"
+    return 2
   fi
 
   local dashboard_service
@@ -707,18 +767,14 @@ PY
   log_info "Ensuring local dashboard is running"
   bash "$dashboard_service" start-local --workspace "$WORKSPACE"
 
-  log_info "Ensuring public Cloudflare tunnel is running"
-  bash "$dashboard_service" start-public --workspace "$WORKSPACE"
-
-  local public_status public_url
-  public_status="$(read_dashboard_state_field public status)"
-  public_url="$(read_dashboard_state_field public url)"
-  if [ "$public_status" != "running" ] || [ -z "$public_url" ]; then
-    log_err "Dashboard tunnel did not produce a usable public URL"
+  local local_status
+  local_status="$(read_dashboard_state_field local status)"
+  if [ "$local_status" != "running" ]; then
+    log_err "Local dashboard is not running after start-local"
     return 1
   fi
 
-  echo "DASHBOARD_PUBLIC_URL=$public_url"
+  log_ok "Post-verification flow complete: activation verified, crons registered, dashboard running"
 }
 
 case "$COMMAND" in
@@ -735,7 +791,7 @@ case "$COMMAND" in
     register_account
     ;;
   poll-status)
-    poll_status
+    post_verify_finalize
     ;;
   post-verify-finalize)
     post_verify_finalize

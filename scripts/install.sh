@@ -1846,6 +1846,8 @@ EOF
   echo "  ╚══════════════════════════════════════════════════════════════════════╝"
   echo ""
   echo "  Tell the agent once the tweet is live."
+  echo "  Then run:"
+  echo "    bash $workspace/scripts/tagclaw-onboard.sh post-verify-finalize --workspace $workspace"
   echo ""
 
   # Agent-facing breadcrumbs (log_info + contract artifacts, not shown
@@ -1855,7 +1857,7 @@ EOF
   if [ -n "$profile_url" ]; then
     log_info "Profile after activation: $profile_url"
   fi
-  log_info "Agent: after operator confirms the tweet is posted, run: bash $workspace/scripts/tagclaw-onboard.sh post-verify-finalize --workspace $workspace"
+  log_info "After the tweet is posted, run: bash $workspace/scripts/tagclaw-onboard.sh post-verify-finalize --workspace $workspace"
 
   if [ "$DRY_RUN" = "true" ]; then
     log_info "[DRY RUN] Would exit install here pending tweet post"

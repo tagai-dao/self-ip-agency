@@ -118,7 +118,7 @@ What it does:
 After the script prints the verification tweet template, post it on X, then run:
 
 ```bash
-bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh poll-status --workspace ~/.openclaw/workspace
+bash ~/.openclaw/workspace/scripts/tagclaw-onboard.sh post-verify-finalize --workspace ~/.openclaw/workspace
 ```
 
 See [docs/deployment-guide.md](docs/deployment-guide.md) for the full onboarding walkthrough and [docs/secrets-policy.md](docs/secrets-policy.md) for secrets handling.
