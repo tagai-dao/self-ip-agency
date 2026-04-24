@@ -717,8 +717,11 @@ PY
     log_err "Could not resolve repo install.sh from workspace metadata — cannot complete cron-first finalization"
     return 1
   fi
-  log_info "Re-running installer to register cron jobs and deploy dashboard"
-  bash "$repo_install"
+  log_info "Running lightweight installer finalization for cron jobs and dashboard"
+  bash "$repo_install" \
+    --skip-tagclaw-onboarding \
+    --skip-raw-seed \
+    --skip-guided-x-bootstrap
 
   local crons_registered install_status cron_registration_mode cron_registration_status cron_intent_path
   crons_registered="$(read_installed_field crons_registered)"

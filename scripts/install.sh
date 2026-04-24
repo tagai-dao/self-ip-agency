@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install.sh — Self-IP Agency idempotent installer
-# Usage: bash scripts/install.sh [--dry-run] [--tagclaw-name NAME] [--tagclaw-description TEXT] [--tagclaw-poll] [--skip-tagclaw-onboarding]
+# Usage: bash scripts/install.sh [--dry-run] [--tagclaw-name NAME] [--tagclaw-description TEXT] [--tagclaw-poll] [--skip-tagclaw-onboarding] [--skip-raw-seed] [--skip-guided-x-bootstrap]
 # Quick install: bash scripts/install.sh
 #
 # Installs the self-ip-agency into an existing OpenClaw workspace:
@@ -37,6 +37,8 @@ TAGCLAW_ONBOARD_NAME="${TAGCLAW_AGENT_NAME:-}"
 TAGCLAW_ONBOARD_DESCRIPTION="${TAGCLAW_AGENT_DESCRIPTION:-}"
 TAGCLAW_ONBOARD_POLL=false
 SKIP_TAGCLAW_ONBOARD=false
+SKIP_RAW_SEED=false
+SKIP_GUIDED_X_BOOTSTRAP=false
 TAGCLAW_ONBOARD_STATUS="not_requested"
 
 # ── Owner twitter binding inputs (PR-B: cloud-headless non-interactive first) ──
@@ -73,9 +75,9 @@ _detect_cron_add_flags() {
     log_warn "openclaw CLI does NOT support --no-deliver. Cron run status may show 'error' on delivery failures even when script succeeds. Consider upgrading: pnpm up -g openclaw@latest"
   fi
 }
-RAW_SEED_STATUS="not_attempted"  # ok | partial | failed | not_attempted
-X_TWEETS_SEED_STATUS="not_attempted"   # ok | partial | deferred | blocked | failed | not_attempted | dry-run
-X_TWEETS_COMPILE_STATUS="not_attempted" # ok | deferred | failed | not_attempted | dry-run
+RAW_SEED_STATUS="not_attempted"  # ok | partial | failed | skipped | not_attempted
+X_TWEETS_SEED_STATUS="not_attempted"   # ok | partial | deferred | blocked | failed | skipped | not_attempted | dry-run
+X_TWEETS_COMPILE_STATUS="not_attempted" # ok | deferred | failed | skipped | not_attempted | dry-run
 X_TWEETS_COMPILED_COUNT="0"
 X_TWEETS_BLOCKERS="[]"
 INTRO_POST_STATUS="not_attempted" # published | published_but_marker_failed | already_published | skipped | failed | not_attempted
@@ -100,6 +102,8 @@ while [ "$#" -gt 0 ]; do
     --tagclaw-description) TAGCLAW_ONBOARD_DESCRIPTION="${2:-}"; shift 2 ;;
     --tagclaw-poll) TAGCLAW_ONBOARD_POLL=true; shift ;;
     --skip-tagclaw-onboarding) SKIP_TAGCLAW_ONBOARD=true; shift ;;
+    --skip-raw-seed) SKIP_RAW_SEED=true; shift ;;
+    --skip-guided-x-bootstrap) SKIP_GUIDED_X_BOOTSTRAP=true; shift ;;
     --owner-twitter-handle=*) OWNER_TWITTER_HANDLE_ARG="${1#--owner-twitter-handle=}"; shift ;;
     --owner-twitter-handle) OWNER_TWITTER_HANDLE_ARG="${2:-}"; shift 2 ;;
     --owner-twitter-id=*) OWNER_TWITTER_ID_ARG="${1#--owner-twitter-id=}"; shift ;;
@@ -1543,6 +1547,12 @@ seed_raw_docs() {
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
 
+  if [ "$SKIP_RAW_SEED" = "true" ]; then
+    RAW_SEED_STATUS="skipped"
+    log_info "Raw knowledge base seeding skipped by flag"
+    return 0
+  fi
+
   if [ "$DRY_RUN" = "true" ]; then
     log_info "[DRY RUN] Would seed raw docs under: $workspace/raw"
     RAW_SEED_STATUS="dry-run"
@@ -1591,6 +1601,13 @@ sync_guided_x_tweets() {
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
 
+  if [ "$SKIP_GUIDED_X_BOOTSTRAP" = "true" ]; then
+    X_TWEETS_SEED_STATUS="skipped"
+    X_TWEETS_BLOCKERS='[]'
+    log_info "Guided X bootstrap skipped by flag"
+    return 0
+  fi
+
   if [ "$DRY_RUN" = "true" ]; then
     log_info "[DRY RUN] Would sync guided X tweets into: $workspace/raw/x-tweets"
     X_TWEETS_SEED_STATUS="dry-run"
@@ -1633,6 +1650,12 @@ compile_x_tweets_wiki() {
 
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+
+  if [ "$SKIP_GUIDED_X_BOOTSTRAP" = "true" ]; then
+    X_TWEETS_COMPILE_STATUS="skipped"
+    log_info "Guided X wiki compile skipped by flag"
+    return 0
+  fi
 
   if [ "$DRY_RUN" = "true" ]; then
     log_info "[DRY RUN] Would compile raw/x-tweets into wiki/synthesis/tweets"
@@ -2845,6 +2868,7 @@ print(json.dumps(d, indent=2))
       ok)      echo "  ║    ✓ Seeded ($workspace/raw)" ;;
       partial) echo "  ║    ⚠ Partially seeded (some sources unavailable)" ;;
       failed)  echo "  ║    ✗ Seeding failed (non-fatal)" ;;
+      skipped) echo "  ║    - Skipped for lightweight finalization" ;;
       *)       echo "  ║    - Not attempted" ;;
     esac
     echo "  ║"
@@ -2863,6 +2887,7 @@ print(json.dumps(d, indent=2))
       deferred) echo "  ║    - Deferred (guided session or URLs not yet available; heartbeat self-heal active if awaiting owner binding)" ;;
       blocked)  echo "  ║    ✗ Blocked (unrecoverable — see blockers array)" ;;
       failed)   echo "  ║    ✗ Sync failed (non-fatal)" ;;
+      skipped)  echo "  ║    - Skipped for lightweight finalization" ;;
       *)        echo "  ║    - Not attempted" ;;
     esac
     echo "  ║  Guided X wiki compile: ${X_TWEETS_COMPILE_STATUS} (${X_TWEETS_COMPILED_COUNT})"
