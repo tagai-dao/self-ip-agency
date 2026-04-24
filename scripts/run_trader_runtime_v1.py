@@ -360,6 +360,8 @@ def _fetch_bnb_balance_onchain(wallet_address: str) -> float | None:
         data=payload.encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", "Mozilla/5.0")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -380,7 +382,13 @@ def _fetch_bnb_price_usd() -> float | None:
     import urllib.request
 
     url = "https://bsc-api.tagai.fun/tiptag/getETHPrice"
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             text = resp.read().decode("utf-8")
