@@ -434,10 +434,11 @@ echo "7. Cycle entrypoints"
 check_file "$AGENCY_DIR/scripts/main-heartbeat.sh" "repo scripts/main-heartbeat.sh"
 check_file "$AGENCY_DIR/scripts/bookmarker-cycle.sh" "repo scripts/bookmarker-cycle.sh"
 check_file "$AGENCY_DIR/scripts/trader-cycle.sh" "repo scripts/trader-cycle.sh"
+check_file "$AGENCY_DIR/scripts/x-sync-cycle.sh" "repo scripts/x-sync-cycle.sh"
 check_file "$AGENCY_DIR/HEARTBEAT.md" "repo HEARTBEAT.md (contract)"
 check_file "$AGENCY_DIR/docs/main-heartbeat-contract.md" "docs/main-heartbeat-contract.md"
 
-for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh; do
+for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh x-sync-cycle.sh; do
   if [ -f "$AGENCY_DIR/scripts/$cycle_script" ]; then
     if [ -x "$AGENCY_DIR/scripts/$cycle_script" ]; then
       ok "repo $cycle_script is executable"
@@ -553,7 +554,7 @@ fi
 
 # Check cron-jobs.json and openclaw-agents.yaml reference the same entrypoints
 if [ -f "$AGENCY_DIR/config/cron-jobs.json" ]; then
-  for agent_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh; do
+  for agent_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh x-sync-cycle.sh; do
     if grep -q "$agent_script" "$AGENCY_DIR/config/cron-jobs.json"; then
       ok "cron-jobs.json references $agent_script"
     else
@@ -568,7 +569,7 @@ fi
 # operator should re-run install.sh or bash scripts/finalize-crons.sh.
 if command -v openclaw >/dev/null 2>&1 && openclaw --version >/dev/null 2>&1; then
   if probe_scheduler_reachable "doctor" >/dev/null 2>&1; then
-    for j in main-heartbeat bookmarker-cycle trader-cycle; do
+    for j in main-heartbeat bookmarker-cycle trader-cycle x-sync-cycle; do
       if verify_registered "$j"; then
         ok "cron registered in scheduler: $j"
       else

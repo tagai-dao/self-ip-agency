@@ -145,7 +145,7 @@ log_ok "Scheduler reachable"
 # over the outbound mux. Without it, cron jobs whose runs exit 0 still get
 # marked `error` on deployments where the outbound route isn't bound
 # (observed on clawdi installs: `mux outbound failed (403): route not bound`).
-# Our three jobs write results to runtime/ JSONs — the dashboard reads those
+# Our cron jobs write results to runtime/ JSONs — the dashboard reads those
 # directly, announce delivery is pure overhead.
 CRON_ADD_EXTRA_FLAGS=""
 if openclaw cron add --help 2>&1 | grep -q -- '--no-deliver'; then

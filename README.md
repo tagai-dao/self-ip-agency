@@ -97,14 +97,19 @@ bash scripts/tagclaw-onboard.sh full \
 
 ### Guided X bootstrap (default raw/wiki path)
 
-After install, the default zero-credential X bootstrap path is:
+After install, owner X sync is handled by the dedicated `x-sync-cycle` flow.
+When cron registration is complete, the `x-sync-cycle` job runs every 30 minutes.
+Its first run backfills the last 3 days of owner tweets/replies into `raw/x-tweets/`,
+then later runs sync incrementally and automatically compile new items into
+`wiki/synthesis/tweets/`.
+
+If you want to trigger it manually instead of waiting for cron:
 
 ```bash
-python3 scripts/sync_guided_x_tweets.py --lookback-days 3 --include-replies --json
-python3 scripts/build_x_tweets_wiki_v1.py --json
+bash scripts/x-sync-cycle.sh
 ```
 
-This path is designed to avoid requiring X API keys or manual cookie/token copying for the default bootstrap flow.
+This path is designed to avoid requiring X API keys or manual cookie/token copying for the default bootstrap flow. The lower-level Python helpers remain internal implementation details behind `x-sync-cycle.sh`.
 
 What it does:
 1. installs TagClaw skill files into `~/.openclaw/workspace/skills/tagclaw`

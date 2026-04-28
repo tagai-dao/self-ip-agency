@@ -587,7 +587,7 @@ install_runtime() {
   # Deploy all cycle entrypoints into the actual workspace.
   local scripts_dst="$workspace/scripts"
   mkdir -p "$scripts_dst"
-  for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh tagclaw-onboard.sh refresh-agency-identity.sh dashboard-service.sh start-quick-tunnel.sh publish-intro-post.sh seed-raw-docs.sh; do
+  for cycle_script in main-heartbeat.sh bookmarker-cycle.sh trader-cycle.sh x-sync-cycle.sh tagclaw-onboard.sh refresh-agency-identity.sh dashboard-service.sh start-quick-tunnel.sh publish-intro-post.sh seed-raw-docs.sh; do
     if [ -f "$AGENCY_DIR/scripts/$cycle_script" ]; then
       cp -f "$AGENCY_DIR/scripts/$cycle_script" "$scripts_dst/$cycle_script"
       chmod +x "$scripts_dst/$cycle_script" || true
@@ -603,8 +603,8 @@ install_runtime() {
     fi
   done
 
-  # Deploy Python scripts needed by main-heartbeat
-  for py_script in build_main_input_packet_v2.py run_main_runtime_v2.py compute_tas_social_v2.py select_strategy_v1.py; do
+  # Deploy Python scripts needed by heartbeat and auxiliary cycles.
+  for py_script in build_main_input_packet_v2.py run_main_runtime_v2.py compute_tas_social_v2.py select_strategy_v1.py sync_guided_x_tweets.py build_x_tweets_wiki_v1.py; do
     if [ -f "$AGENCY_DIR/scripts/$py_script" ]; then
       cp -f "$AGENCY_DIR/scripts/$py_script" "$scripts_dst/$py_script"
     fi
@@ -615,6 +615,11 @@ install_runtime() {
     mkdir -p "$scripts_dst/lib"
     cp -f "$AGENCY_DIR/scripts/lib/common.sh" "$scripts_dst/lib/common.sh"
     log_ok "Installed shared shell lib: $scripts_dst/lib/common.sh"
+  fi
+  if [ -f "$AGENCY_DIR/scripts/lib/x_fetch_utils.py" ]; then
+    mkdir -p "$scripts_dst/lib"
+    cp -f "$AGENCY_DIR/scripts/lib/x_fetch_utils.py" "$scripts_dst/lib/x_fetch_utils.py"
+    log_ok "Installed X fetch utils: $scripts_dst/lib/x_fetch_utils.py"
   fi
   if [ -f "$AGENCY_DIR/HEARTBEAT.md" ]; then
     cp -f "$AGENCY_DIR/HEARTBEAT.md" "$workspace/HEARTBEAT.md"
@@ -867,11 +872,19 @@ d = {
             'message': 'Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh',
             'timeout_seconds': 300,
         },
+        {
+            'name': 'x-sync-cycle',
+            'schedule': '*/30 * * * *',
+            'session': 'isolated',
+            'command': 'bash $workspace/scripts/x-sync-cycle.sh',
+            'message': 'Run the owner X sync cycle: bash $workspace/scripts/x-sync-cycle.sh',
+            'timeout_seconds': 240,
+        },
     ],
     'approval': {
         'required': True,
         'reply_text': '同意创建 cron',
-        'prompt': 'Reply "同意创建 cron" to authorize the agent/tool path to create these three OpenClaw cron jobs.',
+        'prompt': 'Reply "同意创建 cron" to authorize the agent/tool path to create these OpenClaw cron jobs.',
         'tg_channel_supported_if': 'The Telegram channel is connected to an already-approved OpenClaw agent/operator that can execute native cron tools. If it is only a shell CLI device with operator.read, the user must approve the pending OpenClaw device scope upgrade first.',
     },
     'finalize_command': 'openclaw cron add --name \"{name}\" --cron \"{schedule}\" --session {session} --message \"{message}\" --no-deliver',
@@ -1043,6 +1056,13 @@ _print_manual_cron_commands() {
   echo "    --message \"Run the trader operations cycle: bash $ws/scripts/trader-cycle.sh\" \\"
   echo "    --no-deliver"
   echo ""
+  echo "  openclaw cron add \\"
+  echo "    --name \"x-sync-cycle\" \\"
+  echo "    --cron \"*/30 * * * *\" \\"
+  echo "    --session isolated \\"
+  echo "    --message \"Run the owner X sync cycle: bash $ws/scripts/x-sync-cycle.sh\" \\"
+  echo "    --no-deliver"
+  echo ""
   echo "  (The --no-deliver flag disables announce delivery, which avoids false"
   echo "  'error' run states when the outbound mux route is not bound. Required for"
   echo "  correct cron status reporting — see VERSION 2.5.5+ release notes.)"
@@ -1061,7 +1081,7 @@ register_crons() {
   local cron_log="$cron_log_dir/openclaw-cron-registration.log"
 
   if [ "$DRY_RUN" = "true" ]; then
-    log_info "[DRY RUN] Would register 3 cron jobs with openclaw"
+    log_info "[DRY RUN] Would register 4 cron jobs with openclaw"
     return 0
   fi
 
@@ -1193,7 +1213,7 @@ register_crons() {
   trap "rm -rf \"$_STAGE_DIR\"" EXIT
 
   # Remove existing jobs first (idempotent)
-  for job_name in main-heartbeat bookmarker-cycle trader-cycle; do
+  for job_name in main-heartbeat bookmarker-cycle trader-cycle x-sync-cycle; do
     openclaw cron rm "$job_name" >>"$cron_log" 2>&1 || true
   done
   sleep 1
@@ -1201,7 +1221,7 @@ register_crons() {
   # Post-rm residual check — if rm silently failed, proceeding would allow a
   # stale job to false-positive a subsequent failed add.
   local residual=""
-  for job_name in main-heartbeat bookmarker-cycle trader-cycle; do
+  for job_name in main-heartbeat bookmarker-cycle trader-cycle x-sync-cycle; do
     if verify_registered "$job_name"; then
       residual="${residual:+$residual, }$job_name"
     fi
@@ -1219,6 +1239,7 @@ register_crons() {
     "main-heartbeat|*/10 * * * *|isolated|Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh"
     "bookmarker-cycle|*/30 * * * *|isolated|Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh"
     "trader-cycle|0 * * * *|isolated|Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh"
+    "x-sync-cycle|*/30 * * * *|isolated|Run the owner X sync cycle: bash $workspace/scripts/x-sync-cycle.sh"
   )
 
   local registered=()
@@ -1253,11 +1274,11 @@ register_crons() {
   if [ "${#failed[@]}" -eq 0 ]; then
     CRONS_REGISTERED=true
     CRON_REGISTRATION_MODE="local-cli"
-    log_ok "All 3 cron jobs registered and verified in scheduler"
+    log_ok "All 4 cron jobs registered and verified in scheduler"
     return 0
   fi
 
-  log_warn "Cron registration partial: succeeded=${#registered[@]}/3, failed=${failed[*]}"
+  log_warn "Cron registration partial: succeeded=${#registered[@]}/${#specs[@]}, failed=${failed[*]}"
   log_warn "Detailed cron registration log: $cron_log"
   # Drop to deferred-tool so the install contract reflects reality and the
   # operator gets a concrete finalize command.
@@ -1613,100 +1634,7 @@ PY
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 10. sync_guided_x_tweets
-# ──────────────────────────────────────────────────────────────────────────────
-
-sync_guided_x_tweets() {
-  log_info "Step 10: Bootstrapping guided X tweets into raw/..."
-
-  local workspace
-  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
-
-  if [ "$SKIP_GUIDED_X_BOOTSTRAP" = "true" ]; then
-    X_TWEETS_SEED_STATUS="skipped"
-    X_TWEETS_BLOCKERS='[]'
-    log_info "Guided X bootstrap skipped by flag"
-    return 0
-  fi
-
-  if [ "$DRY_RUN" = "true" ]; then
-    log_info "[DRY RUN] Would sync guided X tweets into: $workspace/raw/x-tweets"
-    X_TWEETS_SEED_STATUS="dry-run"
-    return 0
-  fi
-
-  local sync_script="$AGENCY_DIR/scripts/sync_guided_x_tweets.py"
-  if [ ! -f "$sync_script" ]; then
-    log_warn "sync_guided_x_tweets.py not found — skipping guided X bootstrap"
-    X_TWEETS_SEED_STATUS="failed"
-    X_TWEETS_BLOCKERS='["sync_script_missing"]'
-    return 0
-  fi
-
-  local _tmp_json
-  _tmp_json="$(mktemp)"
-  if python3 "$sync_script" --workspace "$workspace" --lookback-days 3 --include-replies --json >"$_tmp_json" 2>/dev/null; then
-    X_TWEETS_SEED_STATUS="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('status','failed'))" 2>/dev/null || echo "failed")"
-    X_TWEETS_BLOCKERS="$(python3 -c "import json; d=json.load(open('$_tmp_json')); import json as _j; print(_j.dumps(d.get('blockers', []), ensure_ascii=False))" 2>/dev/null || echo '[]')"
-    local _written _skipped _found
-    _written="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('items_written', 0))" 2>/dev/null || echo "0")"
-    _skipped="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('items_skipped_existing', 0))" 2>/dev/null || echo "0")"
-    _found="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('tweet_urls_found', 0))" 2>/dev/null || echo "0")"
-    log_info "Guided X sync result: status=${X_TWEETS_SEED_STATUS}, found=${_found}, written=${_written}, skipped=${_skipped}"
-  else
-    X_TWEETS_SEED_STATUS="failed"
-    X_TWEETS_BLOCKERS='["sync_command_failed"]'
-    log_warn "Guided X sync command failed"
-  fi
-  rm -f "$_tmp_json" 2>/dev/null || true
-  return 0
-}
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 11. compile_x_tweets_wiki
-# ──────────────────────────────────────────────────────────────────────────────
-
-compile_x_tweets_wiki() {
-  log_info "Step 11: Compiling guided X tweets into wiki synthesis..."
-
-  local workspace
-  workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
-
-  if [ "$SKIP_GUIDED_X_BOOTSTRAP" = "true" ]; then
-    X_TWEETS_COMPILE_STATUS="skipped"
-    log_info "Guided X wiki compile skipped by flag"
-    return 0
-  fi
-
-  if [ "$DRY_RUN" = "true" ]; then
-    log_info "[DRY RUN] Would compile raw/x-tweets into wiki/synthesis/tweets"
-    X_TWEETS_COMPILE_STATUS="dry-run"
-    return 0
-  fi
-
-  local compile_script="$AGENCY_DIR/scripts/build_x_tweets_wiki_v1.py"
-  if [ ! -f "$compile_script" ]; then
-    log_warn "build_x_tweets_wiki_v1.py not found — skipping X tweet wiki compile"
-    X_TWEETS_COMPILE_STATUS="failed"
-    return 0
-  fi
-
-  local _tmp_json
-  _tmp_json="$(mktemp)"
-  if python3 "$compile_script" --workspace "$workspace" --json >"$_tmp_json" 2>/dev/null; then
-    X_TWEETS_COMPILE_STATUS="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('status','failed'))" 2>/dev/null || echo "failed")"
-    X_TWEETS_COMPILED_COUNT="$(python3 -c "import json; d=json.load(open('$_tmp_json')); print(d.get('compiled_items', 0))" 2>/dev/null || echo "0")"
-    log_info "Guided X wiki compile result: status=${X_TWEETS_COMPILE_STATUS}, compiled=${X_TWEETS_COMPILED_COUNT}"
-  else
-    X_TWEETS_COMPILE_STATUS="failed"
-    log_warn "Guided X wiki compile command failed"
-  fi
-  rm -f "$_tmp_json" 2>/dev/null || true
-  return 0
-}
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 12. publish_intro_post
+# 10. publish_intro_post
 # ──────────────────────────────────────────────────────────────────────────────
 
 publish_intro_post() {
@@ -1963,8 +1891,11 @@ main() {
     register_crons || true
     install_dashboard
     seed_raw_docs
-    sync_guided_x_tweets
-    compile_x_tweets_wiki
+    X_TWEETS_SEED_STATUS="deferred"
+    X_TWEETS_COMPILE_STATUS="deferred"
+    X_TWEETS_COMPILED_COUNT="0"
+    X_TWEETS_BLOCKERS='["cron_driven_x_sync"]'
+    log_info "Guided X bootstrap is cron-driven now — x-sync-cycle will backfill the last 3 days on first run, then continue incrementally."
   else
     log_warn "Skipping cron registration and dashboard setup — TagClaw not yet activated"
     local _ws_hint
@@ -2165,7 +2096,10 @@ print(json.dumps({
     # unresolved owner binding (auto-heals via heartbeat — no operator action
     # required) or something downstream. See design §4.5.
     if [ "$X_TWEETS_SEED_STATUS" = "deferred" ] || [ "$X_TWEETS_SEED_STATUS" = "blocked" ] || [ "$X_TWEETS_SEED_STATUS" = "failed" ]; then
-      if [ "$OWNER_BINDING_STATUS" = "unresolved" ]; then
+      if [[ "$X_TWEETS_BLOCKERS" == *'"cron_driven_x_sync"'* ]]; then
+        _emit_step_simple "guided_x_sync_cron" \
+          "Owner X sync is cron-driven. Once cron registration is complete, x-sync-cycle will backfill the last 3 days of owner tweets/replies into raw/x-tweets and then continue incremental sync automatically. No separate manual sync step is required."
+      elif [ "$OWNER_BINDING_STATUS" = "unresolved" ]; then
         _emit_step_simple "owner_binding_pending" \
           "Owner X binding not yet resolved. Will auto-heal on next heartbeat once TagClaw /me returns the handle. No operator action required; optional manual path: rerun install.sh with --owner-twitter-handle, or bash $workspace/scripts/tagclaw-onboard.sh post-verify-finalize --workspace $workspace"
       elif [ "$OWNER_BINDING_STATUS" = "declared" ]; then
@@ -2667,7 +2601,7 @@ print(json.dumps(d, indent=2))
         elif [ "$_k" = "finalize_crons" ]; then
           echo "$((md_i + 1)). **Approve deferred cron registration**"
           echo ""
-          echo "   Reply \`同意创建 cron\` to let the agent create the three OpenClaw cron jobs from:"
+          echo "   Reply \`同意创建 cron\` to let the agent create the OpenClaw cron jobs from:"
           echo ""
           echo "   \`$CRON_INTENT_PATH\`"
           echo ""
@@ -2904,7 +2838,13 @@ print(json.dumps(d, indent=2))
     case "$X_TWEETS_SEED_STATUS" in
       ok)       echo "  ║    ✓ Synced owner X raw artifacts" ;;
       partial)  echo "  ║    ⚠ Partial sync (some tweet fetches failed)" ;;
-      deferred) echo "  ║    - Deferred (guided session or URLs not yet available; heartbeat self-heal active if awaiting owner binding)" ;;
+      deferred)
+        if [[ "$X_TWEETS_BLOCKERS" == *'"cron_driven_x_sync"'* ]]; then
+          echo "  ║    - Deferred to x-sync-cycle cron (first run backfills 3 days, later runs sync incrementally)"
+        else
+          echo "  ║    - Deferred (guided session or URLs not yet available; heartbeat self-heal active if awaiting owner binding)"
+        fi
+        ;;
       blocked)  echo "  ║    ✗ Blocked (unrecoverable — see blockers array)" ;;
       failed)   echo "  ║    ✗ Sync failed (non-fatal)" ;;
       skipped)  echo "  ║    - Skipped for lightweight finalization" ;;

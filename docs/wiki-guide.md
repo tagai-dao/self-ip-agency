@@ -93,12 +93,13 @@ Add your concepts to `config/wiki_topic_registry.json`:
 
 ### 4. Bootstrap guided X raw sources
 
+The default path is the dedicated X sync cycle:
+
 ```bash
-python3 scripts/sync_guided_x_tweets.py --lookback-days 3 --include-replies --json
-python3 scripts/build_x_tweets_wiki_v1.py --json
+bash scripts/x-sync-cycle.sh
 ```
 
-This writes owner X raw sources to `raw/x-tweets/` and compiles first-pass synthesis pages into `wiki/synthesis/tweets/`.
+When cron registration is complete, `x-sync-cycle` runs automatically every 30 minutes. The first run backfills the last 3 days of owner tweets/replies into `raw/x-tweets/`; later runs sync incrementally and compile new items into `wiki/synthesis/tweets/`.
 
 ### 5. Run Health Checks
 

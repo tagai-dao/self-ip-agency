@@ -9,7 +9,7 @@
 #   bash scripts/uninstall.sh --workspace PATH # override OPENCLAW_WORKSPACE
 #
 # Removes:
-#   - All agency cron jobs (main-heartbeat, bookmarker-cycle, trader-cycle)
+#   - All agency cron jobs (main-heartbeat, bookmarker-cycle, trader-cycle, x-sync-cycle)
 #   - Running dashboard server + cloudflared tunnel
 #   - Running claw-wallet sandbox (iff $WALLET_DIR/.env.clay exists)
 #   - Every file install.sh deploys into $OPENCLAW_WORKSPACE
@@ -88,6 +88,7 @@ DEPLOYED_SHELL_SCRIPTS=(
   main-heartbeat.sh
   bookmarker-cycle.sh
   trader-cycle.sh
+  x-sync-cycle.sh
   tagclaw-onboard.sh
   refresh-agency-identity.sh
 )
@@ -100,6 +101,8 @@ DEPLOYED_PY_SCRIPTS=(
   run_main_runtime_v2.py
   compute_tas_social_v2.py
   select_strategy_v1.py
+  sync_guided_x_tweets.py
+  build_x_tweets_wiki_v1.py
   wiki_lint.py
   wiki_utils.py
   wiki_registry.py
@@ -404,7 +407,7 @@ stop_claw_sandbox() {
 remove_crons() {
   log_info "Stage 2: Unregistering cron jobs"
 
-  local jobs=(main-heartbeat bookmarker-cycle trader-cycle)
+  local jobs=(main-heartbeat bookmarker-cycle trader-cycle x-sync-cycle)
   local cron_list=""
 
   if ! command -v openclaw >/dev/null 2>&1; then
@@ -442,6 +445,10 @@ remove_crons() {
       trader-cycle)
         script_name="trader-cycle.sh"
         expected_path="$WORKSPACE/scripts/trader-cycle.sh"
+        ;;
+      x-sync-cycle)
+        script_name="x-sync-cycle.sh"
+        expected_path="$WORKSPACE/scripts/x-sync-cycle.sh"
         ;;
       *)
         script_name=""
@@ -569,6 +576,7 @@ remove_workspace_state() {
     do_rm_path "$WORKSPACE/scripts/$s"
   done
   do_rm_path "$WORKSPACE/scripts/lib/common.sh"
+  do_rm_path "$WORKSPACE/scripts/lib/x_fetch_utils.py"
 
   # 3b. Workspace root markers / metadata
   for f in "${WORKSPACE_ROOT_FILES[@]}"; do
@@ -668,9 +676,9 @@ print_plan() {
   echo "  ║  1. Stop: dashboard server, cloudflared tunnel,"
   echo "  ║          claw-wallet sandbox (if .env.clay present)"
   echo "  ║  2. Unregister crons: main-heartbeat, bookmarker-cycle,"
-  echo "  ║                       trader-cycle"
+  echo "  ║                       trader-cycle, x-sync-cycle"
   echo "  ║  3. Remove workspace state:"
-  echo "  ║       - deployed scripts (${#DEPLOYED_SHELL_SCRIPTS[@]} shell, ${#DEPLOYED_PY_SCRIPTS[@]} python + lib/common.sh)"
+  echo "  ║       - deployed scripts (${#DEPLOYED_SHELL_SCRIPTS[@]} shell, ${#DEPLOYED_PY_SCRIPTS[@]} python + lib/{common.sh,x_fetch_utils.py})"
   echo "  ║       - markers/meta (.agency-installed, .agency-meta.json,"
   echo "  ║         HEARTBEAT.md, tagclaw-verification-tweet.txt)"
   echo "  ║       - config/{agency.config.yaml, agency-identity.json,"

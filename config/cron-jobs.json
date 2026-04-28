@@ -31,16 +31,27 @@
       "session": "isolated",
       "enabled": true,
       "timeout_seconds": 300
+    },
+    {
+      "name": "x-sync-cycle",
+      "agent": "x-sync",
+      "schedule": "*/30 * * * *",
+      "description": "Owner X raw sync cycle. First run backfills the last 3 days, later runs sync incrementally and compile wiki artifacts when new items arrive. Entrypoint: scripts/x-sync-cycle.sh",
+      "message_template": "Run the owner X sync cycle: bash {{WORKSPACE_PATH}}/scripts/x-sync-cycle.sh",
+      "session": "isolated",
+      "enabled": true,
+      "timeout_seconds": 240
     }
   ],
   "openclaw_cron_commands": [
     "openclaw cron add --name \"main-heartbeat\" --cron \"*/10 * * * *\" --session isolated --message \"Run the main heartbeat cycle: bash {{WORKSPACE_PATH}}/scripts/main-heartbeat.sh\"",
     "openclaw cron add --name \"bookmarker-cycle\" --cron \"*/30 * * * *\" --session isolated --message \"Run the bookmarker curation cycle: bash {{WORKSPACE_PATH}}/scripts/bookmarker-cycle.sh\"",
-    "openclaw cron add --name \"trader-cycle\" --cron \"0 * * * *\" --session isolated --message \"Run the trader operations cycle: bash {{WORKSPACE_PATH}}/scripts/trader-cycle.sh\""
+    "openclaw cron add --name \"trader-cycle\" --cron \"0 * * * *\" --session isolated --message \"Run the trader operations cycle: bash {{WORKSPACE_PATH}}/scripts/trader-cycle.sh\"",
+    "openclaw cron add --name \"x-sync-cycle\" --cron \"*/30 * * * *\" --session isolated --message \"Run the owner X sync cycle: bash {{WORKSPACE_PATH}}/scripts/x-sync-cycle.sh\""
   ],
   "_notes": {
     "channel_config": "No announce channel is required for local/distributable deployments. All cycle scripts run locally and write results to runtime/*/. To enable optional announcements, configure announce_channel in config/agency.config.yaml.",
-    "entrypoint_model": "All three cycles use dedicated shell entrypoints (scripts/*-heartbeat.sh, scripts/*-cycle.sh). The legacy pattern of 'Read runtime/*/task.json' is NOT used — task.json files in runtime-template are compatibility placeholders only.",
+    "entrypoint_model": "All cron jobs use dedicated shell entrypoints (scripts/*-heartbeat.sh, scripts/*-cycle.sh). The legacy pattern of 'Read runtime/*/task.json' is NOT used — task.json files in runtime-template are compatibility placeholders only.",
     "cron_syntax_migration": "Migrated from legacy positional-arg format (openclaw cron add NAME SCHEDULE COMMAND) to new named-flag format (--name, --cron, --session, --message) as required by current OpenClaw CLI."
   }
 }

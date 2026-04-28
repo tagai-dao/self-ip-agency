@@ -10,21 +10,25 @@ Your self-IP agent needs an X account to source raw social data and publish cont
 ## Option A: Guided bootstrap (default, recommended)
 
 The default self-IP bootstrap path no longer assumes direct X API credentials.
+It now uses the dedicated `x-sync-cycle` entrypoint.
 
 1. Set or confirm `owner.twitter_handle` in `config/agency-identity.json`
 2. Complete one guided X session / login step if needed
 3. Run:
 
 ```bash
-python3 scripts/sync_guided_x_tweets.py --lookback-days 3 --include-replies --json
-python3 scripts/build_x_tweets_wiki_v1.py --json
+bash scripts/x-sync-cycle.sh
 ```
 
 The canonical path is:
 - browser-guided discovery when a guided URL manifest is available
 - zero-credential bootstrap fallback via public discovery + per-tweet fetch
+- first run backfills the last 3 days of owner tweets/replies
+- later runs sync incrementally from the newest raw item already stored
 - raw artifacts land in `raw/x-tweets/`
-- wiki synthesis lands in `wiki/synthesis/tweets/`
+- wiki synthesis lands in `wiki/synthesis/tweets/` automatically when new items arrive
+
+After cron registration, the same flow is handled automatically by the `x-sync-cycle` cron job every 30 minutes.
 
 No direct X API keys are required for the default install/bootstrap path.
 
