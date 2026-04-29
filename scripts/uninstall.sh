@@ -131,21 +131,20 @@ DEPLOYED_SHELL_SCRIPTS=(
 )
 
 DEPLOYED_PY_SCRIPTS=(
-  run_bookmarker_runtime_v1.py
-  run_trader_runtime_v1.py
-  runtime_utils_v2.py
+  run_bookmarker_runtime.py
+  run_trader_runtime.py
+  runtime_utils.py
   build_main_input_packet.py
-  run_main_runtime_v2.py
-  compute_tas_social_v2.py
-  select_strategy_v1.py
+  run_main_runtime.py
+  compute_tas_social.py
+  select_strategy.py
   sync_guided_x_tweets.py
-  build_x_tweets_wiki_v1.py
+  build_x_tweets_wiki.py
   wiki_lint.py
   wiki_utils.py
   wiki_registry.py
   wiki_search.py
   verify_wiki_contract.py
-  select_strategy.py
   strategy_experiment.py
   record_strategy_cycle.py
 )

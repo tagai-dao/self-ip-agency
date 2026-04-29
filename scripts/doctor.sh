@@ -514,10 +514,10 @@ fi
 
 # Bookmarker execution backend
 BOOKMARKER_BACKEND="none"
-if [ -f "$WORKSPACE/scripts/run_bookmarker_runtime_v1.py" ]; then
-  ok "bookmarker: native runtime (run_bookmarker_runtime_v1.py)"
+if [ -f "$WORKSPACE/scripts/run_bookmarker_runtime.py" ]; then
+  ok "bookmarker: native runtime (run_bookmarker_runtime.py)"
   BOOKMARKER_BACKEND="native"
-elif [ -f "$AGENCY_DIR/scripts/run_bookmarker_runtime_v1.py" ]; then
+elif [ -f "$AGENCY_DIR/scripts/run_bookmarker_runtime.py" ]; then
   ok "bookmarker: native runtime in repo (run install.sh to deploy)"
   BOOKMARKER_BACKEND="native-repo"
 elif [ -f "$WORKSPACE/scripts/dev-claude.sh" ]; then
@@ -532,10 +532,10 @@ fi
 
 # Trader execution backend
 TRADER_BACKEND="none"
-if [ -f "$WORKSPACE/scripts/run_trader_runtime_v1.py" ]; then
-  ok "trader: native runtime (run_trader_runtime_v1.py)"
+if [ -f "$WORKSPACE/scripts/run_trader_runtime.py" ]; then
+  ok "trader: native runtime (run_trader_runtime.py)"
   TRADER_BACKEND="native"
-elif [ -f "$AGENCY_DIR/scripts/run_trader_runtime_v1.py" ]; then
+elif [ -f "$AGENCY_DIR/scripts/run_trader_runtime.py" ]; then
   ok "trader: native runtime in repo (run install.sh to deploy)"
   TRADER_BACKEND="native-repo"
 elif [ -f "$WORKSPACE/scripts/dev-claude.sh" ]; then
@@ -629,10 +629,10 @@ echo ""
 
 # ── 10. Key scripts ─────────────────────────────────────────────────────────
 echo "10. Key scripts"
-for s in run_main_runtime_v2.py wiki_lint_v1.py select_strategy_v1.py \
-          compute_tas_social_v2.py build_main_input_packet.py \
-          build_wiki_query_index_v1.py runtime_utils_v2.py \
-          run_bookmarker_runtime_v1.py run_trader_runtime_v1.py; do
+for s in run_main_runtime.py wiki_lint.py select_strategy.py \
+          compute_tas_social.py build_main_input_packet.py \
+          build_wiki_query_index.py runtime_utils.py \
+          run_bookmarker_runtime.py run_trader_runtime.py; do
   check_file "$AGENCY_DIR/scripts/$s" "$s"
 done
 

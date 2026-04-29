@@ -258,7 +258,7 @@ already active and verified is a no-op.
   `status=unresolved` (handle null) or `status=declared` (handle present
   but no `verified` key ⇒ treated as false).
 - Pre-PR-B consumers of `agency-identity.json` (`sync_guided_x_tweets.py`,
-  `verify_wiki_contract.py`, `run_bookmarker_runtime_v1.py`,
+  `verify_wiki_contract.py`, `run_bookmarker_runtime.py`,
   `dashboard/server.py`) only `.get()` the canonical two fields
   (`twitter_handle`, `twitter_id`). New optional keys (`binding_source`,
   `verified`, `last_verified_at`) are additive — no schema break.

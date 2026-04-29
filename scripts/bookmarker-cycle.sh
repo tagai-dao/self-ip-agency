@@ -76,16 +76,16 @@ validate_environment() {
   fi
 
   # 3. Check execution backend (native runtime preferred, claude optional)
-  if [ -f "$SCRIPT_DIR/run_bookmarker_runtime_v1.py" ]; then
+  if [ -f "$SCRIPT_DIR/run_bookmarker_runtime.py" ]; then
     log_ok "Native bookmarker runtime available"
-  elif [ -f "$WORKSPACE/scripts/run_bookmarker_runtime_v1.py" ]; then
+  elif [ -f "$WORKSPACE/scripts/run_bookmarker_runtime.py" ]; then
     log_ok "Native bookmarker runtime available (workspace)"
   elif [ -f "$WORKSPACE/scripts/dev-claude.sh" ]; then
     log_ok "dev-claude.sh available (LLM execution path)"
   elif command -v claude &>/dev/null; then
     log_ok "Claude CLI available (LLM execution path)"
   else
-    log_fail "No execution backend found — need run_bookmarker_runtime_v1.py, dev-claude.sh, or claude CLI"
+    log_fail "No execution backend found — need run_bookmarker_runtime.py, dev-claude.sh, or claude CLI"
     errors=$((errors + 1))
   fi
 
@@ -113,12 +113,12 @@ run_bookmarker_cycle() {
 
   # Priority 1: Native Python runtime (no LLM dependency)
   local native_runtime=""
-  if [ -f "$SCRIPT_DIR/run_bookmarker_runtime_v1.py" ]; then
-    native_runtime="$SCRIPT_DIR/run_bookmarker_runtime_v1.py"
-  elif [ -f "$WORKSPACE/scripts/run_bookmarker_runtime_v1.py" ]; then
-    native_runtime="$WORKSPACE/scripts/run_bookmarker_runtime_v1.py"
-  elif [ -n "${REPO_DIR:-}" ] && [ -f "$REPO_DIR/scripts/run_bookmarker_runtime_v1.py" ]; then
-    native_runtime="$REPO_DIR/scripts/run_bookmarker_runtime_v1.py"
+  if [ -f "$SCRIPT_DIR/run_bookmarker_runtime.py" ]; then
+    native_runtime="$SCRIPT_DIR/run_bookmarker_runtime.py"
+  elif [ -f "$WORKSPACE/scripts/run_bookmarker_runtime.py" ]; then
+    native_runtime="$WORKSPACE/scripts/run_bookmarker_runtime.py"
+  elif [ -n "${REPO_DIR:-}" ] && [ -f "$REPO_DIR/scripts/run_bookmarker_runtime.py" ]; then
+    native_runtime="$REPO_DIR/scripts/run_bookmarker_runtime.py"
   fi
 
   if [ -n "$native_runtime" ]; then
@@ -146,7 +146,7 @@ run_bookmarker_cycle() {
       return 1
     }
   else
-    log_fail "No execution backend available — install run_bookmarker_runtime_v1.py or ensure claude CLI is available"
+    log_fail "No execution backend available — install run_bookmarker_runtime.py or ensure claude CLI is available"
     return 1
   fi
 }

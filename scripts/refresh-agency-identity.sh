@@ -273,7 +273,7 @@ identity = {
         "platform": "X (Twitter)",
         # Optional provenance fields (agency.identity.v1-compatible additions).
         # Existing consumers (sync_guided_x_tweets.py, verify_wiki_contract.py,
-        # run_bookmarker_runtime_v1.py, dashboard/server.py) only .get() the
+        # run_bookmarker_runtime.py, dashboard/server.py) only .get() the
         # two canonical fields above, so these extras are backward-compatible.
         "binding_source": owner_twitter_handle_source or None,
         "binding_id_source": owner_twitter_id_source or None,

@@ -83,7 +83,7 @@ get_tracked_ticks()                     # → ["TagClaw", "BUIDL", ...]
 | `runtime/bookmarker/topic-heatmap.json` | raw/x-interactions/ + wiki/synthesis/tweets/ | `build_wiki_topic_heatmap_v1.py` | None (on-demand) |
 | `runtime/shared/wiki-execution-brief.json` | wiki/concepts/ + topic-heatmap.json | `build_wiki_execution_brief_v1.py` | 7 days |
 | `runtime/shared/community-heat.json` | wiki/tagclaw-platform/trending-ticks.md | `refresh_wiki_community_heat_v1.py` | 48 hours |
-| `runtime/shared/wiki-lint-status.json` | wiki/ | `wiki_lint_v1.py` | None |
+| `runtime/shared/wiki-lint-status.json` | wiki/ | `wiki_lint.py` | None |
 | `wiki/onchain-ticks/INDEX.json` | raw/onchain-token-transation/ | `build_onchain_ticks_wiki_v1.py` | None |
 
 ## Contract Verifier
@@ -238,10 +238,10 @@ Each line is a JSON object:
 
 ### Shared Helper
 
-All producers use `append_wiki_event()` from `scripts/runtime_utils_v2.py`:
+All producers use `append_wiki_event()` from `scripts/runtime_utils.py`:
 
 ```python
-from runtime_utils_v2 import append_wiki_event
+from runtime_utils import append_wiki_event
 
 append_wiki_event(
     event_type='contract_verify',
@@ -318,10 +318,10 @@ Each sidecar is written to `<artifact>.provenance.json` (adjacent to the artifac
 
 ### Shared Helper
 
-All producers use `write_provenance_sidecar()` from `scripts/runtime_utils_v2.py`:
+All producers use `write_provenance_sidecar()` from `scripts/runtime_utils.py`:
 
 ```python
-from runtime_utils_v2 import write_provenance_sidecar
+from runtime_utils import write_provenance_sidecar
 
 write_provenance_sidecar(
     artifact_path=OUTPUT_JSON,
@@ -375,7 +375,7 @@ scripts/cron-wiki-nightly-maintenance.sh
 |------|--------|--------|
 | 1. Contract Verify | Full contract verification (freshness, schema, cross-artifact) | `verify_wiki_runtime_contract_v1.py` |
 | 2. Artifact Freshness | Independent freshness check on 7 key artifacts | File mtime comparison |
-| 3. Wiki Lint | Content health check (broken links, stale concepts, orphans) | `wiki_lint_v1.py` |
+| 3. Wiki Lint | Content health check (broken links, stale concepts, orphans) | `wiki_lint.py` |
 | 4. Provenance Coverage | Check sidecar existence for covered artifacts | File existence |
 | 5. Events Ledger Health | Validate ledger integrity (valid JSONL, required fields) | Ledger parsing |
 
@@ -440,7 +440,7 @@ Repairs are controlled by an explicit **allowlist** in `wiki_nightly_maintenance
 | Artifact | Repair Script | Risk |
 |----------|--------------|------|
 | `wiki-contract-verify` | `verify_wiki_runtime_contract_v1.py` | None — read-only verification |
-| `wiki-lint-status` | `wiki_lint_v1.py` | None — read-only lint check |
+| `wiki-lint-status` | `wiki_lint.py` | None — read-only lint check |
 | `community-heat` | `refresh_wiki_community_heat_v1.py` | Low — re-derives from canonical source |
 
 **What is NOT auto-repaired** (alert-only):
@@ -569,7 +569,7 @@ from query_wiki_facts_v1 import query_canonical, query_artifact, query_events, q
 
 ### Aggregated Index: `runtime/shared/wiki-query-index.json`
 
-Built by `scripts/build_wiki_query_index_v1.py`. Schema: `wiki-query-index-v1`.
+Built by `scripts/build_wiki_query_index.py`. Schema: `wiki-query-index-v1`.
 
 Sections:
 - `registry` — concept count, tick count, tracked ticks, alias count
@@ -577,7 +577,7 @@ Sections:
 - `health` — quick snapshot: contract status/severity, maintenance severity, lint score, overall ok/degraded
 - `recent_events` — last 10 events (compact: ts, type, status, summary)
 
-Refresh: `python3 scripts/build_wiki_query_index_v1.py` (deterministic, idempotent).
+Refresh: `python3 scripts/build_wiki_query_index.py` (deterministic, idempotent).
 
 ### Artifact Sources Feeding the Query Layer
 
@@ -586,7 +586,7 @@ Refresh: `python3 scripts/build_wiki_query_index_v1.py` (deterministic, idempote
 | `wiki-contract-verify.json` | `verify_wiki_runtime_contract_v1.py` |
 | `wiki-contract-alert.json` | `verify_wiki_runtime_contract_v1.py` |
 | `wiki-execution-brief.json` | `build_wiki_execution_brief_v1.py` |
-| `wiki-lint-status.json` | `wiki_lint_v1.py` |
+| `wiki-lint-status.json` | `wiki_lint.py` |
 | `wiki-maintenance-report.json` | `wiki_nightly_maintenance_v1.py` |
 | `wiki-maintenance-alert.json` | `wiki_nightly_maintenance_v1.py` |
 | `community-heat.json` | `refresh_wiki_community_heat_v1.py` |

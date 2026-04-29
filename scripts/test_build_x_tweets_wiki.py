@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for build_x_tweets_wiki_v1.py."""
+"""Regression tests for build_x_tweets_wiki.py."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from build_x_tweets_wiki_v1 import compile_workspace  # noqa: E402
+from build_x_tweets_wiki import compile_workspace  # noqa: E402
 
 
 def _assert(cond: bool, msg: str) -> None:

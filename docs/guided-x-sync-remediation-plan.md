@@ -158,7 +158,7 @@ At minimum add / preserve:
 4. transport failed
 
 #### Files likely to change
-- `scripts/run_bookmarker_runtime_v1.py`
+- `scripts/run_bookmarker_runtime.py`
 - any canonical feed adapter/helper used by bookmarker
 - tests/fixtures for feed parsing
 

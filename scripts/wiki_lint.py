@@ -28,7 +28,18 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-WORKSPACE = Path(__file__).resolve().parent.parent
+
+WORKSPACE = Path(os.environ.get("OPENCLAW_WORKSPACE") or str(Path.home() / ".openclaw" / "workspace"))
+
+# Phase 4: resolver-pack integration
+try:
+    from load_resolver_context import load_context, is_write_allowed, ResolverContext
+except ImportError:
+    load_context = None  # type: ignore[assignment]
+    is_write_allowed = None  # type: ignore[assignment]
+    ResolverContext = None  # type: ignore[assignment,misc]
+
+RESOLVER_TASK = 'lint-wiki'
 
 
 def now_iso() -> str:
@@ -57,6 +68,7 @@ def atomic_write_json(path: Path, obj: Any) -> None:
 
 
 def parse_frontmatter(text: str) -> dict[str, str]:
+    """Extract frontmatter key-value pairs (simple flat parsing)."""
     if not text.startswith('---'):
         return {}
     end = text.find('\n---', 3)
@@ -72,6 +84,7 @@ def parse_frontmatter(text: str) -> dict[str, str]:
 
 
 def get_body(text: str) -> str:
+    """Return text after frontmatter."""
     if not text.startswith('---'):
         return text
     end = text.find('\n---', 3)
@@ -81,10 +94,13 @@ def get_body(text: str) -> str:
 
 
 def extract_wikilinks(text: str) -> list[str]:
+    """Extract all [[linkname]] from text. Handles [[link|alias]] and [[link#section]]."""
     links: list[str] = []
     for m in re.finditer(r'\[\[([^\]]+)\]\]', text):
         raw = m.group(1)
+        # Strip alias: [[link|alias]] -> link
         raw = raw.split('|')[0]
+        # Strip section: [[link#section]] -> link
         raw = raw.split('#')[0]
         raw = raw.strip()
         if raw:
@@ -93,6 +109,7 @@ def extract_wikilinks(text: str) -> list[str]:
 
 
 def days_since(date_str: str) -> int | None:
+    """Return days since a date string (YYYY-MM-DD or ISO)."""
     try:
         d = date.fromisoformat(date_str[:10])
         return (date.today() - d).days
@@ -101,10 +118,13 @@ def days_since(date_str: str) -> int | None:
 
 
 def check_broken_links(concepts_dir: Path, synthesis_dir: Path) -> list[dict]:
+    """Find [[wikilinks]] pointing to nonexistent pages."""
+    # Build set of known page stems + aliases from frontmatter
     known: set[str] = set()
     if concepts_dir.exists():
         for p in concepts_dir.glob('*.md'):
             known.add(p.stem)
+            # Also collect aliases from frontmatter
             try:
                 content = p.read_text(encoding='utf-8')
                 if content.startswith('---'):
@@ -113,7 +133,7 @@ def check_broken_links(concepts_dir: Path, synthesis_dir: Path) -> list[dict]:
                         fm = content[3:fm_end]
                         for line in fm.splitlines():
                             line = line.strip()
-                            if line.startswith('- ') and ':' not in line:
+                            if line.startswith('- ') and not ':' in line:
                                 alias = line.lstrip('- ').strip()
                                 if alias:
                                     known.add(alias)
@@ -136,8 +156,10 @@ def check_broken_links(concepts_dir: Path, synthesis_dir: Path) -> list[dict]:
         except Exception:
             continue
         for link in extract_wikilinks(text):
+            # Exclude people/ and community-profiles/ prefixes
             if link.startswith('people/') or link.startswith('community-profiles/'):
                 continue
+            # Normalize: strip concepts/ prefix if present
             normalized = link.replace('concepts/', '')
             if normalized not in known:
                 issues.append({
@@ -148,6 +170,7 @@ def check_broken_links(concepts_dir: Path, synthesis_dir: Path) -> list[dict]:
 
 
 def check_stale(concepts_dir: Path, threshold_days: int = 30) -> list[dict]:
+    """Find concept pages not updated in > threshold_days."""
     issues: list[dict] = []
     if not concepts_dir.exists():
         return issues
@@ -168,8 +191,11 @@ def check_stale(concepts_dir: Path, threshold_days: int = 30) -> list[dict]:
 
 
 def check_orphans(concepts_dir: Path, index_path: Path) -> list[dict]:
+    """Find concepts not referenced by any other concept page and not in INDEX.md."""
     if not concepts_dir.exists():
         return []
+
+    # Count inbound references for each concept
     all_stems = {p.stem for p in concepts_dir.glob('*.md')}
     ref_count: dict[str, int] = {s: 0 for s in all_stems}
 
@@ -183,6 +209,7 @@ def check_orphans(concepts_dir: Path, index_path: Path) -> list[dict]:
             if normalized in ref_count and normalized != page.stem:
                 ref_count[normalized] += 1
 
+    # Check INDEX.md
     index_text = ''
     if index_path.exists():
         try:
@@ -192,12 +219,13 @@ def check_orphans(concepts_dir: Path, index_path: Path) -> list[dict]:
 
     issues: list[dict] = []
     for stem, count in sorted(ref_count.items()):
-        if count == 0 and stem not in index_text and f'[[{stem}]]' not in index_text:
+        if count == 0 and stem not in index_text and f'[[{stem}]]' not in index_text and f'concepts/{stem}' not in index_text:
             issues.append({'file': f'{stem}.md', 'inbound_refs': 0})
     return issues
 
 
 def check_empty(concepts_dir: Path, min_words: int = 100) -> list[dict]:
+    """Find concepts where body word count < min_words."""
     issues: list[dict] = []
     if not concepts_dir.exists():
         return issues
@@ -220,6 +248,7 @@ def build_report_md(
     orphans: list[dict],
     empty: list[dict],
 ) -> str:
+    """Build wiki/lint/latest-report.md content."""
     lines = [
         '---',
         f'generated_at: {now_iso()}',
@@ -232,45 +261,49 @@ def build_report_md(
         '',
     ]
 
-    lines.append(f'## Broken Links ({len(broken_links)})')
+    # Broken links
+    lines.append(f'## 断链（{len(broken_links)}个）')
     if broken_links:
-        lines.append('| Source | Broken Link |')
-        lines.append('|--------|-------------|')
+        lines.append('| 来源文件 | 断链 |')
+        lines.append('|---------|------|')
         for bl in broken_links:
             lines.append(f'| {bl["source_file"]} | {bl["broken_link"]} |')
     else:
-        lines.append('None')
+        lines.append('无')
     lines.append('')
 
-    lines.append(f'## Stale Pages ({len(stale)})')
+    # Stale
+    lines.append(f'## 过期页面（{len(stale)}个）')
     if stale:
-        lines.append('| File | Reason |')
-        lines.append('|------|--------|')
+        lines.append('| 文件 | 原因 |')
+        lines.append('|------|------|')
         for s in stale:
-            reason = s.get('reason', f'{s.get("days_since_update", "?")} days since update')
+            reason = s.get('reason', f'{s.get("days_since_update", "?")} 天未更新')
             lines.append(f'| {s["file"]} | {reason} |')
     else:
-        lines.append('None')
+        lines.append('无')
     lines.append('')
 
-    lines.append(f'## Orphan Pages ({len(orphans)})')
+    # Orphans
+    lines.append(f'## 孤儿页面（{len(orphans)}个）')
     if orphans:
-        lines.append('| File | Inbound Refs |')
-        lines.append('|------|-------------|')
+        lines.append('| 文件 | 入链数 |')
+        lines.append('|------|--------|')
         for o in orphans:
             lines.append(f'| {o["file"]} | {o["inbound_refs"]} |')
     else:
-        lines.append('None')
+        lines.append('无')
     lines.append('')
 
-    lines.append(f'## Empty Pages ({len(empty)})')
+    # Empty
+    lines.append(f'## 空内容页面（{len(empty)}个）')
     if empty:
-        lines.append('| File | Word Count |')
-        lines.append('|------|-----------|')
+        lines.append('| 文件 | 字数 |')
+        lines.append('|------|------|')
         for e in empty:
             lines.append(f'| {e["file"]} | {e["word_count"]} |')
     else:
-        lines.append('None')
+        lines.append('无')
     lines.append('')
 
     return '\n'.join(lines)
@@ -283,6 +316,7 @@ def compute_health_score(
     orphan_count: int,
     empty_count: int,
 ) -> float:
+    """health_score = 100 - broken_links_pct×30 - stale_pct×20 - orphan_pct×10 - empty_pct×10"""
     if concepts_checked == 0:
         return 100.0
     bl_pct = broken_links_count / max(concepts_checked, 1)
@@ -293,8 +327,45 @@ def compute_health_score(
     return max(0.0, min(100.0, round(score, 1)))
 
 
+def _load_resolver() -> dict[str, Any] | None:
+    """Load resolver context for lint-wiki task (Phase 4).
+
+    Returns resolver metadata dict on success, None if unavailable.
+    The lint workflow degrades gracefully if resolver-pack is missing.
+    """
+    if load_context is None:
+        return None
+    ctx = load_context(RESOLVER_TASK)
+    if not ctx.valid:
+        print(f'[wiki-lint] resolver: degraded — {ctx.error}')
+        return None
+    print(f'[wiki-lint] resolver: using task={ctx.task_name} (pack {ctx.pack_version}, generated {ctx.pack_generated_at})')
+    if ctx.missing:
+        print(f'[wiki-lint] resolver: {len(ctx.missing)} load paths missing (degraded)')
+    return {
+        'task_name': ctx.task_name,
+        'pack_version': ctx.pack_version,
+        'pack_generated_at': ctx.pack_generated_at,
+        'load_paths': ctx.load_paths,
+        'protected_writes': ctx.protected_writes,
+        'missing': ctx.missing,
+        '_ctx': ctx,
+    }
+
+
+def _check_write_guard(resolver_meta: dict[str, Any] | None, rel_path: str) -> bool:
+    """Check if writing to rel_path is allowed by the resolver write guard.
+
+    Returns True if write is allowed (or if resolver is not loaded).
+    """
+    if resolver_meta is None or is_write_allowed is None:
+        return True
+    ctx = resolver_meta['_ctx']
+    return is_write_allowed(ctx, rel_path)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description='Wiki Lint — concept health check')
+    parser = argparse.ArgumentParser(description='Wiki Lint v1 — concept health check')
     parser.add_argument('--wiki-dir', default=str(WORKSPACE / 'wiki'),
                         help='Path to wiki/ directory')
     parser.add_argument('--workspace', default=str(WORKSPACE),
@@ -306,6 +377,9 @@ def main() -> int:
     concepts_dir = wiki_dir / 'concepts'
     synthesis_dir = wiki_dir / 'synthesis'
     index_path = wiki_dir / 'INDEX.md'
+
+    # Phase 4: load resolver context
+    resolver_meta = _load_resolver()
 
     if not concepts_dir.exists():
         print('[wiki-lint] concepts/ directory not found, nothing to check')
@@ -319,14 +393,37 @@ def main() -> int:
     orphans = check_orphans(concepts_dir, index_path)
     empty = check_empty(concepts_dir)
 
+    # Print summary
     print(f'[wiki-lint] {concepts_checked} concepts checked')
     print(f'[wiki-lint] broken_links: {len(broken_links)}, stale: {len(stale)}, orphans: {len(orphans)}, empty: {len(empty)}')
 
-    report_path = wiki_dir / 'lint' / 'latest-report.md'
-    report_md = build_report_md(concepts_checked, broken_links, stale, orphans, empty)
-    atomic_write(report_path, report_md)
-    print(f'[wiki-lint] report: {report_path}')
+    # Phase 4: enforce write guard on output paths
+    report_rel = 'wiki/lint/latest-report.md'
+    status_rel = 'runtime/shared/wiki-lint-status.json'
 
+    report_allowed = _check_write_guard(resolver_meta, report_rel)
+    status_allowed = _check_write_guard(resolver_meta, status_rel)
+
+    # Verify protected paths are NOT writable (identity guard check)
+    identity_guard_ok = True
+    if resolver_meta is not None:
+        for protected_test in ['wiki/identity/persona.md', 'wiki/identity/key-positions.md']:
+            if _check_write_guard(resolver_meta, protected_test):
+                print(f'[wiki-lint] WARNING: write guard failed — {protected_test} should be protected')
+                identity_guard_ok = False
+            else:
+                print(f'[wiki-lint] write guard: {protected_test} correctly protected ✓')
+
+    # Write report
+    report_path = wiki_dir / 'lint' / 'latest-report.md'
+    if report_allowed:
+        report_md = build_report_md(concepts_checked, broken_links, stale, orphans, empty)
+        atomic_write(report_path, report_md)
+        print(f'[wiki-lint] report: {report_path}')
+    else:
+        print(f'[wiki-lint] report: BLOCKED by write guard ({report_rel})')
+
+    # Write status JSON
     health_score = compute_health_score(
         concepts_checked, len(broken_links), len(stale), len(orphans), len(empty),
     )
@@ -340,8 +437,22 @@ def main() -> int:
         'needs_attention': health_score < 80,
     }
 
+    # Phase 4: embed resolver metadata in status output
+    if resolver_meta is not None:
+        status['resolver'] = {
+            'task_name': resolver_meta['task_name'],
+            'pack_version': resolver_meta['pack_version'],
+            'pack_generated_at': resolver_meta['pack_generated_at'],
+            'load_paths_count': len(resolver_meta['load_paths']),
+            'missing_count': len(resolver_meta['missing']),
+            'identity_guard_ok': identity_guard_ok,
+        }
+
     status_path = workspace / 'runtime' / 'shared' / 'wiki-lint-status.json'
-    atomic_write_json(status_path, status)
+    if status_allowed:
+        atomic_write_json(status_path, status)
+    else:
+        print(f'[wiki-lint] status: BLOCKED by write guard ({status_rel})')
 
     return 0
 

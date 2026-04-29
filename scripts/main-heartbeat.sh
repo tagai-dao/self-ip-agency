@@ -162,9 +162,9 @@ run_main_runtime() {
 
   local script=""
   for candidate in \
-    "$SCRIPT_DIR/run_main_runtime_v2.py" \
-    "$WORKSPACE/scripts/run_main_runtime_v2.py" \
-    "${REPO_DIR:+$REPO_DIR/scripts/run_main_runtime_v2.py}"; do
+    "$SCRIPT_DIR/run_main_runtime.py" \
+    "$WORKSPACE/scripts/run_main_runtime.py" \
+    "${REPO_DIR:+$REPO_DIR/scripts/run_main_runtime.py}"; do
     if [ -n "$candidate" ] && [ -f "$candidate" ]; then
       script="$candidate"
       break
@@ -181,7 +181,7 @@ run_main_runtime() {
       }
     fi
   else
-    log_warn "run_main_runtime_v2.py not found — writing minimal heartbeat"
+    log_warn "run_main_runtime.py not found — writing minimal heartbeat"
     write_minimal_heartbeat
   fi
 }

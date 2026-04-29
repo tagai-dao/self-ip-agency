@@ -75,7 +75,7 @@ def test_tweets_envelope_accepted() -> None:
         'success': True,
         'tweets': [{'id': '1', 'text': 'hello'}],
     }
-    # Simulate the canonical parser logic from run_bookmarker_runtime_v1.py
+    # Simulate the canonical parser logic from run_bookmarker_runtime.py
     feed = []
     for _key in ("tweets", "posts", "items", "data"):
         _val = feed_raw.get(_key)

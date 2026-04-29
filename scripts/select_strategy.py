@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-ROOT    = Path(__file__).resolve().parent.parent
+ROOT    = Path(os.environ.get("OPENCLAW_WORKSPACE") or str(Path.home() / ".openclaw" / "workspace"))
 RUNTIME = ROOT / 'runtime'
 MEMORY  = ROOT / 'memory'
 
@@ -40,7 +40,8 @@ TRADER_GUIDANCE     = RUNTIME / 'main' / 'trader-guidance.json'
 STRATEGY_PLAN       = RUNTIME / 'main' / 'strategy-plan.json'
 BUDGET_ALLOCATION   = RUNTIME / 'shared' / 'budget-allocation.json'
 
-# ── Search spaces ──
+# ── Search spaces ──────────────────────────────────────────────────────────
+
 BK_SEARCH_SPACE: dict[str, list] = {
     'signal_priority':         ['align_first', 'community_first', 'balanced'],
     'topic_directive':         ['settlement_primitive', 'agent_economy', 'desoc_protocol',
@@ -52,6 +53,21 @@ BK_SEARCH_SPACE: dict[str, list] = {
     'recognition_aware':       ['true', 'false'],
 }
 
+# Map twin-recognition topic keys → bookmarker topic_directive values
+_RECOGNITION_DIRECTIVE_MAP: dict[str, str] = {
+    'ATOC':                    'agent_economy',
+    'autoresearch':            'agent_economy',
+    'AgentSwarm':              'agent_economy',
+    'AutoTwin':                'agent_economy',
+    'AGENT':                   'agent_economy',
+    'Trustless':               'settlement_primitive',
+    'crypto_positive_feedback': 'token_coordination',
+    'TagClaw':                 'tagclaw_ecosystem',
+    'NOUGHT':                  'tagclaw_ecosystem',
+    'BUIDL':                   'tagclaw_ecosystem',
+    'TTAI':                    'tagclaw_ecosystem',
+}
+
 TR_SEARCH_SPACE: dict[str, list] = {
     'claim_patience':        ['eager', 'standard', 'patient'],
     'claim_threshold_usd':   [0.5, 1.0, 2.0, 3.0],
@@ -61,11 +77,38 @@ TR_SEARCH_SPACE: dict[str, list] = {
     'risk_mode':             ['conservative', 'standard', 'aggressive'],
 }
 
+# Linked params (changing one should change the other)
+BK_LINKED = [('interaction_target_mode', 'action_emphasis')]
+TR_LINKED  = [('claim_patience', 'claim_threshold_usd'), ('claim_patience', 'claim_frequency_mode')]
 TR_PATIENCE_MAP = {
     'eager':    (0.5, 'aggressive'),
     'standard': (2.0, 'standard'),
     'patient':  (5.0, 'standard'),
 }
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────
+
+def _top_recognition_directive() -> str | None:
+    """Return the topic_directive most favoured by twin-recognition weights, or None."""
+    twin_path = MEMORY / 'twin-recognition.json'
+    if not twin_path.exists():
+        return None
+    try:
+        data = json.loads(twin_path.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+    topic_weights: dict[str, float] = {
+        k: float(v) for k, v in (data.get('topic_weights') or {}).items()
+    }
+    directive_score: dict[str, float] = {}
+    for topic, weight in topic_weights.items():
+        directive = _RECOGNITION_DIRECTIVE_MAP.get(topic)
+        if directive:
+            directive_score[directive] = max(directive_score.get(directive, 0.0), weight)
+    if not directive_score:
+        return None
+    return max(directive_score, key=lambda d: directive_score[d])
 
 
 def now_iso() -> str:
@@ -103,10 +146,19 @@ def load_log(path: Path, n: int = 50) -> list[dict]:
     return entries
 
 
+# ── Log analysis ──────────────────────────────────────────────────────────
+
 def analyze_log(entries: list[dict], delta_key: str) -> dict:
+    """
+    Analyze strategy log to find:
+    - best / worst parameter combinations by average delta
+    - recent trend (last 5 cycles)
+    - overall win rate
+    """
     if not entries:
         return {'best_combinations': [], 'worst_combinations': [], 'win_rate': 0, 'recent_trend': [], 'total_cycles': 0}
 
+    # Per-param-value: track (sum_delta, count)
     param_stats: dict[str, dict[str, tuple[float, int]]] = defaultdict(lambda: defaultdict(lambda: (0.0, 0)))
 
     for entry in entries:
@@ -121,6 +173,7 @@ def analyze_log(entries: list[dict], delta_key: str) -> dict:
             s, c = param_stats[param][key]
             param_stats[param][key] = (s + delta, c + 1)
 
+    # Build ranked combinations
     best, worst = [], []
     for param, values in param_stats.items():
         for val, (total_delta, count) in values.items():
@@ -138,8 +191,11 @@ def analyze_log(entries: list[dict], delta_key: str) -> dict:
     best.sort(key=lambda x: (-x['avg_delta'], -x['sample_count']))
     worst.sort(key=lambda x: (x['avg_delta'], -x['sample_count']))
 
+    # Recent trend
     recent = entries[-5:]
     recent_trend = [e.get(delta_key) or 0.0 for e in recent]
+
+    # Win rate
     kept = sum(1 for e in entries if e.get('kept'))
     win_rate = round(kept / len(entries), 3)
 
@@ -152,20 +208,33 @@ def analyze_log(entries: list[dict], delta_key: str) -> dict:
     }
 
 
+# ── Mode selection ────────────────────────────────────────────────────────
+
 def pick_mode(entries: list[dict], delta_key: str) -> str:
+    """EXPLORE / EXPLOIT / BASELINE based on recent history."""
     if len(entries) < 2:
         return 'baseline'
+
     recent = entries[-3:]
     deltas = [e.get(delta_key) or 0.0 for e in recent]
-    last_delta = deltas[-1] if deltas else 0.0
-    if last_delta < 0:
-        return 'exploit'
-    if all(d > 0 for d in deltas):
-        return 'explore'
-    return 'explore'
 
+    # Check x-trend for strong new signal (checked in caller)
+    last_delta = deltas[-1] if deltas else 0.0
+    prev_deltas = deltas[:-1]
+
+    if last_delta < 0:
+        return 'exploit'          # last cycle lost → revert to best
+    if all(d > 0 for d in deltas):
+        return 'explore'          # 3 consecutive wins → push further
+    if last_delta > 0:
+        return 'explore'          # last win → explore variant
+    return 'explore'              # default: keep searching
+
+
+# ── Best guidance reconstruction ─────────────────────────────────────────
 
 def reconstruct_best_guidance(entries: list[dict]) -> dict | None:
+    """Find the guidance with highest delta from history."""
     if not entries:
         return None
     improved = [e for e in entries if (e.get('kept') or False)]
@@ -175,15 +244,28 @@ def reconstruct_best_guidance(entries: list[dict]) -> dict | None:
     return best.get('guidance')
 
 
-def generate_bookmarker_guidance(entries, analysis, mode, x_trend_kws, community_scan, tas_social):
+# ── Bookmarker guidance generation ───────────────────────────────────────
+
+def generate_bookmarker_guidance(
+    entries: list[dict],
+    analysis: dict,
+    mode: str,
+    x_trend_kws: list[str],
+    community_scan: dict | None,
+    tas_social: float,
+) -> dict:
+
+    # Pick suggested_targets from community-scan
     candidates = (community_scan or {}).get('curation_candidates', [])
     top_authors = list({c['author'] for c in candidates[:6]
-                        if c.get('author')})[:3]
+                        if c.get('author') and c['author'] != 'clawdbot'})[:3]
 
+    # Derive topic from x-trend
     topic_map = {
         'settlement': 'settlement_primitive', 'agent': 'agent_economy',
         'swarm': 'agent_economy', 'desoc': 'desoc_protocol',
         'token': 'token_coordination', 'tagclaw': 'tagclaw_ecosystem',
+        'autonomous': 'agent_economy',
     }
     topic = 'agent_economy'
     for kw in x_trend_kws[:5]:
@@ -192,39 +274,60 @@ def generate_bookmarker_guidance(entries, analysis, mode, x_trend_kws, community
                 topic = val
                 break
 
+    # recognition_aware default for baseline/exploit paths
+    _rec_aware_default = 'false'
+    _rec_directive = _top_recognition_directive()
+
+    # EXPLOIT: revert to best historical
     if mode == 'exploit':
         best = reconstruct_best_guidance(entries)
         if best:
             g = dict(best)
             g['_source'] = 'exploit_best'
-            g['suggested_targets'] = top_authors
-            g['topic_directive'] = topic
+            g['suggested_targets'] = top_authors  # always refresh targets
+            # Use recognition-aware topic if best guidance had it enabled
+            if g.get('recognition_aware') == 'true' and _rec_directive:
+                g['topic_directive'] = _rec_directive
+            else:
+                g['topic_directive'] = topic            # always use latest trend
             return g
 
+    # BASELINE (no history)
     if mode == 'baseline':
         return {
             'signal_priority': 'balanced',
-            'topic_directive': topic,
+            'topic_directive': _rec_directive if _rec_directive else topic,
             'interaction_budget_vp': 'mid',
             'action_emphasis': 'curate_heavy',
             'interaction_target_mode': 'high_engagement_authors',
             'suggested_targets': top_authors,
+            'recognition_aware': 'true' if _rec_directive else 'false',
             '_source': 'baseline',
         }
 
-    # EXPLORE
+    # EXPLORE: pick worst-performing value for one param, try its neighbor
+    # Build "current best" from analysis
     best_per_param: dict[str, str] = {}
     for combo in analysis.get('best_combinations', []):
         p, v = combo['param'], combo['value']
         if p not in best_per_param:
             best_per_param[p] = v
 
+    worst_params = {c['param'] for c in analysis.get('worst_combinations', [])}
+
+    # Start from best known (or last guidance)
     last_guidance = entries[-1].get('guidance', {}) if entries else {}
+
+    # recognition_aware: if enabled, bias topic_directive toward top twin-recognition directive
+    recognition_aware = best_per_param.get('recognition_aware',
+                        last_guidance.get('recognition_aware', 'false'))
+    rec_directive = _top_recognition_directive() if recognition_aware == 'true' else None
+    effective_topic = rec_directive if rec_directive else topic
 
     base = {
         'signal_priority': best_per_param.get('signal_priority',
                            last_guidance.get('signal_priority', 'balanced')),
-        'topic_directive': topic,
+        'topic_directive': effective_topic,
         'interaction_budget_vp': best_per_param.get('interaction_budget_vp',
                                  last_guidance.get('interaction_budget_vp', 'mid')),
         'action_emphasis': best_per_param.get('action_emphasis',
@@ -232,21 +335,39 @@ def generate_bookmarker_guidance(entries, analysis, mode, x_trend_kws, community
         'interaction_target_mode': best_per_param.get('interaction_target_mode',
                                    last_guidance.get('interaction_target_mode', 'high_engagement_authors')),
         'suggested_targets': top_authors,
+        'recognition_aware': recognition_aware,
     }
 
-    mutate_candidates = list(set(BK_SEARCH_SPACE.keys()))
+    # Mutate 1 param — prefer mutating params that performed worst
+    mutate_candidates = list(worst_params & set(BK_SEARCH_SPACE.keys())) or list(BK_SEARCH_SPACE.keys())
     mutate_param = random.choice(mutate_candidates)
     space = BK_SEARCH_SPACE[mutate_param]
     current_val = base.get(mutate_param, space[0])
     other_vals = [v for v in space if v != str(current_val)]
     if other_vals:
-        base[mutate_param] = random.choice(other_vals)
+        new_val = random.choice(other_vals)
+        base[mutate_param] = new_val
+
+    # Fix linked params
+    if base.get('interaction_target_mode') == 'owner_adjacent':
+        base['action_emphasis'] = 'reply_focus'  # owner-adjacent → prioritize replies
 
     base['_source'] = f'explore_mutate_{mutate_param}'
     return base
 
 
-def generate_trader_guidance(entries, analysis, mode, onchain, reward_status, tas_trade):
+# ── Trader guidance generation ────────────────────────────────────────────
+
+def generate_trader_guidance(
+    entries: list[dict],
+    analysis: dict,
+    mode: str,
+    onchain: dict | None,
+    reward_status: dict | None,
+    tas_trade: float,
+) -> dict:
+
+    # Pick portfolio tick from onchain (lowest value = underweight)
     positions = (onchain or {}).get('positions', [])
     portfolio_tick = 'auto'
     if positions:
@@ -282,6 +403,8 @@ def generate_trader_guidance(entries, analysis, mode, onchain, reward_status, ta
         if p not in best_per_param:
             best_per_param[p] = v
 
+    worst_params = {c['param'] for c in analysis.get('worst_combinations', [])}
+
     last_guidance = entries[-1].get('guidance', {}) if entries else {}
     base: dict[str, Any] = {
         'claim_patience': best_per_param.get('claim_patience',
@@ -297,14 +420,19 @@ def generate_trader_guidance(entries, analysis, mode, onchain, reward_status, ta
                      last_guidance.get('risk_mode', 'standard')),
     }
 
-    mutate_param = random.choice(['claim_patience', 'risk_mode', 'focus_action'])
+    # Mutate 1 param
+    mutate_candidates = list(worst_params & set(TR_SEARCH_SPACE.keys())) or ['claim_patience', 'risk_mode']
+    mutate_param = random.choice(mutate_candidates)
     if mutate_param in TR_SEARCH_SPACE:
         space = TR_SEARCH_SPACE[mutate_param]
-        other_vals = [v for v in space if str(v) != str(base.get(mutate_param))]
+        current_val = base.get(mutate_param, space[0])
+        other_vals = [v for v in space if str(v) != str(current_val)]
         if other_vals:
-            base[mutate_param] = random.choice(other_vals)
+            new_val = random.choice(other_vals)
+            base[mutate_param] = new_val
 
-    if 'claim_patience' in base:
+    # Fix linked params: claim_patience → threshold + frequency
+    if mutate_param == 'claim_patience' or 'claim_patience' in base:
         patience = str(base.get('claim_patience', 'standard'))
         threshold, freq = TR_PATIENCE_MAP.get(patience, (2.0, 'standard'))
         base['claim_threshold_usd'] = threshold
@@ -314,33 +442,73 @@ def generate_trader_guidance(entries, analysis, mode, onchain, reward_status, ta
     return base
 
 
+# ── Main entry ────────────────────────────────────────────────────────────
+
 def select_strategy(apply: bool = False) -> dict:
+    """Run full strategy selection and optionally write guidance files."""
     bk_entries = load_log(BK_STRATEGY_LOG, 50)
     tr_entries = load_log(TR_STRATEGY_LOG, 50)
-    bk_analysis = analyze_log(bk_entries, 'delta_social')
-    tr_analysis = analyze_log(tr_entries, 'delta_trade')
-    bk_mode = pick_mode(bk_entries, 'delta_social')
-    tr_mode = pick_mode(tr_entries, 'delta_trade')
 
+    bk_analysis = analyze_log(bk_entries, 'delta_social')
+    tr_analysis  = analyze_log(tr_entries, 'delta_trade')
+
+    bk_mode = pick_mode(bk_entries, 'delta_social')
+    tr_mode  = pick_mode(tr_entries, 'delta_trade')
+
+    # Runtime signals
+    strategy_plan  = read_json(STRATEGY_PLAN) or {}
+    budget_plan    = read_json(BUDGET_ALLOCATION) or {}
     community_scan = read_json(RUNTIME / 'bookmarker' / 'community-scan.json')
-    x_trend_raw = (read_json(RUNTIME / 'bookmarker' / 'x-trend-latest.json') or {}).get('keywords', [])
-    x_trend_kws = [(kw['term'] if isinstance(kw, dict) else str(kw)) for kw in x_trend_raw if kw]
-    reward_status = read_json(RUNTIME / 'trader' / 'reward-status.json')
-    onchain = read_json(RUNTIME / 'trader' / 'onchain-positions.json')
+    x_trend_raw    = (read_json(RUNTIME / 'bookmarker' / 'x-trend-latest.json') or {}).get('keywords', [])
+    x_trend_kws    = [(kw['term'] if isinstance(kw, dict) else str(kw)) for kw in x_trend_raw if kw]
+    reward_status  = read_json(RUNTIME / 'trader' / 'reward-status.json')
+    onchain        = read_json(RUNTIME / 'trader' / 'onchain-positions.json')
 
     bk_tas = float((read_json(RUNTIME / 'bookmarker' / 'tas-social.json') or {}).get('value') or 0)
     tr_tas = float((read_json(RUNTIME / 'trader' / 'tas-trade.json') or {}).get('value') or 0)
 
-    bk_guidance = generate_bookmarker_guidance(bk_entries, bk_analysis, bk_mode, x_trend_kws, community_scan, bk_tas)
-    tr_guidance = generate_trader_guidance(tr_entries, tr_analysis, tr_mode, onchain, reward_status, tr_tas)
+    # Check for strong x-trend signal (SIGNAL mode override)
+    if x_trend_kws and bk_mode == 'explore':
+        # If top trending word is new (not in recent guidance topics), force SIGNAL
+        recent_topics = {e.get('guidance', {}).get('topic_directive') for e in bk_entries[-3:]}
+        for kw in x_trend_kws[:3]:
+            for key in ['settlement', 'agent', 'desoc', 'token', 'tagclaw']:
+                if key in kw.lower():
+                    mapped = {'settlement': 'settlement_primitive', 'agent': 'agent_economy',
+                              'desoc': 'desoc_protocol', 'token': 'token_coordination',
+                              'tagclaw': 'tagclaw_ecosystem'}[key]
+                    if mapped not in recent_topics:
+                        bk_mode = 'signal_override'
+                        break
+
+    bk_guidance = generate_bookmarker_guidance(
+        bk_entries, bk_analysis, bk_mode if bk_mode != 'signal_override' else 'explore',
+        x_trend_kws, community_scan, bk_tas,
+    )
+    if bk_mode == 'signal_override':
+        bk_guidance['_source'] = 'signal_override'
+
+    tr_guidance = generate_trader_guidance(
+        tr_entries, tr_analysis, tr_mode, onchain, reward_status, tr_tas,
+    )
 
     generated_at = now_iso()
+    strategy_id = strategy_plan.get('strategy_id')
+    cycle_id = strategy_plan.get('cycle_id')
+    bookmarker_budget = ((budget_plan.get('allocations') or {}).get('bookmarker') or {})
+    trader_budget = ((budget_plan.get('allocations') or {}).get('trader') or {})
 
     bk_doc = {
         'version': 'v3', 'generated_at': generated_at,
         'source_agent': 'main', 'experiment_mode': bk_mode,
+        'cycle_id': cycle_id,
+        'strategy_id': strategy_id,
+        'strategy_ref': 'runtime/main/strategy-plan.json',
+        'budget_ref': 'runtime/shared/budget-allocation.json',
         'guidance_source': 'strategy-derived',
         'worker_target_metric': 'TAS_social',
+        'budget_slice': bookmarker_budget,
+        'expected_worker_uplift': ((strategy_plan.get('expected_uplift') or {}).get('tas_social')),
         'cycle_stats': {
             'total_cycles': bk_analysis['total_cycles'],
             'win_rate': bk_analysis['win_rate'],
@@ -354,8 +522,14 @@ def select_strategy(apply: bool = False) -> dict:
     tr_doc = {
         'version': 'v3', 'generated_at': generated_at,
         'source_agent': 'main', 'experiment_mode': tr_mode,
+        'cycle_id': cycle_id,
+        'strategy_id': strategy_id,
+        'strategy_ref': 'runtime/main/strategy-plan.json',
+        'budget_ref': 'runtime/shared/budget-allocation.json',
         'guidance_source': 'strategy-derived',
         'worker_target_metric': 'TAS_trade',
+        'budget_slice': trader_budget,
+        'expected_worker_uplift': ((strategy_plan.get('expected_uplift') or {}).get('tas_trade')),
         'cycle_stats': {
             'total_cycles': tr_analysis['total_cycles'],
             'win_rate': tr_analysis['win_rate'],
@@ -371,15 +545,18 @@ def select_strategy(apply: bool = False) -> dict:
         atomic_write_json(TRADER_GUIDANCE, tr_doc)
 
     return {
+        'strategy_id': strategy_id,
+        'cycle_id': cycle_id,
         'bookmarker': {'mode': bk_mode, 'guidance': bk_guidance, 'win_rate': bk_analysis['win_rate']},
-        'trader': {'mode': tr_mode, 'guidance': tr_guidance, 'win_rate': tr_analysis['win_rate']},
+        'trader':     {'mode': tr_mode,  'guidance': tr_guidance,  'win_rate': tr_analysis['win_rate']},
     }
 
 
-def print_stats():
+def print_stats() -> None:
+    """Print log statistics and best/worst combinations."""
     for label, log_path, delta_key in [
         ('Bookmarker', BK_STRATEGY_LOG, 'delta_social'),
-        ('Trader', TR_STRATEGY_LOG, 'delta_trade'),
+        ('Trader',     TR_STRATEGY_LOG,  'delta_trade'),
     ]:
         entries = load_log(log_path, 50)
         if not entries:
@@ -387,24 +564,34 @@ def print_stats():
             continue
         analysis = analyze_log(entries, delta_key)
         mode = pick_mode(entries, delta_key)
-        print(f'\n-- {label} --')
+        print(f'\n── {label} ──────────────')
         print(f'  cycles={analysis["total_cycles"]}  win_rate={analysis["win_rate"]:.0%}  mode={mode}')
         print(f'  recent_trend={analysis["recent_trend"]}')
         if analysis['best_combinations']:
             print('  BEST param values:')
             for c in analysis['best_combinations'][:4]:
+                print(f'    {c["param"]}={c["value"]:20s}  avg_delta={c["avg_delta"]:+.4f}  n={c["sample_count"]}  ({c["confidence"]})')
+        if analysis['worst_combinations']:
+            print('  WORST param values:')
+            for c in analysis['worst_combinations'][:3]:
                 print(f'    {c["param"]}={c["value"]:20s}  avg_delta={c["avg_delta"]:+.4f}  n={c["sample_count"]}')
 
 
 def main() -> int:
     args = set(sys.argv[1:])
+
     if '--stats' in args:
         print_stats()
         return 0
+
     result = select_strategy(apply='--apply' in args)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
     if '--apply' in args:
-        print(f'\nGuidance files written: {BOOKMARKER_GUIDANCE}, {TRADER_GUIDANCE}')
+        print('\nGuidance files written:')
+        print(f'  {BOOKMARKER_GUIDANCE}')
+        print(f'  {TRADER_GUIDANCE}')
+
     return 0
 
 

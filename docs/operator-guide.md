@@ -4,8 +4,8 @@
 
 ### Morning Check
 1. Verify dashboard is running: `curl -s localhost:7890/api/health`
-2. Check wiki health: `python3 scripts/wiki_lint_v1.py`
-3. Review strategy stats: `python3 scripts/select_strategy_v1.py --stats`
+2. Check wiki health: `python3 scripts/wiki_lint.py`
+3. Review strategy stats: `python3 scripts/select_strategy.py --stats`
 4. Check contract status: `python3 scripts/verify_wiki_contract.py`
 
 ### Monitoring
@@ -37,7 +37,7 @@
 1. Create page in `wiki/concepts/YourConcept.md` with frontmatter
 2. Add to `config/wiki_topic_registry.json`
 3. Link from existing concepts using [[wikilinks]]
-4. Run lint to verify: `python3 scripts/wiki_lint_v1.py`
+4. Run lint to verify: `python3 scripts/wiki_lint.py`
 
 ## Adjusting Strategy
 
@@ -48,18 +48,18 @@ vim runtime/main/bookmarker-guidance.json
 vim runtime/main/trader-guidance.json
 ```
 
-Or adjust search spaces in `scripts/select_strategy_v1.py`.
+Or adjust search spaces in `scripts/select_strategy.py`.
 
 ## Key V2 Scripts Reference
 
 | Script | Purpose | Usage |
 |--------|---------|-------|
-| `run_main_runtime_v2.py` | Main agent cycle (builds latest.json) | `python3 scripts/run_main_runtime_v2.py` |
+| `run_main_runtime.py` | Main agent cycle (builds latest.json) | `python3 scripts/run_main_runtime.py` |
 | `build_main_input_packet.py` | Assembles input packet for main agent | `python3 scripts/build_main_input_packet.py` |
-| `compute_tas_social_v2.py` | Computes TAS_social (dual-track) | `python3 scripts/compute_tas_social_v2.py` |
-| `select_strategy_v1.py` | AutoResearch strategy selection | `python3 scripts/select_strategy_v1.py [--stats] [--apply]` |
-| `wiki_lint_v1.py` | Wiki health check + report | `python3 scripts/wiki_lint_v1.py [--workspace /path]` |
-| `build_wiki_query_index_v1.py` | Builds wiki query index | `python3 scripts/build_wiki_query_index_v1.py [--force]` |
+| `compute_tas_social.py` | Computes TAS_social (dual-track) | `python3 scripts/compute_tas_social.py` |
+| `select_strategy.py` | AutoResearch strategy selection | `python3 scripts/select_strategy.py [--stats] [--apply]` |
+| `wiki_lint.py` | Wiki health check + report | `python3 scripts/wiki_lint.py [--workspace /path]` |
+| `build_wiki_query_index.py` | Builds wiki query index | `python3 scripts/build_wiki_query_index.py [--force]` |
 | `verify_wiki_contract.py` | Contract verification | `python3 scripts/verify_wiki_contract.py` |
 | `doctor.sh` | Full runtime health check | `bash scripts/doctor.sh [--workspace /path]` |
 

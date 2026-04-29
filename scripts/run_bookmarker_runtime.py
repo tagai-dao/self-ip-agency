@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""run_bookmarker_runtime_v1.py — Native bookmarker cycle runtime.
+"""run_bookmarker_runtime.py — Native bookmarker cycle runtime.
 
 Replaces the dev-claude.sh / claude CLI dependency with a self-contained
 Python runtime that handles the bookmarker social curation cycle:
@@ -12,7 +12,7 @@ Python runtime that handles the bookmarker social curation cycle:
 No LLM dependency. Uses TagClaw API directly.
 
 Usage (called by bookmarker-cycle.sh):
-    cd $WORKSPACE && python3 scripts/run_bookmarker_runtime_v1.py
+    cd $WORKSPACE && python3 scripts/run_bookmarker_runtime.py
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ RAW_BOOKMARKER = WORKSPACE / "raw" / "bookmarker"
 CONFIG_DIR = WORKSPACE / "config"
 BEHAVIOR_FILE = WORKSPACE / "agents" / "bookmarker.md"
 
-# TAS_social weights — mirror compute_tas_social_v2.py so operator-facing
+# TAS_social weights — mirror compute_tas_social.py so operator-facing
 # semantics stay stable across execution backends.
 ALIGN_WEIGHTS = {"like": 1, "curation": 3, "comment": 5, "retweet": 3}
 ALIGN_NORMALIZE = 4.0
@@ -876,7 +876,7 @@ def compute_native_tas_social(api_key: str, identity: dict,
         align_score = min(ALIGN_CAP, raw_align / ALIGN_NORMALIZE) if raw_align > 0 else 0.0
         align_track_status = "ok"
     else:
-        # Preserve conservative behavior from compute_tas_social_v2.py: align=0
+        # Preserve conservative behavior from compute_tas_social.py: align=0
         # when owner interactions cannot be observed (no prior-TAS leakage).
         raw_align = 0
         align_score = 0.0
@@ -1273,7 +1273,7 @@ def main() -> int:
         "schema": "bookmarker.latest.v1",
         "generated_at": ts_now,
         "status": result["status"],
-        "source": "run_bookmarker_runtime_v1.py",
+        "source": "run_bookmarker_runtime.py",
         "actions_ok": result.get("actions_ok", 0),
         "feed_size": result.get("feed_size", 0),
         "config_warnings": result.get("config_warnings") or [],

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""build_x_tweets_wiki_v1.py — compile raw/x-tweets into wiki/synthesis/tweets."""
+"""build_x_tweets_wiki.py — compile raw/x-tweets into wiki/synthesis/tweets."""
 
 from __future__ import annotations
 

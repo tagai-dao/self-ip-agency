@@ -203,13 +203,13 @@ self-ip-agency/
 │   ├── uninstall.sh                  ← clean removal
 │   ├── doctor.sh                     ← runtime health check
 │   ├── lib/common.sh                 ← shared shell utilities
-│   ├── runtime_utils_v2.py           ← shared runtime utilities (v2)
-│   ├── run_main_runtime_v2.py        ← main agent cycle (builds latest.json)
+│   ├── runtime_utils.py           ← shared runtime utilities (v2)
+│   ├── run_main_runtime.py        ← main agent cycle (builds latest.json)
 │   ├── build_main_input_packet.py    ← input packet assembler
-│   ├── compute_tas_social_v2.py      ← TAS_social dual-track scorer
-│   ├── select_strategy_v1.py         ← strategy optimizer (hill-climbing)
-│   ├── wiki_lint_v1.py               ← wiki health checker (3-band scoring)
-│   ├── build_wiki_query_index_v1.py  ← wiki query index builder
+│   ├── compute_tas_social.py      ← TAS_social dual-track scorer
+│   ├── select_strategy.py         ← strategy optimizer (hill-climbing)
+│   ├── wiki_lint.py               ← wiki health checker (3-band scoring)
+│   ├── build_wiki_query_index.py  ← wiki query index builder
 │   ├── wiki_utils.py                 ← shared wiki utilities
 │   ├── wiki_registry.py              ← canonical topic resolver
 │   ├── wiki_search.py                ← wiki query interface

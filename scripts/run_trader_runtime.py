@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""run_trader_runtime_v1.py — Native trader cycle runtime.
+"""run_trader_runtime.py — Native trader cycle runtime.
 
 Replaces the dev-claude.sh / claude CLI dependency with a self-contained
 Python runtime that handles the trader on-chain operations cycle:
@@ -12,7 +12,7 @@ Python runtime that handles the trader on-chain operations cycle:
 No LLM dependency. Uses TagClaw API directly.
 
 Usage (called by trader-cycle.sh):
-    cd $WORKSPACE && python3 scripts/run_trader_runtime_v1.py
+    cd $WORKSPACE && python3 scripts/run_trader_runtime.py
 """
 
 from __future__ import annotations
@@ -740,7 +740,7 @@ def main() -> int:
         "generated_at": ts_now,
         "bundle_ts": bundle_ts,
         "status": result["status"],
-        "source": "run_trader_runtime_v1.py",
+        "source": "run_trader_runtime.py",
         "signals_evaluated": result.get("signals_evaluated", 0),
         "trades_ok": result.get("trades_ok", 0),
         "wallet_status": result.get("wallet_status", "unknown"),

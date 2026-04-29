@@ -640,7 +640,7 @@ def _load_wiki_status() -> dict:
                          "—", "wiki/execution/weekly-brief.md + runtime/shared/wiki-execution-brief.json", eb_last, 168),
         _pipeline_entry("social_snapshot", "Social Snapshot", "build_wiki_social_snapshot_v1.py", "weekly",
                          "—", "wiki/social/trending.md", ss_last, 168),
-        _pipeline_entry("lint", "Wiki Lint", "wiki_lint_v1.py", "weekly",
+        _pipeline_entry("lint", "Wiki Lint", "wiki_lint.py", "weekly",
                          "—", "wiki/lint/latest-report.md", lint_last, 168),
         _pipeline_entry("query_writeback", "Query Writeback", "write_wiki_query.py", "per heartbeat",
                          "—", "wiki/queries/", qw_last, 4),

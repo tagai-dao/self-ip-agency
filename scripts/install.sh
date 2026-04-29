@@ -638,7 +638,7 @@ install_runtime() {
   done
 
   # Deploy native runtime scripts (Phase 2: bookmarker/trader no longer require claude CLI)
-  for runtime_script in run_bookmarker_runtime_v1.py run_trader_runtime_v1.py runtime_utils_v2.py; do
+  for runtime_script in run_bookmarker_runtime.py run_trader_runtime.py runtime_utils.py; do
     if [ -f "$AGENCY_DIR/scripts/$runtime_script" ]; then
       cp -f "$AGENCY_DIR/scripts/$runtime_script" "$scripts_dst/$runtime_script"
       log_ok "Installed native runtime: $scripts_dst/$runtime_script"
@@ -646,12 +646,27 @@ install_runtime() {
   done
 
   # Deploy Python scripts needed by heartbeat and auxiliary cycles.
-  for py_script in build_main_input_packet.py run_main_runtime_v2.py compute_tas_social_v2.py select_strategy_v1.py sync_guided_x_tweets.py build_x_tweets_wiki_v1.py; do
+  for py_script in build_main_input_packet.py run_main_runtime.py compute_tas_social.py select_strategy.py sync_guided_x_tweets.py build_x_tweets_wiki.py; do
     if [ -f "$AGENCY_DIR/scripts/$py_script" ]; then
       cp -f "$AGENCY_DIR/scripts/$py_script" "$scripts_dst/$py_script"
     fi
   done
   log_ok "Installed Python runtime scripts"
+
+  # Remove legacy version-suffixed entrypoints from older installs.
+  for old_script in \
+    build_main_input_packet_v2.py \
+    run_bookmarker_runtime_v1.py \
+    run_trader_runtime_v1.py \
+    runtime_utils_v2.py \
+    run_main_runtime_v2.py \
+    compute_tas_social_v2.py \
+    select_strategy_v1.py \
+    wiki_lint_v1.py \
+    build_x_tweets_wiki_v1.py \
+    build_wiki_query_index_v1.py; do
+    rm -f "$scripts_dst/$old_script"
+  done
 
   if [ -f "$AGENCY_DIR/scripts/lib/common.sh" ]; then
     mkdir -p "$scripts_dst/lib"
@@ -772,7 +787,7 @@ install_wiki() {
     if [ -f "$AGENCY_DIR/scripts/$script" ]; then
       local scripts_dst="$workspace/scripts"
       mkdir -p "$scripts_dst"
-      cp -n "$AGENCY_DIR/scripts/$script" "$scripts_dst/" 2>/dev/null || true
+      cp -f "$AGENCY_DIR/scripts/$script" "$scripts_dst/" 2>/dev/null || true
     fi
   done
   log_ok "Wiki scripts installed"
@@ -799,7 +814,7 @@ install_autoresearch() {
 
   for script in select_strategy.py strategy_experiment.py record_strategy_cycle.py; do
     if [ -f "$AGENCY_DIR/scripts/$script" ]; then
-      cp -n "$AGENCY_DIR/scripts/$script" "$scripts_dst/" 2>/dev/null || true
+      cp -f "$AGENCY_DIR/scripts/$script" "$scripts_dst/" 2>/dev/null || true
     fi
   done
   log_ok "AutoResearch scripts installed"

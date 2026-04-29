@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the on-chain BNB fallback valuation in run_trader_runtime_v1.py.
+"""Tests for the on-chain BNB fallback valuation in run_trader_runtime.py.
 
 Validates that _extract_portfolio_usd falls through to the on-chain path
 when /me lacks portfolio_usd / balanceUsd / tokens[].value_usd fields.
@@ -16,7 +16,7 @@ from pathlib import Path
 # Ensure scripts/ is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import run_trader_runtime_v1 as trader
+import run_trader_runtime as trader
 
 
 class TestExtractPortfolioUsdPrimary(unittest.TestCase):
@@ -55,8 +55,8 @@ class TestExtractPortfolioUsdPrimary(unittest.TestCase):
 class TestExtractPortfolioUsdOnchainFallback(unittest.TestCase):
     """Priority 3: /me has no USD fields → fall back to BNB on-chain."""
 
-    @patch("run_trader_runtime_v1._fetch_bnb_price_usd")
-    @patch("run_trader_runtime_v1._fetch_bnb_balance_onchain")
+    @patch("run_trader_runtime._fetch_bnb_price_usd")
+    @patch("run_trader_runtime._fetch_bnb_balance_onchain")
     def test_fallback_computes_portfolio(self, mock_balance, mock_price):
         """BNB balance 0.1 × $600 = $60."""
         mock_balance.return_value = 0.1
@@ -70,8 +70,8 @@ class TestExtractPortfolioUsdOnchainFallback(unittest.TestCase):
         mock_balance.assert_called_once_with("0xDeadBeef000000000000000000000000000000aB")
         mock_price.assert_called_once()
 
-    @patch("run_trader_runtime_v1._fetch_bnb_price_usd")
-    @patch("run_trader_runtime_v1._fetch_bnb_balance_onchain")
+    @patch("run_trader_runtime._fetch_bnb_price_usd")
+    @patch("run_trader_runtime._fetch_bnb_balance_onchain")
     def test_fallback_zero_balance(self, mock_balance, mock_price):
         """Zero BNB balance → portfolio $0 (not None)."""
         mock_balance.return_value = 0.0
@@ -84,8 +84,8 @@ class TestExtractPortfolioUsdOnchainFallback(unittest.TestCase):
         self.assertEqual(val, 0.0)
         self.assertEqual(src, "onchain_bnb_fallback")
 
-    @patch("run_trader_runtime_v1._fetch_bnb_price_usd")
-    @patch("run_trader_runtime_v1._fetch_bnb_balance_onchain")
+    @patch("run_trader_runtime._fetch_bnb_price_usd")
+    @patch("run_trader_runtime._fetch_bnb_balance_onchain")
     def test_fallback_balance_fetch_fails(self, mock_balance, mock_price):
         """If on-chain balance fetch fails → returns None (truthful degraded)."""
         mock_balance.return_value = None
@@ -96,8 +96,8 @@ class TestExtractPortfolioUsdOnchainFallback(unittest.TestCase):
         self.assertIsNone(val)
         self.assertEqual(src, "unavailable")
 
-    @patch("run_trader_runtime_v1._fetch_bnb_price_usd")
-    @patch("run_trader_runtime_v1._fetch_bnb_balance_onchain")
+    @patch("run_trader_runtime._fetch_bnb_price_usd")
+    @patch("run_trader_runtime._fetch_bnb_balance_onchain")
     def test_fallback_price_fetch_fails(self, mock_balance, mock_price):
         """If price fetch fails → returns None (truthful degraded)."""
         mock_balance.return_value = 0.5
@@ -119,8 +119,8 @@ class TestExtractPortfolioUsdOnchainFallback(unittest.TestCase):
 class TestTasTradeWithFallback(unittest.TestCase):
     """End-to-end: tas_trade should produce a score via the fallback path."""
 
-    @patch("run_trader_runtime_v1._fetch_bnb_price_usd")
-    @patch("run_trader_runtime_v1._fetch_bnb_balance_onchain")
+    @patch("run_trader_runtime._fetch_bnb_price_usd")
+    @patch("run_trader_runtime._fetch_bnb_balance_onchain")
     def test_tas_trade_not_partial_with_fallback(self, mock_balance, mock_price):
         """When fallback succeeds, tas_trade should be 'ok', not 'partial'."""
         mock_balance.return_value = 0.08  # 0.08 BNB

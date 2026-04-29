@@ -14,7 +14,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 resolve_agency_paths "$SCRIPT_DIR"
 
 SYNC_SCRIPT="$SCRIPT_DIR/sync_guided_x_tweets.py"
-COMPILE_SCRIPT="$SCRIPT_DIR/build_x_tweets_wiki_v1.py"
+COMPILE_SCRIPT="$SCRIPT_DIR/build_x_tweets_wiki.py"
 RAW_TWEETS_DIR="$WORKSPACE/raw/x-tweets/tweets"
 
 log_info "Running owner X sync cycle..."
@@ -25,7 +25,7 @@ if [ ! -f "$SYNC_SCRIPT" ]; then
 fi
 
 if [ ! -f "$COMPILE_SCRIPT" ]; then
-  log_warn "build_x_tweets_wiki_v1.py not found at $COMPILE_SCRIPT — wiki compile will be skipped"
+  log_warn "build_x_tweets_wiki.py not found at $COMPILE_SCRIPT — wiki compile will be skipped"
 fi
 
 _window_json="$(WORKSPACE="$WORKSPACE" python3 - <<'PY'
@@ -197,7 +197,7 @@ PY
 )"
     log_ok "build-x-tweets-wiki: status=${COMPILE_STATUS}, compiled=${COMPILED_ITEMS}"
   else
-    log_warn "build_x_tweets_wiki_v1.py failed (non-fatal)"
+    log_warn "build_x_tweets_wiki.py failed (non-fatal)"
     cat "$_compile_tmp" >&2 || true
   fi
   rm -f "$_compile_tmp"

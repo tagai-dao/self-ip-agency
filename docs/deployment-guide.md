@@ -29,7 +29,7 @@ bash ~/.openclaw/workspace/scripts/main-heartbeat.sh --self-check
 bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh --self-check
 bash ~/.openclaw/workspace/scripts/trader-cycle.sh --self-check
 python3 scripts/verify_wiki_contract.py
-python3 scripts/wiki_lint_v1.py
+python3 scripts/wiki_lint.py
 
 # 6. Start the dashboard
 pip3 install -r dashboard/requirements.txt
@@ -123,7 +123,7 @@ bash ~/.openclaw/workspace/scripts/main-heartbeat.sh --self-check
 bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh --self-check
 bash ~/.openclaw/workspace/scripts/trader-cycle.sh --self-check
 python3 scripts/verify_wiki_contract.py
-python3 scripts/wiki_lint_v1.py
+python3 scripts/wiki_lint.py
 ```
 
 You should confirm at least:
@@ -327,10 +327,10 @@ bash ~/.openclaw/workspace/scripts/trader-cycle.sh --self-check
 python3 scripts/verify_wiki_contract.py
 
 # 2. Wiki is healthy
-python3 scripts/wiki_lint_v1.py
+python3 scripts/wiki_lint.py
 
 # 3. Strategy system initializes
-python3 scripts/select_strategy_v1.py
+python3 scripts/select_strategy.py
 
 # 4. Dashboard responds
 curl -s http://localhost:7890/api/health

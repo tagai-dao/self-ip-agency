@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Install-path smoke tests — catches call-chain and heredoc regressions.
 
-Run: python3 scripts/test_install_smoke_v1.py
+Run: python3 scripts/test_install_smoke.py
 """
 
 from __future__ import annotations

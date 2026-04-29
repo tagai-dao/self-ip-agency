@@ -15,8 +15,8 @@ API (2026-03-29):
   Replies: GET /curation/getReplyOfTweet?tweetId=X   (Track A — who replied)
 
 Usage:
-  python3 scripts/compute_tas_social_v2.py [--dry-run]
-  python3 scripts/compute_tas_social_v2.py --finalize '<signals_json>' '<posts_json>'
+  python3 scripts/compute_tas_social.py [--dry-run]
+  python3 scripts/compute_tas_social.py --finalize '<signals_json>' '<posts_json>'
 """
 
 from __future__ import annotations
@@ -353,7 +353,7 @@ def main() -> int:
 
     if '--finalize' in sys.argv:
         # Called by agent after manual browser checks
-        # Usage: python3 compute_tas_social_v2.py --finalize '<signals_json>' '<posts_json>'
+        # Usage: python3 compute_tas_social.py --finalize '<signals_json>' '<posts_json>'
         finalize_idx = sys.argv.index('--finalize')
         signals_json = sys.argv[finalize_idx + 1] if finalize_idx + 1 < len(sys.argv) else '{}'
         posts_json = sys.argv[finalize_idx + 2] if finalize_idx + 2 < len(sys.argv) else '[]'
@@ -433,7 +433,7 @@ def main() -> int:
         'instructions': (
             'For each eligible post (top 5 by likes), open browser to https://tagai.fun/post-detail/{id}, '
             'find @0xNought in curators/likers. Record signals: like/curation/comment/retweet. '
-            "Then call: python3 compute_tas_social_v2.py --finalize '{\"like\":N,...}' '[]'"
+            "Then call: python3 compute_tas_social.py --finalize '{\"like\":N,...}' '[]'"
         ),
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))

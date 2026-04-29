@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""build_wiki_query_index_v1.py — Build compact aggregated wiki query index.
+"""build_wiki_query_index.py — Build compact aggregated wiki query index.
 
 Produces runtime/shared/wiki-query-index.json: a single file that aggregates
 the current state of all wiki structured assets for cheap lookups.
@@ -9,7 +9,7 @@ Operators, agents, and dashboards can read this one file instead of stitching
 across 10+ artifacts.
 
 Usage:
-    python3 scripts/build_wiki_query_index_v1.py
+    python3 scripts/build_wiki_query_index.py
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ SHARED = WORKSPACE / 'runtime' / 'shared'
 INDEX_PATH = SHARED / 'wiki-query-index.json'
 
 sys.path.insert(0, str(WORKSPACE / 'scripts'))
-from runtime_utils_v2 import atomic_write_json, read_json, now_iso, path_ref, append_wiki_event
+from runtime_utils import atomic_write_json, read_json, now_iso, path_ref, append_wiki_event
 
 
 def _age_hours(ts_str: str | None) -> float | None:
@@ -206,7 +206,7 @@ def main() -> int:
     # Emit event
     append_wiki_event(
         event_type="query_index_build",
-        producer="build_wiki_query_index_v1",
+        producer="build_wiki_query_index",
         artifact=path_ref(INDEX_PATH, WORKSPACE),
         status="ok",
         summary=f"artifacts={len(index['artifacts'])} health={index['health']['overall']}",

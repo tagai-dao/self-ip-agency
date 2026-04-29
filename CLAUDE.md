@@ -34,10 +34,10 @@ bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh --self-check
 bash ~/.openclaw/workspace/scripts/trader-cycle.sh --self-check
 
 # Wiki / strategy tooling (all respect OPENCLAW_WORKSPACE)
-python3 scripts/wiki_lint_v1.py
+python3 scripts/wiki_lint.py
 python3 scripts/verify_wiki_contract.py
-python3 scripts/select_strategy_v1.py [--stats] [--apply]
-python3 scripts/build_wiki_query_index_v1.py [--force]
+python3 scripts/select_strategy.py [--stats] [--apply]
+python3 scripts/build_wiki_query_index.py [--force]
 
 # Dashboard — canonical owner is dashboard-service.sh. Do not start server.py directly in prod flows.
 bash scripts/dashboard-service.sh start-local
@@ -47,7 +47,7 @@ bash scripts/dashboard-service.sh start-public   # opt-in Cloudflare Quick Tunne
 pip3 install -r dashboard/requirements.txt       # first-time deps
 
 # Tests — ad-hoc, no framework. Run the file directly.
-python3 scripts/test_bookmarker_runtime_v1.py
+python3 scripts/test_bookmarker_runtime.py
 
 # Uninstall
 bash scripts/uninstall.sh
@@ -67,7 +67,7 @@ The topic registry (`config/wiki_topic_registry.json` resolved via `scripts/wiki
 
 ### AutoResearch
 
-Epsilon-greedy hill-climbing over two independent tracks (bookmarker + trader). Modes cycle `BASELINE → EXPLORE → EXPLOIT`. Cycles append to `memory/main-strategy-log.jsonl` (workspace). When changing strategy search spaces, edit `scripts/select_strategy_v1.py`; the older `select_strategy.py` is legacy.
+Epsilon-greedy hill-climbing over two independent tracks (bookmarker + trader). Modes cycle `BASELINE → EXPLORE → EXPLOIT`. Cycles append to `memory/main-strategy-log.jsonl` (workspace). When changing strategy search spaces, edit `scripts/select_strategy.py`.
 
 ### Main heartbeat contract
 
@@ -93,6 +93,6 @@ Status is `partial` until identity, credentials, and dashboard are all confirmed
 - **Versioning**: `VERSION` is semver; `install.sh` reads it and writes it into `.installed`. Bump when touching install/runtime contracts. Cross-check `SKILL.md`'s own `version:` field, which currently lags `VERSION`.
 - **Install is idempotent**: re-running `install.sh` after `git pull` is the supported upgrade path. Prefer fixing installer logic over manual workspace surgery.
 - **Entrypoint discipline**: the three cycle scripts (`main-heartbeat.sh`, `bookmarker-cycle.sh`, `trader-cycle.sh`) are the only supported run surface. Do not invent new ones or call `run_*_runtime_v*.py` as a top-level entry.
-- **v1 vs v2 scripts**: `run_main_runtime_v2.py`, `compute_tas_social_v2.py`, `build_main_input_packet.py`, `runtime_utils_v2.py`, `wiki_lint_v1.py`, `select_strategy_v1.py` are current. Files without a version suffix (`wiki_lint.py`, `select_strategy.py`) are legacy — don't extend them.
+- **Versioned script names**: runtime entrypoints still use explicit version suffixes where old deployed names may exist. Current unversioned entrypoints include `build_main_input_packet.py`, `wiki_lint.py`, and `select_strategy.py`.
 - **Dashboard ownership**: `scripts/dashboard-service.sh` is the canonical lifecycle owner. `install.sh` delegates to it; don't launch `dashboard/server.py` directly except for local dev.
 - **Public dashboard exposure** is opt-in (`dashboard.public.enabled` / `auto_start` in `config/agency.config.yaml`). The MVP is Cloudflare Quick Tunnel only — no access control, URL is ephemeral. Do not wire a default-on public URL.

@@ -10,7 +10,7 @@ The TagClaw API has shipped four different /me envelope shapes over time:
 All readers in the repo must normalize to the inner agent dict. This test
 pins the contract for:
   - adapters/tagclaw.extract_me_agent (canonical helper)
-  - scripts/run_trader_runtime_v1.fetch_agent_state
+  - scripts/run_trader_runtime.fetch_agent_state
 
 The historical bug: install read shape (1) but only handled (2)/(3)/(4),
 which left owner.twitter_handle null and broke the guided X sync.
@@ -87,7 +87,7 @@ class TestTraderFetchAgentState(unittest.TestCase):
     """Trader runtime must see the same agent regardless of envelope."""
 
     def _run_with_resp(self, resp):
-        import run_trader_runtime_v1 as trader
+        import run_trader_runtime as trader
         orig = trader.tagclaw_get
         trader.tagclaw_get = lambda path, key: resp
         try:

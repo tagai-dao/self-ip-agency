@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Regression tests for run_bookmarker_runtime_v1 config parsing.
+"""Regression tests for run_bookmarker_runtime config parsing.
 
 Covers the failure class where inline YAML comments and naive handwritten
 parsing caused the bookmarker native runtime to crash with
 ``ValueError: invalid literal for int() with base 10: '0.60 # 60% ...'``.
 
 Run directly:
-    python3 scripts/test_bookmarker_runtime_v1.py
+    python3 scripts/test_bookmarker_runtime.py
 """
 
 from __future__ import annotations
@@ -23,11 +23,11 @@ sys.path.insert(0, str(HERE))
 
 
 def _load_module_with_workspace(workspace: Path):
-    """Re-import run_bookmarker_runtime_v1 with OPENCLAW_WORKSPACE set."""
+    """Re-import run_bookmarker_runtime with OPENCLAW_WORKSPACE set."""
     os.environ["OPENCLAW_WORKSPACE"] = str(workspace)
-    if "run_bookmarker_runtime_v1" in sys.modules:
-        del sys.modules["run_bookmarker_runtime_v1"]
-    return importlib.import_module("run_bookmarker_runtime_v1")
+    if "run_bookmarker_runtime" in sys.modules:
+        del sys.modules["run_bookmarker_runtime"]
+    return importlib.import_module("run_bookmarker_runtime")
 
 
 def _prep_workspace(yaml_text: str) -> Path:

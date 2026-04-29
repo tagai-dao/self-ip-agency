@@ -22,7 +22,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
-from runtime_utils_v2 import (
+from runtime_utils import (
     analyze_social_action_selection,
     atomic_write_json,
     compute_main_mode,
@@ -1317,10 +1317,10 @@ def main() -> int:
         root=ROOT,
     )
 
-    # Generate guidance files using select_strategy_v1 (autoresearch hill-climbing)
+    # Generate guidance files using select_strategy (autoresearch hill-climbing)
     try:
         import importlib.util as _ilu
-        _spec = _ilu.spec_from_file_location('select_strategy_v1', ROOT / 'scripts' / 'select_strategy_v1.py')
+        _spec = _ilu.spec_from_file_location('select_strategy', ROOT / 'scripts' / 'select_strategy.py')
         _mod = _ilu.module_from_spec(_spec)
         _spec.loader.exec_module(_mod)
         _guidance = _mod.select_strategy(apply=True)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Contract tests for TagClaw /me twitter-binding fields.
 
-Sister to ``test_me_shape_normalization_v1.py``. Where the shape test pins
+Sister to ``test_me_shape_normalization.py``. Where the shape test pins
 envelope unwrapping, this test pins the **field contract**:
 
     When TagClaw reports status=active (verification tweet posted, backend
@@ -33,8 +33,8 @@ Two modes:
    in secrets without rotation.
 
 Run:
-    python3 scripts/test_me_twitter_binding_contract_v1.py
-    TAGCLAW_CONTRACT_TEST_API_KEY=sk_... python3 scripts/test_me_twitter_binding_contract_v1.py
+    python3 scripts/test_me_twitter_binding_contract.py
+    TAGCLAW_CONTRACT_TEST_API_KEY=sk_... python3 scripts/test_me_twitter_binding_contract.py
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ REQUIRED_BINDING_FIELDS = ("ownerTwitterId", "ownerTwitterHandle")
 # Historical envelope shapes the server has shipped. All must unwrap to the
 # same inner agent dict and surface the required binding fields. See
 # ``adapters/tagclaw.extract_me_agent`` and
-# ``test_me_shape_normalization_v1.py`` for the envelope contract itself.
+# ``test_me_shape_normalization.py`` for the envelope contract itself.
 ENVELOPE_SHAPES = [
     ("current_top_level_agent",
      {"success": True, "agent": VERIFIED_AGENT_FIXTURE}),

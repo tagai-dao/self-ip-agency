@@ -48,4 +48,4 @@ Requires identity drift checker.
 
 ## Current lint script
 
-`scripts/wiki_lint_v1.py` covers Band 1 structural checks. Bands 2 and 3 will be added in later phases.
+`scripts/wiki_lint.py` covers Band 1 structural checks. Bands 2 and 3 will be added in later phases.
