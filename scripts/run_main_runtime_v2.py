@@ -871,7 +871,7 @@ def main() -> int:
     try:
         import importlib.util as _ilu
         _exp_spec = _ilu.spec_from_file_location(
-            'strategy_experiment_v1', ROOT / 'scripts' / 'strategy_experiment_v1.py'
+            'strategy_experiment', ROOT / 'scripts' / 'strategy_experiment.py'
         )
         _exp_mod = _ilu.module_from_spec(_exp_spec)
         _exp_spec.loader.exec_module(_exp_mod)
