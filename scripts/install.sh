@@ -58,8 +58,9 @@ IDENTITY_RESOLVED=false
 CRONS_REGISTERED=false
 CRON_REGISTRATION_MODE=""        # local-cli | deferred-tool | blocked
 CRON_INTENT_PATH=""              # path to .install-cron-jobs.json when deferred
+CRON_AGENT_SLUG=""               # sanitized agent identifier used in cron names
 # `--no-deliver` (when the CLI supports it) tells OpenClaw's scheduler NOT to
-# attempt announcing run summaries over the outbound mux. Our three cron jobs
+# attempt announcing run summaries over the outbound mux. These cron jobs
 # write results to runtime/ JSONs — announce delivery is overhead that causes
 # false `error` run states on deployments where the outbound route isn't
 # bound (`mux outbound failed (403): route not bound`). Detected lazily at
@@ -373,6 +374,45 @@ print(data.get(field, ''))
 PY
 }
 
+sanitize_cron_agent_slug() {
+  python3 - <<'PY' "$1"
+import re, sys
+raw = (sys.argv[1] or "").strip().lstrip("@")
+slug = re.sub(r"[^A-Za-z0-9_-]+", "-", raw).strip("-_").lower()
+print((slug or "selfip")[:32])
+PY
+}
+
+resolve_cron_agent_slug() {
+  local workspace="${1:-$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")}"
+  local raw=""
+
+  raw="${SELF_IP_AGENCY_CRON_AGENT_NAME:-}"
+  if [ -z "$raw" ]; then
+    raw="$(resolve_tagclaw_skill_env_field "TAGCLAW_AGENT_USERNAME" "$workspace" 2>/dev/null || echo "")"
+  fi
+  if [ -z "$raw" ] && [ -f "$workspace/config/agency-identity.json" ]; then
+    raw="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(((d.get('agent') or {}).get('username') or '').strip())" "$workspace/config/agency-identity.json" 2>/dev/null || echo "")"
+  fi
+  if [ -z "$raw" ] && [ -f "$IDENTITY_FILE" ]; then
+    raw="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(((d.get('agent') or {}).get('username') or '').strip())" "$IDENTITY_FILE" 2>/dev/null || echo "")"
+  fi
+  if [ -z "$raw" ]; then
+    raw="$TAGCLAW_ONBOARD_NAME"
+  fi
+  if [ -z "$raw" ]; then
+    raw="$(basename "$workspace")"
+  fi
+
+  sanitize_cron_agent_slug "$raw"
+}
+
+cron_job_name() {
+  local base="$1"
+  local slug="${CRON_AGENT_SLUG:-selfip}"
+  echo "${slug}-${base}"
+}
+
 run_auto_tagclaw_onboarding() {
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
@@ -540,12 +580,14 @@ configure_from_identity() {
   # Inject workspace path into cron-jobs.json
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+  CRON_AGENT_SLUG="$(resolve_cron_agent_slug "$workspace")"
   local cron_tmp="${AGENCY_DIR}/config/cron-jobs.json.tmp"
   sed \
     -e "s|{{WORKSPACE_PATH}}|${workspace}|g" \
+    -e "s|{{CRON_AGENT_SLUG}}|${CRON_AGENT_SLUG}|g" \
     "$AGENCY_DIR/config/cron-jobs.json" > "$cron_tmp"
   mv "$cron_tmp" "$AGENCY_DIR/config/cron-jobs.json"
-  log_ok "cron-jobs.json workspace path configured: $workspace"
+  log_ok "cron-jobs.json workspace path configured: $workspace (agent slug: $CRON_AGENT_SLUG)"
 
   # Inject workspace into openclaw-agents.yaml
   local agents_tmp="${AGENCY_DIR}/config/openclaw-agents.yaml.tmp"
@@ -837,6 +879,12 @@ _detect_cron_registration_mode() {
 _write_cron_intent_artifact() {
   local workspace="$1"
   local intent_path="$AGENCY_DIR/.install-cron-jobs.json"
+  CRON_AGENT_SLUG="${CRON_AGENT_SLUG:-$(resolve_cron_agent_slug "$workspace")}"
+  local main_job bookmarker_job trader_job x_sync_job
+  main_job="$(cron_job_name main-heartbeat)"
+  bookmarker_job="$(cron_job_name bookmarker-cycle)"
+  trader_job="$(cron_job_name trader-cycle)"
+  x_sync_job="$(cron_job_name x-sync-cycle)"
 
   local intent_json
   intent_json="$(python3 -c "
@@ -847,37 +895,42 @@ d = {
     'mode': 'pending_finalization',
     'deferred_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'workspace': '$workspace',
+    'agent_slug': '$CRON_AGENT_SLUG',
     'jobs': [
         {
-            'name': 'main-heartbeat',
+            'name': '$main_job',
+            'base_name': 'main-heartbeat',
             'schedule': '*/10 * * * *',
             'session': 'isolated',
             'command': 'bash $workspace/scripts/main-heartbeat.sh',
-            'message': 'Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh',
+            'message': 'Run the $CRON_AGENT_SLUG main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh',
             'timeout_seconds': 120,
         },
         {
-            'name': 'bookmarker-cycle',
+            'name': '$bookmarker_job',
+            'base_name': 'bookmarker-cycle',
             'schedule': '*/30 * * * *',
             'session': 'isolated',
             'command': 'bash $workspace/scripts/bookmarker-cycle.sh',
-            'message': 'Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh',
+            'message': 'Run the $CRON_AGENT_SLUG bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh',
             'timeout_seconds': 180,
         },
         {
-            'name': 'trader-cycle',
+            'name': '$trader_job',
+            'base_name': 'trader-cycle',
             'schedule': '0 * * * *',
             'session': 'isolated',
             'command': 'bash $workspace/scripts/trader-cycle.sh',
-            'message': 'Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh',
+            'message': 'Run the $CRON_AGENT_SLUG trader operations cycle: bash $workspace/scripts/trader-cycle.sh',
             'timeout_seconds': 300,
         },
         {
-            'name': 'x-sync-cycle',
+            'name': '$x_sync_job',
+            'base_name': 'x-sync-cycle',
             'schedule': '*/30 * * * *',
             'session': 'isolated',
             'command': 'bash $workspace/scripts/x-sync-cycle.sh',
-            'message': 'Run the owner X sync cycle: bash $workspace/scripts/x-sync-cycle.sh',
+            'message': 'Run the $CRON_AGENT_SLUG owner X sync cycle: bash $workspace/scripts/x-sync-cycle.sh',
             'timeout_seconds': 240,
         },
     ],
@@ -906,7 +959,7 @@ print(json.dumps(d, indent=2))
 # Attempt to finalize deferred cron registration via CLI best-effort.
 # Called after writing the intent artifact. If the openclaw CLI is actually
 # reachable (common when detection was conservative, e.g. cloud env var set
-# but CLI+gateway still work), register all 3 jobs and promote state to
+# but CLI+gateway still work), register all jobs and promote state to
 # "registered". If anything fails, leave the deferred artifact intact.
 _attempt_deferred_cron_finalization() {
   local workspace="$1"
@@ -1030,37 +1083,43 @@ os.replace(tmp, wp)
 
 _print_manual_cron_commands() {
   local ws="$1"
+  CRON_AGENT_SLUG="${CRON_AGENT_SLUG:-$(resolve_cron_agent_slug "$ws")}"
+  local main_job bookmarker_job trader_job x_sync_job
+  main_job="$(cron_job_name main-heartbeat)"
+  bookmarker_job="$(cron_job_name bookmarker-cycle)"
+  trader_job="$(cron_job_name trader-cycle)"
+  x_sync_job="$(cron_job_name x-sync-cycle)"
   echo ""
   echo "  ══════════════════════════════════════════════════════════"
   echo "  ACTION REQUIRED: Run these commands to register cron jobs."
   echo "  ══════════════════════════════════════════════════════════"
   echo ""
   echo "  openclaw cron add \\"
-  echo "    --name \"main-heartbeat\" \\"
+  echo "    --name \"$main_job\" \\"
   echo "    --cron \"*/10 * * * *\" \\"
   echo "    --session isolated \\"
-  echo "    --message \"Run the main heartbeat cycle: bash $ws/scripts/main-heartbeat.sh\" \\"
+  echo "    --message \"Run the $CRON_AGENT_SLUG main heartbeat cycle: bash $ws/scripts/main-heartbeat.sh\" \\"
   echo "    --no-deliver"
   echo ""
   echo "  openclaw cron add \\"
-  echo "    --name \"bookmarker-cycle\" \\"
+  echo "    --name \"$bookmarker_job\" \\"
   echo "    --cron \"*/30 * * * *\" \\"
   echo "    --session isolated \\"
-  echo "    --message \"Run the bookmarker curation cycle: bash $ws/scripts/bookmarker-cycle.sh\" \\"
+  echo "    --message \"Run the $CRON_AGENT_SLUG bookmarker curation cycle: bash $ws/scripts/bookmarker-cycle.sh\" \\"
   echo "    --no-deliver"
   echo ""
   echo "  openclaw cron add \\"
-  echo "    --name \"trader-cycle\" \\"
+  echo "    --name \"$trader_job\" \\"
   echo "    --cron \"0 * * * *\" \\"
   echo "    --session isolated \\"
-  echo "    --message \"Run the trader operations cycle: bash $ws/scripts/trader-cycle.sh\" \\"
+  echo "    --message \"Run the $CRON_AGENT_SLUG trader operations cycle: bash $ws/scripts/trader-cycle.sh\" \\"
   echo "    --no-deliver"
   echo ""
   echo "  openclaw cron add \\"
-  echo "    --name \"x-sync-cycle\" \\"
+  echo "    --name \"$x_sync_job\" \\"
   echo "    --cron \"*/30 * * * *\" \\"
   echo "    --session isolated \\"
-  echo "    --message \"Run the owner X sync cycle: bash $ws/scripts/x-sync-cycle.sh\" \\"
+  echo "    --message \"Run the $CRON_AGENT_SLUG owner X sync cycle: bash $ws/scripts/x-sync-cycle.sh\" \\"
   echo "    --no-deliver"
   echo ""
   echo "  (The --no-deliver flag disables announce delivery, which avoids false"
@@ -1079,9 +1138,16 @@ register_crons() {
   local cron_log_dir="$workspace/logs"
   local gateway_log="$cron_log_dir/openclaw-gateway-bootstrap.log"
   local cron_log="$cron_log_dir/openclaw-cron-registration.log"
+  CRON_AGENT_SLUG="$(resolve_cron_agent_slug "$workspace")"
+  local main_job bookmarker_job trader_job x_sync_job
+  main_job="$(cron_job_name main-heartbeat)"
+  bookmarker_job="$(cron_job_name bookmarker-cycle)"
+  trader_job="$(cron_job_name trader-cycle)"
+  x_sync_job="$(cron_job_name x-sync-cycle)"
+  log_info "Cron agent slug: $CRON_AGENT_SLUG"
 
   if [ "$DRY_RUN" = "true" ]; then
-    log_info "[DRY RUN] Would register 4 cron jobs with openclaw"
+    log_info "[DRY RUN] Would register 4 cron jobs with openclaw: $main_job, $bookmarker_job, $trader_job, $x_sync_job"
     return 0
   fi
 
@@ -1213,7 +1279,7 @@ register_crons() {
   trap "rm -rf \"$_STAGE_DIR\"" EXIT
 
   # Remove existing jobs first (idempotent)
-  for job_name in main-heartbeat bookmarker-cycle trader-cycle x-sync-cycle; do
+  for job_name in "$main_job" "$bookmarker_job" "$trader_job" "$x_sync_job"; do
     openclaw cron rm "$job_name" >>"$cron_log" 2>&1 || true
   done
   sleep 1
@@ -1221,7 +1287,7 @@ register_crons() {
   # Post-rm residual check — if rm silently failed, proceeding would allow a
   # stale job to false-positive a subsequent failed add.
   local residual=""
-  for job_name in main-heartbeat bookmarker-cycle trader-cycle x-sync-cycle; do
+  for job_name in "$main_job" "$bookmarker_job" "$trader_job" "$x_sync_job"; do
     if verify_registered "$job_name"; then
       residual="${residual:+$residual, }$job_name"
     fi
@@ -1236,10 +1302,10 @@ register_crons() {
 
   # spec: name|schedule|session|message
   local specs=(
-    "main-heartbeat|*/10 * * * *|isolated|Run the main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh"
-    "bookmarker-cycle|*/30 * * * *|isolated|Run the bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh"
-    "trader-cycle|0 * * * *|isolated|Run the trader operations cycle: bash $workspace/scripts/trader-cycle.sh"
-    "x-sync-cycle|*/30 * * * *|isolated|Run the owner X sync cycle: bash $workspace/scripts/x-sync-cycle.sh"
+    "$main_job|*/10 * * * *|isolated|Run the $CRON_AGENT_SLUG main heartbeat cycle: bash $workspace/scripts/main-heartbeat.sh"
+    "$bookmarker_job|*/30 * * * *|isolated|Run the $CRON_AGENT_SLUG bookmarker curation cycle: bash $workspace/scripts/bookmarker-cycle.sh"
+    "$trader_job|0 * * * *|isolated|Run the $CRON_AGENT_SLUG trader operations cycle: bash $workspace/scripts/trader-cycle.sh"
+    "$x_sync_job|*/30 * * * *|isolated|Run the $CRON_AGENT_SLUG owner X sync cycle: bash $workspace/scripts/x-sync-cycle.sh"
   )
 
   local registered=()
@@ -1906,6 +1972,7 @@ main() {
   if [ "$DRY_RUN" = "false" ]; then
     local workspace
     workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+    CRON_AGENT_SLUG="${CRON_AGENT_SLUG:-$(resolve_cron_agent_slug "$workspace")}"
 
     # ── Detect onboarding state ─────────────────────────────────────────────
     if has_tagclaw_credentials; then
@@ -2219,6 +2286,7 @@ d = {
     'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('pending_finalization' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
     'cron_finalize_command': 'bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' and '$CRONS_REGISTERED' != 'true' else '',
     'cron_intent_path': '$CRON_INTENT_PATH',
+    'cron_agent_slug': '$CRON_AGENT_SLUG',
     'dashboard_ready': '$DASHBOARD_READY' == 'true',
     'dashboard_status': '$DASHBOARD_STATUS',
     'dashboard_local_status': '$DASHBOARD_STATUS',
@@ -2416,6 +2484,7 @@ d = {
     'cron_registration_status': 'registered' if '$CRONS_REGISTERED' == 'true' else ('pending_finalization' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' else ('blocked' if '$CRON_REGISTRATION_MODE' == 'blocked' else 'pending')),
     'cron_finalize_command': 'bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' and '$CRONS_REGISTERED' != 'true' else '',
     'cron_intent_path': '$CRON_INTENT_PATH',
+    'cron_agent_slug': '$CRON_AGENT_SLUG',
     'dashboard_ready': '$DASHBOARD_READY' == 'true',
     'dashboard_status': '$DASHBOARD_STATUS',
     'dashboard_local_status': '$DASHBOARD_STATUS',
@@ -2517,6 +2586,7 @@ d = {
     'cron_finalize_command': 'bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace' if '$CRON_REGISTRATION_MODE' == 'deferred-tool' and '$CRONS_REGISTERED' != 'true' else '',
     'cron_registration_mode': '$CRON_REGISTRATION_MODE',
     'cron_intent_path': '$CRON_INTENT_PATH',
+    'cron_agent_slug': '$CRON_AGENT_SLUG',
     'x_tweets_seed_status': '$X_TWEETS_SEED_STATUS',
     'next_steps': _arrays['next_steps'],
     'next_steps_text': _arrays['next_steps_text'],
@@ -2935,6 +3005,7 @@ print(json.dumps(d, indent=2))
     echo "CRON_REGISTRATION_MODE=\"${CRON_REGISTRATION_MODE}\""
     echo "CRON_REGISTRATION_STATUS=\"${_cron_summary}\""
     echo "CRON_INTENT_PATH=\"${CRON_INTENT_PATH}\""
+    echo "CRON_AGENT_SLUG=\"${CRON_AGENT_SLUG}\""
     if [ "$CRON_REGISTRATION_MODE" = "deferred-tool" ] && [ "$CRONS_REGISTERED" != "true" ]; then
       echo "CRON_FINALIZE_COMMAND=\"bash $AGENCY_DIR/scripts/finalize-crons.sh --workspace $workspace\""
     fi

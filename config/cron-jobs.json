@@ -1,56 +1,62 @@
 {
-  "schema": "cron-jobs.v3",
-  "description": "Self-IP Agency cron configuration template. Fill WORKSPACE_PATH after install. Uses OpenClaw CLI named-flag syntax (--name, --cron, --message).",
+  "schema": "cron-jobs.v4",
+  "description": "Self-IP Agency cron configuration template. Fill WORKSPACE_PATH and CRON_AGENT_SLUG after install. Uses OpenClaw CLI named-flag syntax (--name, --cron, --message) and --no-deliver.",
   "jobs": [
     {
-      "name": "main-heartbeat",
+      "name": "{{CRON_AGENT_SLUG}}-main-heartbeat",
+      "base_name": "main-heartbeat",
       "agent": "main",
       "schedule": "*/10 * * * *",
       "description": "Main orchestrator heartbeat — checks TAS, dispatches sub-agents. Entrypoint: scripts/main-heartbeat.sh",
-      "message_template": "Run the main heartbeat cycle: bash {{WORKSPACE_PATH}}/scripts/main-heartbeat.sh",
+      "message_template": "Run the {{CRON_AGENT_SLUG}} main heartbeat cycle: bash {{WORKSPACE_PATH}}/scripts/main-heartbeat.sh",
       "session": "isolated",
       "enabled": true,
       "timeout_seconds": 120
     },
     {
-      "name": "bookmarker-cycle",
+      "name": "{{CRON_AGENT_SLUG}}-bookmarker-cycle",
+      "base_name": "bookmarker-cycle",
       "agent": "bookmarker",
       "schedule": "*/30 * * * *",
       "description": "Bookmarker social curation cycle. Entrypoint: scripts/bookmarker-cycle.sh",
-      "message_template": "Run the bookmarker curation cycle: bash {{WORKSPACE_PATH}}/scripts/bookmarker-cycle.sh",
+      "message_template": "Run the {{CRON_AGENT_SLUG}} bookmarker curation cycle: bash {{WORKSPACE_PATH}}/scripts/bookmarker-cycle.sh",
       "session": "isolated",
       "enabled": true,
       "timeout_seconds": 180
     },
     {
-      "name": "trader-cycle",
+      "name": "{{CRON_AGENT_SLUG}}-trader-cycle",
+      "base_name": "trader-cycle",
       "agent": "trader",
       "schedule": "0 * * * *",
       "description": "Trader on-chain operations cycle (runs hourly). Entrypoint: scripts/trader-cycle.sh",
-      "message_template": "Run the trader operations cycle: bash {{WORKSPACE_PATH}}/scripts/trader-cycle.sh",
+      "message_template": "Run the {{CRON_AGENT_SLUG}} trader operations cycle: bash {{WORKSPACE_PATH}}/scripts/trader-cycle.sh",
       "session": "isolated",
       "enabled": true,
       "timeout_seconds": 300
     },
     {
-      "name": "x-sync-cycle",
+      "name": "{{CRON_AGENT_SLUG}}-x-sync-cycle",
+      "base_name": "x-sync-cycle",
       "agent": "x-sync",
       "schedule": "*/30 * * * *",
       "description": "Owner X raw sync cycle. First run backfills the last 3 days, later runs sync incrementally and compile wiki artifacts when new items arrive. Entrypoint: scripts/x-sync-cycle.sh",
-      "message_template": "Run the owner X sync cycle: bash {{WORKSPACE_PATH}}/scripts/x-sync-cycle.sh",
+      "message_template": "Run the {{CRON_AGENT_SLUG}} owner X sync cycle: bash {{WORKSPACE_PATH}}/scripts/x-sync-cycle.sh",
       "session": "isolated",
       "enabled": true,
       "timeout_seconds": 240
     }
   ],
   "openclaw_cron_commands": [
-    "openclaw cron add --name \"main-heartbeat\" --cron \"*/10 * * * *\" --session isolated --message \"Run the main heartbeat cycle: bash {{WORKSPACE_PATH}}/scripts/main-heartbeat.sh\"",
-    "openclaw cron add --name \"bookmarker-cycle\" --cron \"*/30 * * * *\" --session isolated --message \"Run the bookmarker curation cycle: bash {{WORKSPACE_PATH}}/scripts/bookmarker-cycle.sh\"",
-    "openclaw cron add --name \"trader-cycle\" --cron \"0 * * * *\" --session isolated --message \"Run the trader operations cycle: bash {{WORKSPACE_PATH}}/scripts/trader-cycle.sh\"",
-    "openclaw cron add --name \"x-sync-cycle\" --cron \"*/30 * * * *\" --session isolated --message \"Run the owner X sync cycle: bash {{WORKSPACE_PATH}}/scripts/x-sync-cycle.sh\""
+    "openclaw cron add --name \"{{CRON_AGENT_SLUG}}-main-heartbeat\" --cron \"*/10 * * * *\" --session isolated --message \"Run the {{CRON_AGENT_SLUG}} main heartbeat cycle: bash {{WORKSPACE_PATH}}/scripts/main-heartbeat.sh\" --no-deliver",
+    "openclaw cron add --name \"{{CRON_AGENT_SLUG}}-bookmarker-cycle\" --cron \"*/30 * * * *\" --session isolated --message \"Run the {{CRON_AGENT_SLUG}} bookmarker curation cycle: bash {{WORKSPACE_PATH}}/scripts/bookmarker-cycle.sh\" --no-deliver",
+    "openclaw cron add --name \"{{CRON_AGENT_SLUG}}-trader-cycle\" --cron \"0 * * * *\" --session isolated --message \"Run the {{CRON_AGENT_SLUG}} trader operations cycle: bash {{WORKSPACE_PATH}}/scripts/trader-cycle.sh\" --no-deliver",
+    "openclaw cron add --name \"{{CRON_AGENT_SLUG}}-x-sync-cycle\" --cron \"*/30 * * * *\" --session isolated --message \"Run the {{CRON_AGENT_SLUG}} owner X sync cycle: bash {{WORKSPACE_PATH}}/scripts/x-sync-cycle.sh\" --no-deliver"
   ],
   "_notes": {
     "channel_config": "No announce channel is required for local/distributable deployments. All cycle scripts run locally and write results to runtime/*/. To enable optional announcements, configure announce_channel in config/agency.config.yaml.",
+    "job_naming": "Cron names are prefixed with the sanitized agent slug so multiple self-ip-agency installs can coexist in one OpenClaw scheduler.",
+    "delivery": "--no-deliver disables outbound run-summary delivery; the jobs are file-producing local cycles and do not require mux/outbound routes.",
     "entrypoint_model": "All cron jobs use dedicated shell entrypoints (scripts/*-heartbeat.sh, scripts/*-cycle.sh). The legacy pattern of 'Read runtime/*/task.json' is NOT used — task.json files in runtime-template are compatibility placeholders only.",
     "cron_syntax_migration": "Migrated from legacy positional-arg format (openclaw cron add NAME SCHEDULE COMMAND) to new named-flag format (--name, --cron, --session, --message) as required by current OpenClaw CLI."
   }

@@ -90,32 +90,45 @@ block in the output.
 
 Example pattern:
 ```bash
+AGENT_SLUG="your-agent-name"  # install.sh resolves this from TAGCLAW_AGENT_USERNAME
+
 openclaw cron add \
-  --name "main-heartbeat" \
+  --name "${AGENT_SLUG}-main-heartbeat" \
   --cron "*/10 * * * *" \
   --session isolated \
-  --message "Run the main heartbeat cycle: bash ~/.openclaw/workspace/scripts/main-heartbeat.sh"
+  --message "Run the ${AGENT_SLUG} main heartbeat cycle: bash ~/.openclaw/workspace/scripts/main-heartbeat.sh" \
+  --no-deliver
 
 openclaw cron add \
-  --name "bookmarker-cycle" \
+  --name "${AGENT_SLUG}-bookmarker-cycle" \
   --cron "*/30 * * * *" \
   --session isolated \
-  --message "Run the bookmarker curation cycle: bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh"
+  --message "Run the ${AGENT_SLUG} bookmarker curation cycle: bash ~/.openclaw/workspace/scripts/bookmarker-cycle.sh" \
+  --no-deliver
 
 openclaw cron add \
-  --name "trader-cycle" \
+  --name "${AGENT_SLUG}-trader-cycle" \
   --cron "0 * * * *" \
   --session isolated \
-  --message "Run the trader operations cycle: bash ~/.openclaw/workspace/scripts/trader-cycle.sh"
+  --message "Run the ${AGENT_SLUG} trader operations cycle: bash ~/.openclaw/workspace/scripts/trader-cycle.sh" \
+  --no-deliver
+
+openclaw cron add \
+  --name "${AGENT_SLUG}-x-sync-cycle" \
+  --cron "*/30 * * * *" \
+  --session isolated \
+  --message "Run the ${AGENT_SLUG} owner X sync cycle: bash ~/.openclaw/workspace/scripts/x-sync-cycle.sh" \
+  --no-deliver
 ```
 
-> **Note**: All three cycles use dedicated entrypoint scripts, NOT `runtime/*/task.json`.
+> **Note**: All cycles use dedicated entrypoint scripts, NOT `runtime/*/task.json`.
 > The `task.json` files in runtime-template are compatibility placeholders only.
 > See `~/.openclaw/workspace/HEARTBEAT.md` for the main heartbeat contract.
 >
 > **No announce channel required**: Local deployments write results to `runtime/*/`
-> without needing any channel configuration. Announcements are optional — configure
-> `announce_channel` in `config/agency.config.yaml` only if desired.
+> without needing any channel configuration. Use `--no-deliver` so OpenClaw does
+> not try to send run summaries through mux/outbound routes. Announcements are
+> optional — configure `announce_channel` in `config/agency.config.yaml` only if desired.
 
 Adjust schedules to your preference. The default intervals are:
 - **Main heartbeat**: every 10 minutes

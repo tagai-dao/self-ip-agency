@@ -9,7 +9,7 @@
 #   bash scripts/uninstall.sh --workspace PATH # override OPENCLAW_WORKSPACE
 #
 # Removes:
-#   - All agency cron jobs (main-heartbeat, bookmarker-cycle, trader-cycle, x-sync-cycle)
+#   - This agent's agency cron jobs (<agent>-main-heartbeat, <agent>-bookmarker-cycle, <agent>-trader-cycle, <agent>-x-sync-cycle)
 #   - Running dashboard server + cloudflared tunnel
 #   - Running claw-wallet sandbox (iff $WALLET_DIR/.env.clay exists)
 #   - Every file install.sh deploys into $OPENCLAW_WORKSPACE
@@ -67,6 +67,46 @@ else
   WORKSPACE="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
 fi
 REPO_DIR="$AGENCY_DIR"
+
+resolve_cron_agent_slug() {
+  python3 - <<'PY' "$WORKSPACE" "$AGENCY_DIR"
+import json, pathlib, re, sys
+workspace = pathlib.Path(sys.argv[1])
+agency = pathlib.Path(sys.argv[2])
+
+def env_value(path, key):
+    if not path.exists():
+        return ""
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        if k.strip() != key:
+            continue
+        v = v.strip()
+        if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+            v = v[1:-1]
+        return v
+    return ""
+
+def json_username(path):
+    try:
+        data = json.load(open(path))
+        return ((data.get("agent") or {}).get("username") or "").strip()
+    except Exception:
+        return ""
+
+raw = (
+    env_value(workspace / "skills" / "tagclaw" / ".env", "TAGCLAW_AGENT_USERNAME")
+    or json_username(workspace / "config" / "agency-identity.json")
+    or json_username(agency / "config" / "agency-identity.json")
+    or workspace.name
+)
+slug = re.sub(r"[^A-Za-z0-9_-]+", "-", raw.strip().lstrip("@")).strip("-_").lower()
+print((slug or "selfip")[:32])
+PY
+}
 
 # Wallet dir probe: prefer workspace-installed copy, fall back to parallel repo
 WALLET_DIR=""
@@ -407,7 +447,9 @@ stop_claw_sandbox() {
 remove_crons() {
   log_info "Stage 2: Unregistering cron jobs"
 
-  local jobs=(main-heartbeat bookmarker-cycle trader-cycle x-sync-cycle)
+  local cron_agent_slug
+  cron_agent_slug="$(resolve_cron_agent_slug)"
+  local jobs=("${cron_agent_slug}-main-heartbeat" "${cron_agent_slug}-bookmarker-cycle" "${cron_agent_slug}-trader-cycle" "${cron_agent_slug}-x-sync-cycle")
   local cron_list=""
 
   if ! command -v openclaw >/dev/null 2>&1; then
@@ -434,19 +476,19 @@ remove_crons() {
   for j in "${jobs[@]}"; do
     local script_name expected_path cron_ids cron_id found_any=false
     case "$j" in
-      main-heartbeat)
+      *-main-heartbeat)
         script_name="main-heartbeat.sh"
         expected_path="$WORKSPACE/scripts/main-heartbeat.sh"
         ;;
-      bookmarker-cycle)
+      *-bookmarker-cycle)
         script_name="bookmarker-cycle.sh"
         expected_path="$WORKSPACE/scripts/bookmarker-cycle.sh"
         ;;
-      trader-cycle)
+      *-trader-cycle)
         script_name="trader-cycle.sh"
         expected_path="$WORKSPACE/scripts/trader-cycle.sh"
         ;;
-      x-sync-cycle)
+      *-x-sync-cycle)
         script_name="x-sync-cycle.sh"
         expected_path="$WORKSPACE/scripts/x-sync-cycle.sh"
         ;;
@@ -675,8 +717,7 @@ print_plan() {
   echo "  ╠══════════════════════════════════════════════════════════╣"
   echo "  ║  1. Stop: dashboard server, cloudflared tunnel,"
   echo "  ║          claw-wallet sandbox (if .env.clay present)"
-  echo "  ║  2. Unregister crons: main-heartbeat, bookmarker-cycle,"
-  echo "  ║                       trader-cycle, x-sync-cycle"
+  echo "  ║  2. Unregister this agent's prefixed OpenClaw crons"
   echo "  ║  3. Remove workspace state:"
   echo "  ║       - deployed scripts (${#DEPLOYED_SHELL_SCRIPTS[@]} shell, ${#DEPLOYED_PY_SCRIPTS[@]} python + lib/{common.sh,x_fetch_utils.py})"
   echo "  ║       - markers/meta (.agency-installed, .agency-meta.json,"

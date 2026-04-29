@@ -36,6 +36,46 @@ check_file()     { [ -f "$1" ] && ok "$2" || fail "$2 — missing: $1"; }
 check_dir()      { [ -d "$1" ] && ok "$2" || fail "$2 — missing: $1"; }
 check_file_warn(){ [ -f "$1" ] && ok "$2" || warn "$2 — missing: $1"; }
 
+resolve_cron_agent_slug() {
+  python3 - <<'PY' "$WORKSPACE" "$AGENCY_DIR"
+import json, pathlib, re, sys
+workspace = pathlib.Path(sys.argv[1])
+agency = pathlib.Path(sys.argv[2])
+
+def env_value(path, key):
+    if not path.exists():
+        return ""
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        if k.strip() != key:
+            continue
+        v = v.strip()
+        if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+            v = v[1:-1]
+        return v
+    return ""
+
+def json_username(path):
+    try:
+        data = json.load(open(path))
+        return ((data.get("agent") or {}).get("username") or "").strip()
+    except Exception:
+        return ""
+
+raw = (
+    env_value(workspace / "skills" / "tagclaw" / ".env", "TAGCLAW_AGENT_USERNAME")
+    or json_username(workspace / "config" / "agency-identity.json")
+    or json_username(agency / "config" / "agency-identity.json")
+    or workspace.name
+)
+slug = re.sub(r"[^A-Za-z0-9_-]+", "-", raw.strip().lstrip("@")).strip("-_").lower()
+print((slug or "selfip")[:32])
+PY
+}
+
 echo ""
 echo "  Self-IP Agency Doctor"
 echo "  Workspace: $WORKSPACE"
@@ -569,7 +609,9 @@ fi
 # operator should re-run install.sh or bash scripts/finalize-crons.sh.
 if command -v openclaw >/dev/null 2>&1 && openclaw --version >/dev/null 2>&1; then
   if probe_scheduler_reachable "doctor" >/dev/null 2>&1; then
-    for j in main-heartbeat bookmarker-cycle trader-cycle x-sync-cycle; do
+    CRON_AGENT_SLUG="$(resolve_cron_agent_slug)"
+    for base in main-heartbeat bookmarker-cycle trader-cycle x-sync-cycle; do
+      j="${CRON_AGENT_SLUG}-${base}"
       if verify_registered "$j"; then
         ok "cron registered in scheduler: $j"
       else

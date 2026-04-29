@@ -98,7 +98,7 @@ def test_install_function_callchain() -> None:
         "install_wiki",
         "install_autoresearch",
         "seed_raw_docs",
-        "sync_guided_x_tweets",
+        "register_crons",
     ]
 
     for fn in install_steps:

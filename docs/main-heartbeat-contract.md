@@ -126,12 +126,13 @@ cat runtime/main/heartbeat.json
 ## Integration with Cron
 
 The cron configuration in `config/cron-jobs.json` uses `scripts/main-heartbeat.sh`
-as the command for the `main-heartbeat` job. Register with:
+as the command for the agent-prefixed `<agent-slug>-main-heartbeat` job. Register with:
 
 ```bash
 openclaw cron add \
-  --name "main-heartbeat" \
+  --name "${AGENT_SLUG}-main-heartbeat" \
   --cron "*/10 * * * *" \
   --session isolated \
-  --message "Run the main heartbeat cycle: bash /path/to/agency/scripts/main-heartbeat.sh"
+  --message "Run the ${AGENT_SLUG} main heartbeat cycle: bash /path/to/agency/scripts/main-heartbeat.sh" \
+  --no-deliver
 ```
