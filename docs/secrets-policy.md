@@ -10,8 +10,8 @@
 |-----------|---------|-----------|
 | TagClaw API key | `<workspace>/skills/tagclaw/.env` | `scripts/tagclaw-onboard.sh`, `adapters/tagclaw.py`, runtime scripts |
 | Wallet bootstrap + private key material | `<workspace>/skills/tagclaw-wallet/.env` | upstream wallet setup + trader runtime |
-| X API keys | `~/.config/tagclaw/x-credentials.json` | Custom X adapter |
-| GitHub token | `~/.config/tagclaw/github-token` | CI/CD scripts |
+| X API keys | `<workspace>/skills/tagclaw/x-credentials.json` | Custom X adapter |
+| GitHub token | `<workspace>/skills/tagclaw/github-token` | CI/CD scripts |
 
 ## Templates
 

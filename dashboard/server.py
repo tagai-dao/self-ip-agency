@@ -53,7 +53,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
 # ── Live TagAI OP/VP cache ─────────────────────────────────────────────────
 _TAGAI_BASE_URL = "https://bsc-api.tagai.fun"
-_TAGAI_CREDS_PATH = os.path.expanduser("~/.config/tagclaw/credentials.json")
+_TAGCLAW_SKILL_ENV_PATH = WORKSPACE / "skills" / "tagclaw" / ".env"
 _tagai_cache: dict[str, Any] = {"op": None, "vp": None, "ts": 0.0, "error": None}
 _tagai_lock = threading.Lock()
 _TAGAI_TTL = 120  # seconds
@@ -61,6 +61,43 @@ _TAGAI_TTL = 120  # seconds
 _curate_preview_cache: dict[str, Any] = {"data": None, "ts": 0.0}
 _curate_preview_lock = threading.Lock()
 _CURATE_PREVIEW_TTL = 180  # seconds
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    data: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        key, value = s.split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and ((value[0] == value[-1] == '"') or (value[0] == value[-1] == "'")):
+            value = value[1:-1]
+        data[key.strip()] = value
+    return data
+
+
+def _resolve_tagai_api_key() -> tuple[str | None, dict[str, Any] | None]:
+    """Resolve the TagClaw API key from the current workspace."""
+    try:
+        if _TAGCLAW_SKILL_ENV_PATH.exists():
+            api_key = _parse_env_file(_TAGCLAW_SKILL_ENV_PATH).get("TAGCLAW_API_KEY")
+            if api_key:
+                return api_key, None
+            return None, {
+                "kind": "missing_api_key",
+                "message": f"Credentials file has no TAGCLAW_API_KEY field: {_TAGCLAW_SKILL_ENV_PATH}",
+            }
+    except Exception as e:
+        return None, {
+            "kind": "unknown",
+            "message": f"Could not read credentials from {_TAGCLAW_SKILL_ENV_PATH}: {type(e).__name__}: {e}",
+        }
+
+    return None, {
+        "kind": "missing_creds",
+        "message": f"Credentials file not found at {_TAGCLAW_SKILL_ENV_PATH}. Re-run install.",
+    }
 
 
 def _fetch_live_op_vp() -> dict[str, Any]:
@@ -103,32 +140,11 @@ def _fetch_live_op_vp() -> dict[str, Any]:
             "error": err,
         }
 
-    try:
-        creds_raw = Path(_TAGAI_CREDS_PATH).read_text()
-    except FileNotFoundError:
-        return _stale_fallback({
-            "kind": "missing_creds",
-            "message": f"Credentials file not found at {_TAGAI_CREDS_PATH}. Re-run install.",
-        })
-    except Exception as e:
-        return _stale_fallback({
-            "kind": "unknown",
-            "message": f"Could not read credentials: {type(e).__name__}: {e}",
-        })
-
-    try:
-        creds = json.loads(creds_raw)
-    except Exception as e:
-        return _stale_fallback({
-            "kind": "decode_error",
-            "message": f"Credentials file is not valid JSON: {e}",
-        })
-
-    api_key = creds.get("api_key") or creds.get("apiKey") or creds.get("token")
+    api_key, api_key_error = _resolve_tagai_api_key()
     if not api_key:
-        return _stale_fallback({
+        return _stale_fallback(api_key_error or {
             "kind": "missing_api_key",
-            "message": "Credentials file has no api_key / apiKey / token field.",
+            "message": f"Credentials file has no TAGCLAW_API_KEY field: {_TAGCLAW_SKILL_ENV_PATH}",
         })
 
     try:
@@ -208,8 +224,7 @@ def _load_curate_fallback_preview() -> dict[str, Any]:
 
     data: dict[str, Any]
     try:
-        creds = json.loads(Path(_TAGAI_CREDS_PATH).read_text())
-        api_key = creds.get("api_key") or creds.get("apiKey") or creds.get("token")
+        api_key, _api_key_error = _resolve_tagai_api_key()
         if not api_key:
             data = {"ok": False, "candidates": [], "error": "missing_api_key"}
         else:

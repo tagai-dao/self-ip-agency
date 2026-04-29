@@ -16,7 +16,6 @@
 #   - $WORKSPACE/skills/tagclaw/ and $WORKSPACE/skills/tagclaw-wallet/
 #   - $WORKSPACE/runtime/, memory/, wiki/, schema/, tools/self-ip-dashboard/
 #   - Agency log files under $WORKSPACE/logs/
-#   - $HOME/.config/tagclaw/
 #   - Repo install-time artifacts (.installed, .cache, rendered agent .md)
 #   - The agency repo itself (unless --keep-repo)
 #
@@ -119,8 +118,6 @@ do
     break
   fi
 done
-
-USER_CONFIG_DIR="$HOME/.config/tagclaw"
 
 # ── Explicit deploy manifest (mirrors install.sh) ────────────────────────────
 
@@ -651,27 +648,20 @@ remove_workspace_state() {
   done
 }
 
-# ── Stage 4: User config ─────────────────────────────────────────────────────
-
-remove_user_config() {
-  log_info "Stage 4: Removing $USER_CONFIG_DIR"
-  do_rm_path "$USER_CONFIG_DIR"
-}
-
-# ── Stage 5: Repo install-time artifacts ─────────────────────────────────────
+# ── Stage 4: Repo install-time artifacts ─────────────────────────────────────
 
 remove_repo_artifacts() {
-  log_info "Stage 5: Removing repo install-time artifacts"
+  log_info "Stage 4: Removing repo install-time artifacts"
   for f in "${REPO_ARTIFACTS[@]}"; do
     do_rm_path "$f"
   done
 }
 
-# ── Stage 6: Self-delete repo ────────────────────────────────────────────────
+# ── Stage 5: Self-delete repo ────────────────────────────────────────────────
 
 self_delete_repo() {
   if [ "$KEEP_REPO" = "true" ]; then
-    log_info "Stage 6: --keep-repo → repo tree preserved at $REPO_DIR"
+    log_info "Stage 5: --keep-repo → repo tree preserved at $REPO_DIR"
     log_info "Note: gittracked files were modified by install.sh (config/cron-jobs.json,"
     log_info "      config/openclaw-agents.yaml, dashboard/static/index.html, agents/*.md.tmpl)."
     log_info "      Run: (cd $REPO_DIR && git checkout -- .) to revert."
@@ -730,12 +720,11 @@ print_plan() {
   echo "  ║       - memory/, wiki/, schema/, tools/self-ip-dashboard/"
   echo "  ║       - logs/{dashboard.log, dashboard-tunnel.log}"
   echo "  ║       - prune now-empty parent dirs"
-  echo "  ║  4. Remove $USER_CONFIG_DIR"
-  echo "  ║  5. Remove repo install artifacts (.installed, .cache, rendered .md)"
+  echo "  ║  4. Remove repo install artifacts (.installed, .cache, rendered .md)"
   if [ "$KEEP_REPO" = "true" ]; then
-    echo "  ║  6. [skipped: --keep-repo]"
+    echo "  ║  5. [skipped: --keep-repo]"
   else
-    echo "  ║  6. Self-delete repo tree ($REPO_DIR) via detached helper"
+    echo "  ║  5. Self-delete repo tree ($REPO_DIR) via detached helper"
   fi
   echo "  ╚══════════════════════════════════════════════════════════╝"
   echo ""
@@ -775,7 +764,6 @@ main() {
   stop_claw_sandbox
   remove_crons
   remove_workspace_state
-  remove_user_config
   remove_repo_artifacts
 
   echo ""

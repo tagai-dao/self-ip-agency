@@ -48,7 +48,7 @@ If you need direct X integration:
 1. Apply for X Developer access: https://developer.twitter.com
 2. Create a project and app
 3. Generate API keys (Consumer Key, Consumer Secret, Access Token, Access Token Secret)
-4. Store credentials in `~/.config/tagclaw/x-credentials.json`:
+4. Store credentials in `<workspace>/skills/tagclaw/x-credentials.json`:
 
 ```json
 {

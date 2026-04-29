@@ -410,7 +410,6 @@ removes every path `install.sh` deployed:
 - `$WORKSPACE/skills/tagclaw/` and `$WORKSPACE/skills/tagclaw-wallet/`
 - deployed cycle scripts + Python runtime scripts + agent behavior files
 - `$WORKSPACE/{.agency-installed, .agency-meta.json, HEARTBEAT.md}`
-- `$HOME/.config/tagclaw/`
 - repo install artifacts (`.installed`, `.install-next-steps.*`, `.cache/`)
 - the repo tree itself (unless `--keep-repo`)
 
