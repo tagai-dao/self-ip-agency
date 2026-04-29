@@ -134,7 +134,7 @@ DEPLOYED_PY_SCRIPTS=(
   run_bookmarker_runtime_v1.py
   run_trader_runtime_v1.py
   runtime_utils_v2.py
-  build_main_input_packet_v2.py
+  build_main_input_packet.py
   run_main_runtime_v2.py
   compute_tas_social_v2.py
   select_strategy_v1.py

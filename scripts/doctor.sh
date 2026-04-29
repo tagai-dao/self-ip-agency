@@ -630,7 +630,7 @@ echo ""
 # ── 10. Key scripts ─────────────────────────────────────────────────────────
 echo "10. Key scripts"
 for s in run_main_runtime_v2.py wiki_lint_v1.py select_strategy_v1.py \
-          compute_tas_social_v2.py build_main_input_packet_v2.py \
+          compute_tas_social_v2.py build_main_input_packet.py \
           build_wiki_query_index_v1.py runtime_utils_v2.py \
           run_bookmarker_runtime_v1.py run_trader_runtime_v1.py; do
   check_file "$AGENCY_DIR/scripts/$s" "$s"

@@ -205,7 +205,7 @@ self-ip-agency/
 │   ├── lib/common.sh                 ← shared shell utilities
 │   ├── runtime_utils_v2.py           ← shared runtime utilities (v2)
 │   ├── run_main_runtime_v2.py        ← main agent cycle (builds latest.json)
-│   ├── build_main_input_packet_v2.py ← input packet assembler
+│   ├── build_main_input_packet.py    ← input packet assembler
 │   ├── compute_tas_social_v2.py      ← TAS_social dual-track scorer
 │   ├── select_strategy_v1.py         ← strategy optimizer (hill-climbing)
 │   ├── wiki_lint_v1.py               ← wiki health checker (3-band scoring)

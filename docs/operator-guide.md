@@ -55,7 +55,7 @@ Or adjust search spaces in `scripts/select_strategy_v1.py`.
 | Script | Purpose | Usage |
 |--------|---------|-------|
 | `run_main_runtime_v2.py` | Main agent cycle (builds latest.json) | `python3 scripts/run_main_runtime_v2.py` |
-| `build_main_input_packet_v2.py` | Assembles input packet for main agent | `python3 scripts/build_main_input_packet_v2.py` |
+| `build_main_input_packet.py` | Assembles input packet for main agent | `python3 scripts/build_main_input_packet.py` |
 | `compute_tas_social_v2.py` | Computes TAS_social (dual-track) | `python3 scripts/compute_tas_social_v2.py` |
 | `select_strategy_v1.py` | AutoResearch strategy selection | `python3 scripts/select_strategy_v1.py [--stats] [--apply]` |
 | `wiki_lint_v1.py` | Wiki health check + report | `python3 scripts/wiki_lint_v1.py [--workspace /path]` |

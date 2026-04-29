@@ -133,9 +133,9 @@ build_input_packet() {
   # Find the script in SCRIPT_DIR (co-located), workspace, or repo
   local script=""
   for candidate in \
-    "$SCRIPT_DIR/build_main_input_packet_v2.py" \
-    "$WORKSPACE/scripts/build_main_input_packet_v2.py" \
-    "${REPO_DIR:+$REPO_DIR/scripts/build_main_input_packet_v2.py}"; do
+    "$SCRIPT_DIR/build_main_input_packet.py" \
+    "$WORKSPACE/scripts/build_main_input_packet.py" \
+    "${REPO_DIR:+$REPO_DIR/scripts/build_main_input_packet.py}"; do
     if [ -n "$candidate" ] && [ -f "$candidate" ]; then
       script="$candidate"
       break
@@ -151,7 +151,7 @@ build_input_packet() {
       }
     fi
   else
-    log_warn "build_main_input_packet_v2.py not found — skipping input packet"
+    log_warn "build_main_input_packet.py not found — skipping input packet"
   fi
 }
 
