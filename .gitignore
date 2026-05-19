@@ -39,3 +39,11 @@ Thumbs.db
 # Logs
 logs/
 *.log
+
+# Local archives / scratch worktrees
+.archive/
+_worktrees/
+
+# Local operator / agent notes and runtime skills
+AGENTS.md
+skills/
