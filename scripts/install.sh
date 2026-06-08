@@ -20,6 +20,20 @@ AGENCY_DIR="$(dirname "$SCRIPT_DIR")"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
+# ── 3-workspace resolution (Phase-1 re-baseline) ────────────────────────────
+# The agency runs as three sibling workspaces; bookmarker/trader default to siblings
+# of the main workspace (env-overridable), matching scripts/agency_paths.py.
+agency_bookmarker_workspace() {
+  if [ -n "${OPENCLAW_BOOKMARKER_WORKSPACE:-}" ]; then echo "$OPENCLAW_BOOKMARKER_WORKSPACE"; return; fi
+  local main; main="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+  echo "$(dirname "$main")/workspace-bookmarker"
+}
+agency_trader_workspace() {
+  if [ -n "${OPENCLAW_TRADER_WORKSPACE:-}" ]; then echo "$OPENCLAW_TRADER_WORKSPACE"; return; fi
+  local main; main="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
+  echo "$(dirname "$main")/workspace-trader"
+}
+
 AGENCY_VERSION="$(cat "$AGENCY_DIR/VERSION" 2>/dev/null || echo "unknown")"
 IDENTITY_FILE="$AGENCY_DIR/config/agency-identity.json"
 TAGCLAW_API="https://bsc-api.tagai.fun/tagclaw"
@@ -581,9 +595,14 @@ configure_from_identity() {
   local workspace
   workspace="$(detect_openclaw_workspace || echo "$HOME/.openclaw/workspace")"
   CRON_AGENT_SLUG="$(resolve_cron_agent_slug "$workspace")"
+  local bookmarker_ws trader_ws
+  bookmarker_ws="$(agency_bookmarker_workspace)"
+  trader_ws="$(agency_trader_workspace)"
   local cron_tmp="${AGENCY_DIR}/config/cron-jobs.json.tmp"
   sed \
     -e "s|{{WORKSPACE_PATH}}|${workspace}|g" \
+    -e "s|{{BOOKMARKER_WORKSPACE_PATH}}|${bookmarker_ws}|g" \
+    -e "s|{{TRADER_WORKSPACE_PATH}}|${trader_ws}|g" \
     -e "s|{{CRON_AGENT_SLUG}}|${CRON_AGENT_SLUG}|g" \
     "$AGENCY_DIR/config/cron-jobs.json" > "$cron_tmp"
   mv "$cron_tmp" "$AGENCY_DIR/config/cron-jobs.json"
@@ -637,34 +656,40 @@ install_runtime() {
     fi
   done
 
-  # Deploy native runtime scripts (Phase 2: bookmarker/trader no longer require claude CLI)
-  for runtime_script in run_bookmarker_runtime.py run_trader_runtime.py runtime_utils.py; do
-    if [ -f "$AGENCY_DIR/scripts/$runtime_script" ]; then
-      cp -f "$AGENCY_DIR/scripts/$runtime_script" "$scripts_dst/$runtime_script"
-      log_ok "Installed native runtime: $scripts_dst/$runtime_script"
-    fi
-  done
+  # ── Deploy the module scripts into ALL THREE workspaces (3-workspace re-baseline) ──
+  # config/workspace-scripts.json is the per-agent manifest (LLM Wiki + AutoResearch +
+  # TAS base modules + autonomous post/social). The deployer also seeds runtime-template
+  # into each sibling workspace and resolves bookmarker/trader as siblings of main.
+  local bookmarker_ws trader_ws
+  bookmarker_ws="$(agency_bookmarker_workspace)"
+  trader_ws="$(agency_trader_workspace)"
+  if [ -f "$AGENCY_DIR/scripts/lib/deploy_workspace_scripts.py" ]; then
+    python3 "$AGENCY_DIR/scripts/lib/deploy_workspace_scripts.py" \
+      --agency-dir "$AGENCY_DIR" \
+      --main-workspace "$workspace" \
+      --bookmarker-workspace "$bookmarker_ws" \
+      --trader-workspace "$trader_ws" \
+      && log_ok "Deployed module scripts to main/bookmarker/trader workspaces" \
+      || log_warn "Module script deployment reported warnings (non-fatal)"
+  else
+    log_warn "deploy_workspace_scripts.py missing — module scripts NOT deployed"
+  fi
 
-  # Deploy Python scripts needed by heartbeat and auxiliary cycles.
-  for py_script in build_main_input_packet.py run_main_runtime.py compute_tas_social.py select_strategy.py sync_guided_x_tweets.py build_x_tweets_wiki.py; do
-    if [ -f "$AGENCY_DIR/scripts/$py_script" ]; then
-      cp -f "$AGENCY_DIR/scripts/$py_script" "$scripts_dst/$py_script"
-    fi
-  done
-  log_ok "Installed Python runtime scripts"
-
-  # Remove legacy version-suffixed entrypoints from older installs.
+  # Remove genuinely-dead legacy entrypoints from older installs. NOTE: do NOT list any
+  # script that is now a shipped module in config/workspace-scripts.json (e.g.
+  # runtime_utils_v2.py, compute_tas_social_v2.py, build_wiki_query_index_v1.py are
+  # CURRENT) — removing those would delete what the deployer just installed.
   for old_script in \
     build_main_input_packet_v2.py \
     run_bookmarker_runtime_v1.py \
     run_trader_runtime_v1.py \
-    runtime_utils_v2.py \
     run_main_runtime_v2.py \
-    compute_tas_social_v2.py \
     select_strategy_v1.py \
+    select_strategy.py \
+    compute_tas_social.py \
     wiki_lint_v1.py \
-    build_x_tweets_wiki_v1.py \
-    build_wiki_query_index_v1.py; do
+    build_x_tweets_wiki.py \
+    build_x_tweets_wiki_v1.py; do
     rm -f "$scripts_dst/$old_script"
   done
 
@@ -706,6 +731,32 @@ install_runtime() {
   if [ -f "$AGENCY_DIR/config/agency.config.yaml" ]; then
     cp -f "$AGENCY_DIR/config/agency.config.yaml" "$config_dst/agency.config.yaml"
   fi
+  # Topic registry — single source of truth for concept/tick naming (wiki_registry.py).
+  if [ -f "$AGENCY_DIR/config/wiki_topic_registry.json" ]; then
+    cp -f "$AGENCY_DIR/config/wiki_topic_registry.json" "$config_dst/wiki_topic_registry.json"
+    log_ok "Installed topic registry to workspace"
+  fi
+
+  # ── Provision the two sibling workspaces (bookmarker / trader) ──────────────
+  # Module scripts + agency_paths + runtime-template already went in via the deployer
+  # above; here we add each agent's cycle entrypoint, behavior file, shared shell lib,
+  # heartbeat contract, and shared config so the agent runs standalone in its workspace.
+  _provision_sibling_ws() {
+    local sib_ws="$1" sib_agent="$2" sib_cycle="$3"
+    mkdir -p "$sib_ws/scripts/lib" "$sib_ws/agents" "$sib_ws/config" "$sib_ws/runtime/shared"
+    [ -f "$AGENCY_DIR/scripts/$sib_cycle" ] && { cp -f "$AGENCY_DIR/scripts/$sib_cycle" "$sib_ws/scripts/$sib_cycle"; chmod +x "$sib_ws/scripts/$sib_cycle" || true; }
+    [ -f "$AGENCY_DIR/scripts/lib/common.sh" ] && cp -f "$AGENCY_DIR/scripts/lib/common.sh" "$sib_ws/scripts/lib/common.sh"
+    [ -f "$AGENCY_DIR/scripts/lib/x_fetch_utils.py" ] && cp -f "$AGENCY_DIR/scripts/lib/x_fetch_utils.py" "$sib_ws/scripts/lib/x_fetch_utils.py"
+    [ -f "$AGENCY_DIR/HEARTBEAT.md" ] && cp -f "$AGENCY_DIR/HEARTBEAT.md" "$sib_ws/HEARTBEAT.md"
+    [ -f "$AGENCY_DIR/config/wiki_topic_registry.json" ] && cp -f "$AGENCY_DIR/config/wiki_topic_registry.json" "$sib_ws/config/wiki_topic_registry.json"
+    [ -f "$AGENCY_DIR/config/agency.config.yaml" ] && cp -f "$AGENCY_DIR/config/agency.config.yaml" "$sib_ws/config/agency.config.yaml"
+    for bf in "${sib_agent}.md" "${sib_agent}.md.tmpl"; do
+      [ -f "$AGENCY_DIR/agents/$bf" ] && { cp -f "$AGENCY_DIR/agents/$bf" "$sib_ws/agents/$bf"; break; }
+    done
+    log_ok "Provisioned $sib_agent workspace: $sib_ws"
+  }
+  _provision_sibling_ws "$bookmarker_ws" "bookmarker" "bookmarker-cycle.sh"
+  _provision_sibling_ws "$trader_ws" "trader" "trader-cycle.sh"
 
   # Write .agency-meta.json — allows deployed scripts to find repo and version
   local meta_json
@@ -783,7 +834,7 @@ install_wiki() {
   fi
 
   # Copy wiki scripts
-  for script in wiki_lint.py wiki_utils.py wiki_registry.py wiki_search.py verify_wiki_contract.py; do
+  for script in wiki_lint.py wiki_utils.py wiki_registry.py wiki_search.py verify_wiki_contract.py query_wiki_facts_v1.py; do
     if [ -f "$AGENCY_DIR/scripts/$script" ]; then
       local scripts_dst="$workspace/scripts"
       mkdir -p "$scripts_dst"

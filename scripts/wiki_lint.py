@@ -98,11 +98,15 @@ def extract_wikilinks(text: str) -> list[str]:
     links: list[str] = []
     for m in re.finditer(r'\[\[([^\]]+)\]\]', text):
         raw = m.group(1)
+        # Obsidian escapes the alias pipe as '\|' inside markdown tables; treat
+        # it the same as a normal alias separator so the target isn't left with a
+        # trailing backslash (was a false-positive broken-link source).
+        raw = raw.replace('\\|', '|')
         # Strip alias: [[link|alias]] -> link
         raw = raw.split('|')[0]
         # Strip section: [[link#section]] -> link
         raw = raw.split('#')[0]
-        raw = raw.strip()
+        raw = raw.rstrip('\\').strip()
         if raw:
             links.append(raw)
     return links
@@ -190,6 +194,75 @@ def check_stale(concepts_dir: Path, threshold_days: int = 30) -> list[dict]:
     return issues
 
 
+def check_stale_by_inflow(
+    concepts_dir: Path,
+    synthesis_dir: Path,
+    min_inflow: int = 5,
+) -> list[dict]:
+    """Detect concept pages that look "fresh" but have N+ new tweets in
+    their theme since they were last compiled.
+
+    The existing ``check_stale`` only catches pages whose frontmatter
+    ``last_compiled_at`` / ``updated`` is past a wall-clock threshold —
+    it can't see *inflow staleness* (the concept's theme has accumulated
+    20+ new tweets but the concept page itself hasn't been re-synthesized).
+    This is the Karpathy "wiki rotting under new sources" failure mode:
+    Tier-1 atoms compound but Tier-2 summary doesn't roll forward.
+
+    For each concept page, count tweets under ``synthesis/tweets/`` whose
+    ``primary_theme`` matches the concept name and whose ``created_at`` is
+    later than the concept's ``last_compiled_at``. ≥ ``min_inflow`` ⇒ warning.
+    """
+    issues: list[dict] = []
+    if not concepts_dir.exists() or not synthesis_dir.exists():
+        return issues
+    tweets_dir = synthesis_dir / 'tweets'
+    if not tweets_dir.exists():
+        return issues
+
+    # Pre-index synthesis/tweets/ once by primary_theme → list[created_at].
+    # 12k+ files * O(1) frontmatter parse = ~1–2s wall time, no per-concept
+    # full rescan.
+    theme_to_tweet_ts: dict[str, list[str]] = {}
+    for tw in tweets_dir.glob('*.md'):
+        try:
+            text = tw.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            continue
+        fm = parse_frontmatter(text)
+        theme = (fm.get('primary_theme') or fm.get('theme') or '').strip()
+        created_at = (fm.get('created_at') or '').strip()
+        if theme and created_at:
+            theme_to_tweet_ts.setdefault(theme, []).append(created_at)
+
+    for page in sorted(concepts_dir.glob('*.md')):
+        try:
+            text = page.read_text(encoding='utf-8')
+        except Exception:
+            continue
+        fm = parse_frontmatter(text)
+        last_str = (
+            fm.get('last_compiled_at')
+            or fm.get('updated')
+            or fm.get('graph_sync_at')
+            or ''
+        )
+        if not last_str:
+            continue
+        theme = page.stem  # filename without .md == theme name in this wiki
+        candidates = theme_to_tweet_ts.get(theme) or []
+        # ISO-8601 strings sort lexicographically when fields share precision.
+        new_count = sum(1 for ts in candidates if ts > last_str)
+        if new_count >= min_inflow:
+            issues.append({
+                'file': page.name,
+                'theme': theme,
+                'last_compiled_at': last_str,
+                'new_tweets_since': new_count,
+            })
+    return issues
+
+
 def check_orphans(concepts_dir: Path, index_path: Path) -> list[dict]:
     """Find concepts not referenced by any other concept page and not in INDEX.md."""
     if not concepts_dir.exists():
@@ -247,14 +320,17 @@ def build_report_md(
     stale: list[dict],
     orphans: list[dict],
     empty: list[dict],
+    stale_by_inflow: list[dict] | None = None,
 ) -> str:
     """Build wiki/lint/latest-report.md content."""
+    stale_by_inflow = stale_by_inflow or []
     lines = [
         '---',
         f'generated_at: {now_iso()}',
         f'concepts_checked: {concepts_checked}',
         f'broken_links_count: {len(broken_links)}',
         f'stale_count: {len(stale)}',
+        f'stale_by_inflow_count: {len(stale_by_inflow)}',
         f'orphan_count: {len(orphans)}',
         f'empty_count: {len(empty)}',
         '---',
@@ -302,6 +378,21 @@ def build_report_md(
         lines.append('|------|------|')
         for e in empty:
             lines.append(f'| {e["file"]} | {e["word_count"]} |')
+    else:
+        lines.append('无')
+    lines.append('')
+
+    # Stale-by-inflow: concept page hasn't moved but theme has new tweets since.
+    # The "Karpathy gap" — Tier-1 keeps growing, Tier-2 doesn't roll forward.
+    lines.append(f'## 待重编（按 inflow，{len(stale_by_inflow)}个）')
+    if stale_by_inflow:
+        lines.append('| 概念 | 主题 | 上次编译 | 之后新增推文 |')
+        lines.append('|------|------|----------|---------------|')
+        for s in sorted(stale_by_inflow, key=lambda x: -x.get('new_tweets_since', 0)):
+            lines.append(
+                f'| {s["file"]} | {s["theme"]} | {s["last_compiled_at"]} | '
+                f'{s["new_tweets_since"]} |'
+            )
     else:
         lines.append('无')
     lines.append('')
@@ -392,10 +483,12 @@ def main() -> int:
     stale = check_stale(concepts_dir)
     orphans = check_orphans(concepts_dir, index_path)
     empty = check_empty(concepts_dir)
+    stale_by_inflow = check_stale_by_inflow(concepts_dir, synthesis_dir)
 
     # Print summary
     print(f'[wiki-lint] {concepts_checked} concepts checked')
-    print(f'[wiki-lint] broken_links: {len(broken_links)}, stale: {len(stale)}, orphans: {len(orphans)}, empty: {len(empty)}')
+    print(f'[wiki-lint] broken_links: {len(broken_links)}, stale: {len(stale)}, '
+          f'stale_by_inflow: {len(stale_by_inflow)}, orphans: {len(orphans)}, empty: {len(empty)}')
 
     # Phase 4: enforce write guard on output paths
     report_rel = 'wiki/lint/latest-report.md'
@@ -417,7 +510,9 @@ def main() -> int:
     # Write report
     report_path = wiki_dir / 'lint' / 'latest-report.md'
     if report_allowed:
-        report_md = build_report_md(concepts_checked, broken_links, stale, orphans, empty)
+        report_md = build_report_md(
+            concepts_checked, broken_links, stale, orphans, empty, stale_by_inflow,
+        )
         atomic_write(report_path, report_md)
         print(f'[wiki-lint] report: {report_path}')
     else:
@@ -427,14 +522,18 @@ def main() -> int:
     health_score = compute_health_score(
         concepts_checked, len(broken_links), len(stale), len(orphans), len(empty),
     )
+    # Stale-by-inflow doesn't deduct from the health score yet — keep
+    # backward compatibility for any downstream consumer that reads the
+    # score — but surface the count so dashboards/agents can act on it.
     status: dict[str, Any] = {
         'generated_at': now_iso(),
         'health_score': health_score,
         'broken_links_count': len(broken_links),
         'stale_count': len(stale),
+        'stale_by_inflow_count': len(stale_by_inflow),
         'orphan_count': len(orphans),
         'empty_count': len(empty),
-        'needs_attention': health_score < 80,
+        'needs_attention': health_score < 80 or len(stale_by_inflow) >= 5,
     }
 
     # Phase 4: embed resolver metadata in status output

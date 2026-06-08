@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,12 @@ from typing import Any
 ROOT = Path(os.environ.get("OPENCLAW_WORKSPACE") or str(Path.home() / ".openclaw" / "workspace"))
 RUNTIME = ROOT / 'runtime'
 MEMORY = ROOT / 'memory'
+SHARED = RUNTIME / 'shared'
+WIKI = ROOT / 'wiki'
 TAGCLAW_SKILL_ENV = ROOT / 'skills' / 'tagclaw' / '.env'
+
+# Brain freshness: pack older than this is flagged so main knows the wiki may lag.
+WIKI_PACK_STALE_SECONDS = 6 * 3600
 
 
 def now_iso() -> str:
@@ -44,6 +50,80 @@ def read_json(path: Path) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding='utf-8'))
     except Exception:
         return None
+
+
+def build_wiki_section() -> dict[str, Any]:
+    """Read-only summary of the shared wiki brain for main's input packet.
+
+    Additive: surfaces the retrieval pack + INDEX catalog + health so the main
+    agent reasons against the same knowledge base bookmarker/trader consume.
+    Never mutates wiki state. All reads are guarded so a missing/corrupt artifact
+    degrades to a partial section rather than failing the packet build.
+    """
+    section: dict[str, Any] = {
+        "retrieval_pack_ref": "runtime/shared/wiki-retrieval-pack.json",
+        "index_ref": "wiki/INDEX.md",
+        "query_tool": "scripts/query_wiki_facts_v1.py",
+        "content_intelligence_ref": "runtime/shared/content-intelligence.json",
+    }
+    pack = read_json(SHARED / 'wiki-retrieval-pack.json')
+    if isinstance(pack, dict):
+        section["pack_generated_at"] = pack.get("generated_at")
+        section["pack_doc_count"] = pack.get("doc_count")
+        section["doc_type_counts"] = pack.get("doc_type_counts")
+        docs = pack.get("docs") if isinstance(pack.get("docs"), list) else []
+        section["top_entities"] = [
+            d.get("canonical_name") for d in docs
+            if isinstance(d, dict) and d.get("doc_type") == "entity" and d.get("canonical_name")
+        ][:15]
+        gap = age_gap_seconds(pack.get("generated_at"), now_iso())
+        section["age_seconds"] = int(gap) if gap is not None else None
+        section["stale"] = bool(gap is not None and gap > WIKI_PACK_STALE_SECONDS)
+    else:
+        section["stale"] = True
+        section["age_seconds"] = None
+    try:
+        idx = (WIKI / 'INDEX.md').read_text(encoding='utf-8')
+        names = re.findall(r'^\| \[([^\]]+)\]\(concepts/', idx, flags=re.M)
+        section["concept_count"] = len(names)
+        section["concepts"] = names
+    except Exception:
+        section["concept_count"] = None
+    health = read_json(SHARED / 'wiki-maintenance-alert.json')
+    if isinstance(health, dict):
+        section["health"] = {
+            "severity": health.get("severity"),
+            "action": health.get("action"),
+        }
+    # Feedback loop: surface the agency's own recent decisions + outcomes so main
+    # reasons against what was already decided (decision-memory closing the loop).
+    didx = read_json(SHARED / 'decision-index.json')
+    if isinstance(didx, dict):
+        decisions = didx.get("decisions") or []
+        section["decision_index_ref"] = "runtime/shared/decision-index.json"
+        section["decision_count"] = didx.get("count")
+        section["recent_decisions"] = [
+            {
+                "decided_at": d.get("decided_at"),
+                "agent": d.get("agent"),
+                "kind": d.get("kind"),
+                "action": d.get("action"),
+                "outcome": d.get("outcome"),
+            }
+            for d in decisions[:12] if isinstance(d, dict)
+        ]
+    cint = read_json(SHARED / "content-intelligence.json")
+    if isinstance(cint, dict):
+        top_authors = cint.get("top_authors") if isinstance(cint.get("top_authors"), list) else []
+        concept_scores = cint.get("concept_scores") if isinstance(cint.get("concept_scores"), dict) else {}
+        section["content_intelligence"] = {
+            "generated_at": cint.get("generated_at"),
+            "top_author_count": len(top_authors),
+            "concept_count": len(concept_scores),
+            "top_authors": [a.get("handle") for a in top_authors[:8] if isinstance(a, dict) and a.get("handle")],
+            "top_concepts": [name for name, _meta in sorted(concept_scores.items(), key=lambda kv: -(kv[1] or {}).get("score", 0))[:8]],
+        }
+    return section
 
 
 def atomic_write_json(path: Path, obj: Any) -> None:
@@ -115,10 +195,36 @@ def derive_wallet_state(wallet_snapshot: dict[str, Any] | None) -> str | None:
 
 
 def fetch_live_op_vp() -> tuple[float | None, float | None]:
-    """Fetch real-time OP/VP from TagClaw API."""
+    """Fetch real-time OP/VP from TagClaw API.
+
+    Priority:
+    1. Bookmarker scoped credentials (workspace-bookmarker/runtime/credentials/tagclaw-bookmarker.json)
+       — this key is the authoritative source-of-truth for OP/VP because all social
+       actions (curate/post/reply) are executed under the bookmarker account.
+    2. TAGCLAW_SKILL_ENV (skills/tagclaw/.env) — fallback for deployments without
+       a separate bookmarker workspace.
+    """
     import subprocess
     api_key = None
-    if TAGCLAW_SKILL_ENV.exists():
+
+    # Priority 1: bookmarker scoped credentials (canonical OP/VP source-of-truth)
+    _bk_creds_path = (
+        Path.home() / '.openclaw' / 'workspace-bookmarker'
+        / 'runtime' / 'credentials' / 'tagclaw-bookmarker.json'
+    )
+    if _bk_creds_path.exists():
+        try:
+            _bk_creds = json.loads(_bk_creds_path.read_text(encoding='utf-8'))
+            for _key in ('apiKey', 'api_key'):
+                _val = str(_bk_creds.get(_key) or '').strip()
+                if _val:
+                    api_key = _val
+                    break
+        except Exception:
+            pass
+
+    # Priority 2: workspace TAGCLAW_SKILL_ENV fallback
+    if not api_key and TAGCLAW_SKILL_ENV.exists():
         for line in TAGCLAW_SKILL_ENV.read_text(encoding='utf-8').splitlines():
             s = line.strip()
             if not s or s.startswith('#') or '=' not in s:
@@ -129,6 +235,7 @@ def fetch_live_op_vp() -> tuple[float | None, float | None]:
                 if value:
                     api_key = value
                     break
+
     if not api_key:
         return None, None
     try:
@@ -172,6 +279,7 @@ def main() -> int:
     # TAS_social: bookmarker is now the sole owner (2026-03-25).
     # Main no longer computes or publishes TAS_social.
     bookmarker_tas_social = read_json(RUNTIME / 'bookmarker' / 'tas-social.json') or {}
+    bookmarker_tas_xreco = read_json(RUNTIME / 'bookmarker' / 'tas-xreco.json') or {}
     wallet_snapshot = read_json(RUNTIME / 'trader' / 'wallet-snapshot.json') or {}
     reward_status = read_json(RUNTIME / 'trader' / 'reward-status.json') or {}
     tas_trade = read_json(RUNTIME / 'trader' / 'tas-trade.json') or {}
@@ -259,6 +367,13 @@ def main() -> int:
         {'status': bookmarker_tas_social.get('status'), 'value': bookmarker_tas_social.get('value')}
         if bookmarker_tas_social else None,
         'runtime/bookmarker/tas-social.json',
+        'runtime-canonical',
+    )
+    # TAS_XReco: bookmarker reco feedback loop (2026-05-14)
+    summary['tas_xreco'], provenance['tas_xreco'] = choose_field(
+        {'status': bookmarker_tas_xreco.get('status'), 'value': bookmarker_tas_xreco.get('value')}
+        if bookmarker_tas_xreco else None,
+        'runtime/bookmarker/tas-xreco.json',
         'runtime-canonical',
     )
     # P2: enforce null semantics — tas_trade value must be null (not claim-only) when
@@ -362,6 +477,7 @@ def main() -> int:
             "topic_brief_ref": "runtime/bookmarker/topic-brief.json",
             "content_candidates_ref": "runtime/bookmarker/content-candidates.json",
             "source_health_ref": "runtime/bookmarker/source-health.json",
+            "tas_xreco_ref": "runtime/bookmarker/tas-xreco.json",
             "status": bookmarker_latest.get('status'),
             "topic_keywords": topic_brief.get('keywords', []),
             "candidate_count": len(content_candidates.get('items', [])) if isinstance(content_candidates.get('items'), list) else None,
@@ -390,6 +506,7 @@ def main() -> int:
             "social_intent_ref": "runtime/main/social-intent.json",
             "treasury_policy_ref": "runtime/main/treasury-policy.json",
         },
+        "wiki": build_wiki_section(),
         "provenance": {
             "summary_fields": provenance,
             "fallback_fields": sorted([
@@ -417,6 +534,7 @@ def main() -> int:
             "bookmarker_latest": bool(bookmarker_latest),
             "trader_latest": bool(trader_latest),
             "bookmarker_tas_social": bool(bookmarker_tas_social),
+            "bookmarker_tas_xreco": bool(bookmarker_tas_xreco),
             "tas_trade": bool(tas_trade),
             "wallet_snapshot": bool(wallet_snapshot),
             "reward_status": bool(reward_status),

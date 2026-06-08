@@ -14,10 +14,11 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
-WORKSPACE = Path(__file__).resolve().parent.parent
+WORKSPACE = Path(os.environ.get("OPENCLAW_WORKSPACE") or Path(__file__).resolve().parent.parent)
 REGISTRY_PATH = WORKSPACE / 'config' / 'wiki_topic_registry.json'
 
 _registry_cache: dict[str, Any] | None = None

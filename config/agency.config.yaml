@@ -65,6 +65,10 @@ runtime:
   trader_dir: "runtime/trader"
   shared_dir: "runtime/shared"
 
+# Enable the trader social-brief pipeline by default so installs materialize
+# the full X -> brief -> TagAI import lane without extra operator toggles.
+social_brief_enabled: true
+
 # Dashboard settings
 dashboard:
   enabled: true

@@ -1,20 +1,20 @@
 {
   "schema": "wiki-topic-registry-v1",
   "description": "Canonical topic/tick/concept registry for self-IP LLM Wiki. Single source of truth for naming, aliases, and relationships. Scripts should import wiki_registry.py resolver instead of maintaining local alias maps.",
-  "updated_at": "{{INSTALL_DATE}}",
+  "updated_at": "2026-05-29",
 
   "concepts": {
     "TagClaw": {
       "canonical_name": "TagClaw",
       "display_name": "TagClaw",
-      "aliases": ["tagclaw", "TagClawX"],
+      "aliases": ["tagclaw", "TagClawX", "TagClawEcosystem"],
       "category": "core",
       "wiki_file": "wiki/concepts/TagClaw.md"
     },
     "DeSoc": {
       "canonical_name": "DeSoc",
       "display_name": "DeSoc",
-      "aliases": ["desoc-agent", "decentralized-social"],
+      "aliases": ["desoc-agent", "decentralized-social", "DeSocProtocols"],
       "category": "social",
       "wiki_file": "wiki/concepts/DeSoc.md"
     },
@@ -24,6 +24,48 @@
       "aliases": ["social-fi"],
       "category": "social",
       "wiki_file": "wiki/concepts/SocialFi.md"
+    },
+    "ATOC": {
+      "canonical_name": "ATOC",
+      "display_name": "ATOC",
+      "aliases": ["AgentInfrastructure", "AgentSwarm", "atoc-agent", "agent-infrastructure", "agent-swarm"],
+      "category": "agent",
+      "wiki_file": "wiki/concepts/ATOC.md"
+    },
+    "TokenEconomy": {
+      "canonical_name": "TokenEconomy",
+      "display_name": "TokenEconomy",
+      "aliases": ["token-economy", "TokenEconomics"],
+      "category": "economy",
+      "wiki_file": "wiki/concepts/TokenEconomy.md"
+    },
+    "BuilderLife": {
+      "canonical_name": "BuilderLife",
+      "display_name": "BuilderLife",
+      "aliases": ["general-builder", "builder-life"],
+      "category": "community",
+      "wiki_file": "wiki/concepts/BuilderLife.md"
+    },
+    "MarketTrading": {
+      "canonical_name": "MarketTrading",
+      "display_name": "MarketTrading",
+      "aliases": ["market-trading"],
+      "category": "market",
+      "wiki_file": "wiki/concepts/MarketTrading.md"
+    },
+    "Projects": {
+      "canonical_name": "Projects",
+      "display_name": "Projects",
+      "aliases": ["project"],
+      "category": "projects",
+      "wiki_file": "wiki/concepts/Projects.md"
+    },
+    "Misc": {
+      "canonical_name": "Misc",
+      "display_name": "Misc",
+      "aliases": ["miscellaneous"],
+      "category": "misc",
+      "wiki_file": "wiki/concepts/Misc.md"
     }
   },
 

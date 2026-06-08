@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -25,6 +26,7 @@ from typing import Any
 from runtime_utils import (
     analyze_social_action_selection,
     atomic_write_json,
+    compute_daily_consumption,
     compute_main_mode,
     gate_allows_mode,
     normalize_status,
@@ -55,6 +57,300 @@ def safe_float(value: Any) -> float | None:
         return None if value is None else float(value)
     except Exception:
         return None
+
+
+def _mode_rank(mode: str) -> int:
+    order = {
+        'blocked-runtime': 0,
+        'conservative': 1,
+        'vp-flush': 2,
+        'vp-drain': 3,
+        'active': 4,
+        'mid-active': 5,
+        'super-active': 6,
+    }
+    return order.get(str(mode or ''), -1)
+
+
+def _status_list(value: Any, default: list[str]) -> list[str]:
+    if isinstance(value, list):
+        items = [str(v) for v in value if v is not None]
+        if items:
+            return items
+    if value is None:
+        return list(default)
+    return [str(value)]
+
+
+def _social_policy_for_mode(mode: str) -> dict[str, Any]:
+    if mode == 'blocked-runtime':
+        return {
+            'enabled': False,
+            'min_mode': 'blocked-runtime',
+            'require_bookmarker_status_in': ['ok'],
+            'require_candidates': True,
+            'require_drafts': True,
+            'breaker_enabled': True,
+            'cooldown_hours': 24,
+            'max_total_actions': 0,
+            'intent_ttl_minutes': 240,
+            'action_mix_order': ['post', 'reply', 'curate', 'like'],
+            'max_per_type': {'post': 0, 'reply': 0, 'curate': 0, 'like': 0},
+            'posture': 'disabled',
+        }
+    if mode == 'conservative':
+        return {
+            'enabled': False,
+            'min_mode': 'conservative',
+            'require_bookmarker_status_in': ['ok'],
+            'require_candidates': True,
+            'require_drafts': True,
+            'breaker_enabled': True,
+            'cooldown_hours': 24,
+            'max_total_actions': 0,
+            'intent_ttl_minutes': 240,
+            'action_mix_order': ['post', 'reply', 'curate', 'like'],
+            'max_per_type': {'post': 0, 'reply': 0, 'curate': 0, 'like': 0},
+            'posture': 'hold-by-default',
+        }
+    if mode == 'vp-flush':
+        return {
+            'enabled': True,
+            'min_mode': 'vp-flush',
+            'require_bookmarker_status_in': ['ok'],
+            'require_candidates': True,
+            'require_drafts': True,
+            'breaker_enabled': True,
+            'cooldown_hours': 24,
+            'max_total_actions': 12,
+            'intent_ttl_minutes': 240,
+            'action_mix_order': ['curate', 'reply', 'post', 'like'],
+            'max_per_type': {'post': 2, 'reply': 3, 'curate': 8, 'like': 5},
+            'posture': 'active-vp-flush',
+        }
+    if mode == 'vp-drain':
+        return {
+            'enabled': True,
+            'min_mode': 'vp-drain',
+            'require_bookmarker_status_in': ['ok'],
+            'require_candidates': True,
+            'require_drafts': True,
+            'breaker_enabled': True,
+            'cooldown_hours': 24,
+            'max_total_actions': 1,
+            'intent_ttl_minutes': 240,
+            'action_mix_order': ['curate', 'reply', 'post', 'like'],
+            'max_per_type': {'post': 1, 'reply': 1, 'curate': 1, 'like': 1},
+            'posture': 'limited-vp-drain',
+        }
+    if mode == 'super-active':
+        return {
+            'enabled': True,
+            'min_mode': 'active',
+            'require_bookmarker_status_in': ['ok'],
+            'require_candidates': True,
+            'require_drafts': True,
+            'breaker_enabled': True,
+            'cooldown_hours': 24,
+            'max_total_actions': 15,
+            'intent_ttl_minutes': 240,
+            'action_mix_order': ['post', 'reply', 'curate', 'like'],
+            'max_per_type': {'post': 2, 'reply': 5, 'curate': 8, 'like': 8},
+            'posture': 'broad-super-active',
+        }
+    if mode in ('active', 'mid-active'):
+        return {
+            'enabled': True,
+            'min_mode': 'active',
+            'require_bookmarker_status_in': ['ok'],
+            'require_candidates': True,
+            'require_drafts': True,
+            'breaker_enabled': True,
+            'cooldown_hours': 24,
+            'max_total_actions': 12,
+            'intent_ttl_minutes': 240,
+            'action_mix_order': ['post', 'reply', 'curate', 'like'],
+            'max_per_type': {'post': 2, 'reply': 3, 'curate': 8, 'like': 5},
+            'posture': 'broad-active',
+        }
+    return _social_policy_for_mode('conservative')
+
+
+def build_dispatch_config(
+    *,
+    cycle_id: str,
+    strategy_id: str,
+    generated_at: str,
+    mode: str,
+    op: float | None,
+    vp: float | None,
+    tas_total: float | None,
+    tas_social: float | None,
+    tas_trade: float | None,
+    tas_status: str,
+    strategy_action: str,
+    planning_focus: str,
+    bookmarker_status: str,
+    trader_status: str,
+    claimable_usd: float | None,
+) -> dict[str, Any]:
+    social = _social_policy_for_mode(mode)
+    trader_status_allow = ['ok', 'partial']
+    claim_threshold_usd = 2.0
+    claim_threshold_passed = claimable_usd is not None and claimable_usd >= claim_threshold_usd
+    # Phase 3: Read strategy_level from treasury-strategy.json (written above in Phase 3 block).
+    _trade_strat = read_json(RUNTIME / 'main' / 'treasury-strategy.json') or {}
+    _trade_env = _trade_strat.get('resource_envelope') or {}
+    treasury_allow_claim = bool(_trade_env.get('allow_claim', claim_threshold_passed))
+    treasury_allow_trade = bool(_trade_env.get('auto_trade_enabled', False))
+    treasury_enabled = (
+        _mode_rank(mode) > _mode_rank('blocked-runtime')
+        and trader_status in trader_status_allow
+        and (treasury_allow_claim or treasury_allow_trade)
+    )
+    treasury_reason = 'claim-first posture opened' if treasury_enabled else 'treasury paused'
+    if _mode_rank(mode) <= _mode_rank('blocked-runtime'):
+        treasury_reason = 'blocked-runtime disables treasury lane'
+    elif trader_status not in trader_status_allow:
+        treasury_reason = f'trader status {trader_status} not in allowed set {trader_status_allow}'
+    elif not treasury_allow_claim and not treasury_allow_trade:
+        treasury_reason = f'treasury both disabled: strategy={_trade_strat.get("strategy_level","?")}, claimable check = {_trade_env.get("allow_claim")}, trade = {_trade_env.get("auto_trade_enabled")}'
+    social_reason = 'social disabled by mode posture'
+    if social.get('enabled'):
+        social_reason = f"{mode} mode enables social lane with posture {social.get('posture')}"
+
+    return {
+        'version': 'v1',
+        'config_kind': 'dispatch-config',
+        'cycle_id': cycle_id,
+        'strategy_id': strategy_id,
+        'generated_at': generated_at,
+        'generated_by': 'main',
+        'source_class': 'main-owned',
+        'mode_context': {
+            'current_mode': mode,
+            'resolved_policy_mode': mode,
+            'strategy_action': strategy_action,
+            'planning_focus': planning_focus,
+            'op': op,
+            'vp': vp,
+            'tas_total': tas_total,
+            'tas_social': tas_social,
+            'tas_trade': tas_trade,
+            'tas_status': tas_status,
+        },
+        'social': {
+            'enabled': bool(social.get('enabled')),
+            'min_mode': str(social.get('min_mode')),
+            'require_bookmarker_status_in': _status_list(social.get('require_bookmarker_status_in'), ['ok']),
+            'require_candidates': bool(social.get('require_candidates', True)),
+            'require_drafts': bool(social.get('require_drafts', True)),
+            'breaker_enabled': bool(social.get('breaker_enabled', True)),
+            'cooldown_hours': int(social.get('cooldown_hours', 24) or 24),
+            'max_total_actions': int(social.get('max_total_actions', 0) or 0),
+            'intent_ttl_minutes': max(240, int(social.get('intent_ttl_minutes', 240) or 240)),
+            'action_mix_order': list(social.get('action_mix_order') or ['post', 'reply', 'curate', 'like']),
+            'max_per_type': dict(social.get('max_per_type') or {'post': 0, 'reply': 0, 'curate': 0, 'like': 0}),
+        },
+        'treasury': {
+            'enabled': treasury_enabled,
+            'require_trader_status_in': trader_status_allow,
+            'policy_ttl_minutes': 30,
+            'min_claimable_usd': claim_threshold_usd,
+            'allow_claim': treasury_allow_claim,
+            'allow_trade': treasury_allow_trade,
+            'trading': {
+                # Phase 3: trading params driven by treasury-strategy resource_envelope
+                'max_budget_usd': float(_trade_env.get('max_budget_usd', 0.0)),
+                'max_position_change_pct': 0.15,
+                'max_trades_per_cycle': 2 if treasury_allow_trade else 0,
+                'max_trades_per_day': 5 if treasury_allow_trade else 0,
+                'max_sells_per_day': 2 if treasury_allow_trade else 0,
+                'max_same_tick_trades_per_day': 2 if treasury_allow_trade else 0,
+                'min_bnb_reserve': 0.005,
+                'max_sell_usd': float(_trade_env.get('max_budget_usd', 0.0)),
+                'allowed_actions': ['trade', 'claim'] if treasury_allow_trade else ['claim'],
+                'allowed_ticks': ['TagClaw', 'BUIDL', 'TTAI'],
+                'sell_triggers': {'stop_loss_pct': -15, 'take_profit_pct': 30},
+            },
+        },
+        'decision_trace': {
+            'policy_source': 'main runtime policy engine',
+            'resolved_policy_mode': mode,
+            'strategy_action': strategy_action,
+            'planning_focus': planning_focus,
+            'bookmarker_status_seen': bookmarker_status,
+            'trader_status_seen': trader_status,
+            'tas_status_seen': tas_status,
+            'claimable_usd_seen': claimable_usd,
+            'claim_threshold_usd': claim_threshold_usd,
+            'claim_threshold_passed': claim_threshold_passed,
+            'social_enabled_policy': bool(social.get('enabled')),
+            'social_min_mode': str(social.get('min_mode')),
+            'treasury_enabled_policy': treasury_enabled,
+            'treasury_allow_claim': treasury_allow_claim,
+            'treasury_allow_trade': treasury_allow_trade,
+            'social_lane_reason': social_reason,
+            'treasury_lane_reason': treasury_reason,
+        },
+    }
+
+
+def build_dispatch_summary(
+    dispatch_config: dict[str, Any],
+    *,
+    social_gate_authorized: bool,
+    social_selection_outcome: str,
+    social_final_authorized: bool,
+    treasury_gate_authorized: bool,
+    treasury_selection_outcome: str,
+    treasury_final_authorized: bool,
+) -> dict[str, Any]:
+    social = (dispatch_config.get('social') or {}) if isinstance(dispatch_config, dict) else {}
+    treasury = (dispatch_config.get('treasury') or {}) if isinstance(dispatch_config, dict) else {}
+    mode_context = (dispatch_config.get('mode_context') or {}) if isinstance(dispatch_config, dict) else {}
+    return {
+        'generated_at': dispatch_config.get('generated_at'),
+        'resolved_policy_mode': mode_context.get('resolved_policy_mode') or mode_context.get('current_mode'),
+        'social_enabled': bool(social.get('enabled', False)),
+        'social_min_mode': social.get('min_mode'),
+        'social_gate_authorized': social_gate_authorized,
+        'social_selection_outcome': social_selection_outcome,
+        'social_final_authorized': social_final_authorized,
+        'treasury_enabled': bool(treasury.get('enabled', False)),
+        'treasury_allow_claim': bool(treasury.get('allow_claim', False)),
+        'treasury_allow_trade': bool(treasury.get('allow_trade', False)),
+        'treasury_gate_authorized': treasury_gate_authorized,
+        'treasury_selection_outcome': treasury_selection_outcome,
+        'treasury_final_authorized': treasury_final_authorized,
+    }
+
+
+def update_runtime_status(
+    *,
+    main_status: str,
+    generated_at: str,
+    dispatch_summary: dict[str, Any],
+    social_lane_state: str,
+    treasury_lane_state: str,
+) -> None:
+    rs_path = RUNTIME / 'shared' / 'runtime-status.json'
+    try:
+        runtime_status = json.loads(rs_path.read_text(encoding='utf-8')) if rs_path.exists() else {}
+    except Exception:
+        runtime_status = {}
+    runtime_status.setdefault('schema', 'runtime-status.v1')
+    runtime_status['main'] = {
+        'status': main_status,
+        'updated_at': generated_at,
+        'last_heartbeat': generated_at,
+    }
+    runtime_status.setdefault('lanes', {})
+    runtime_status['lanes']['social'] = {'state': social_lane_state}
+    runtime_status['lanes']['treasury'] = {'state': treasury_lane_state}
+    runtime_status['dispatch'] = dict(dispatch_summary)
+    runtime_status.pop('bootstrap', None)
+    atomic_write_json(rs_path, runtime_status)
 
 
 def atomic_append_jsonl(path: Path, obj: Any) -> None:
@@ -166,7 +462,7 @@ def select_reward_aware_tick(
 
     # Sort by score descending, then alphabetically for determinism
     ranked = sorted(scores.items(), key=lambda kv: (-kv[1]['score'], kv[0]))
-    best_tick = ranked[0][0] if ranked else 'TagClaw'
+    best_tick = ranked[0][0] if ranked else 'BUIDL'
     best_info = scores.get(best_tick, {})
 
     return {
@@ -177,7 +473,7 @@ def select_reward_aware_tick(
     }
 
 
-def _append_tas_history(runtime: Path, cycle_id: str, tas_total: Any, tas_social: Any, tas_trade: Any, status: str) -> None:
+def _append_tas_history(runtime: Path, cycle_id: str, tas_total: Any, tas_social: Any, tas_trade: Any, status: str, tas_xreco: Any = None) -> None:
     """Append one TAS data point to runtime/shared/tas-history.jsonl for dashboard charting.
 
     Guards against degraded trader snapshots: if tas_trade drops by >60% from the
@@ -221,6 +517,7 @@ def _append_tas_history(runtime: Path, cycle_id: str, tas_total: Any, tas_social
         'tas_total': tas_total,
         'tas_social': tas_social,
         'tas_trade': tas_trade,
+        'tas_xreco': tas_xreco,
         'status': effective_status,
         'history_eligible': history_eligible,
     }
@@ -432,6 +729,8 @@ def build_metric_strategy_loop(
     previous_status: str | None = None,
     previous_strategy: str | None = None,
     previous_reason: str | None = None,
+    *,
+    resource_floor_unmet: bool = False,
 ) -> dict[str, Any]:
     previous_status = previous_status or 'unknown'
     delta = round(current_value - previous_value, 6) if current_value is not None and previous_value is not None else None
@@ -454,6 +753,17 @@ def build_metric_strategy_loop(
         strategy_action = 'conservative_explore'
         planning_focus = f'{metric_name} is {trend}; stay conservative and explore / repair instead of blindly repeating the old strategy.'
 
+    # FIX-7: override conservative_explore when resource floor is unmet
+    # Breaks the death loop: flat TAS → conservative → no actions → TAS stays flat.
+    _resource_floor_override_applied = False
+    if resource_floor_unmet and strategy_action == 'conservative_explore':
+        strategy_action = 'active'
+        planning_focus = (
+            f'{metric_name} is {trend}; daily resource P0 floor unmet — override conservative '
+            f'to active to catch up on daily OP/VP targets and break the flat-TAS death loop.'
+        )
+        _resource_floor_override_applied = True
+
     return {
         'metric': metric_name,
         'current_value': current_value,
@@ -469,6 +779,7 @@ def build_metric_strategy_loop(
             'declined': 'discard_previous_strategy',
             'flat_or_partial_or_blocked': 'conservative_explore',
         },
+        'resource_floor_override': _resource_floor_override_applied,
         'previous_strategy': previous_strategy,
         'previous_reason': previous_reason,
     }
@@ -479,10 +790,148 @@ def build_strategy_hypothesis(target_components: list[str], mode: str, tas_statu
     if 'tas_social' in target_components:
         parts.append('improve social quality and execution efficiency via bookmarker')
     if 'tas_trade' in target_components:
-        parts.append('improve treasury timing / evidence quality via trader')
+        # FIX-4: trade-focused language when TAS_trade is present (always now)
+        parts.append('drive treasury yield and trade timing improvement via trader (P0 target — always included)')
     if not parts:
         parts.append('preserve current gains while exploring conservatively')
     return f"Main control-plane cycle in mode={mode} targeting {', '.join(parts)} (tas_status={tas_status})."
+
+
+def synthesize_trade_drafts(
+    runtime: Path,
+    wiki_trending_ticks: list[str],
+    mode: str,
+    cycle_id: str,
+) -> list[dict]:
+    """[DISABLED 2026-05-26 plan-A] returns [] always.
+
+    Previously generated up to 2 trade-focused drafts per cycle from 8
+    hardcoded templates (4× market_commentary + 4× community_heat_observation).
+    When the wiki-sourced draft pool ran dry these fallbacks dominated, and
+    @clawdbot posted 12 near-duplicate `${tick} signal building / community
+    heat index rising ...` posts in 24 h. That tanked TAS_social to 0 (no
+    owner engagement on templated noise) and wasted OP budget on near-dups.
+
+    Wiki-grounded drafts now come from `build_wiki_grounded_drafts_v1.py`
+    (daily cron). If that pool runs dry the executor simply skips its tick
+    — better to post nothing than another templated dup. To bring this
+    function back, change the early-return to the original logic and add a
+    real freshness/dedup guard.
+    """
+    return []
+    # === legacy fallback below kept for reference; intentionally unreachable ===
+    community_heat = read_json(runtime / 'shared' / 'community-heat.json') or {}
+    hot_items = (community_heat.get('hot') or community_heat.get('items') or [])[:3]
+    now_str = datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds')
+    drafts: list[dict] = []
+
+    # Draft 1: market commentary on top trending tick.
+    # FIX-6: randomized template variants for content diversity; hour_label removed
+    # because execute_social_intent_v2 now strips [HH:MM UTC] before publishing
+    # (FIX-2) and 7-day text-content dedup uses the tick field for hash uniqueness.
+    _market_commentary_templates = [
+        '${tick} signal building. Volume and community momentum aligning. Worth watching closely. #TagClaw #DeFi',
+        '${tick} showing early momentum. On-chain activity and community engagement both picking up. #TagClaw #DeFi',
+        '${tick} on the radar — volume profile and community signals converging. Not financial advice. #TagClaw #DeFi',
+        '${tick} positioning is interesting here. Community activity ramping ahead of price. #TagClaw #DeFi',
+    ]
+    if wiki_trending_ticks:
+        tick = str(wiki_trending_ticks[0])
+        _tmpl = random.choice(_market_commentary_templates)
+        drafts.append({
+            'id': f'trade-tick-{cycle_id}',
+            'type': 'post',
+            'tick': tick,
+            'text': _tmpl.replace('${tick}', f'${tick}'),
+            'priority': 8,
+            'source': 'synthesize_trade_drafts',
+            'draft_type': 'market_commentary',
+            'generated_at': now_str,
+        })
+
+    # Draft 2: community heat observation using hot tick or second trending tick.
+    # FIX-D-2026-05-25: always prefer wiki_trending_ticks[1] for tick diversity;
+    # community-heat hot tick used only when it differs from the primary tick.
+    # FIX-6: randomized template variants, hour_label removed (same reason as above).
+    _heat_observation_templates = [
+        '${tick} community heat index rising — when communities get active before price moves, that is the signal. Not financial advice. #TagClaw',
+        '${tick} community activity surging. Social signals like this tend to precede price discovery. Not financial advice. #TagClaw',
+        '${tick} seeing elevated community engagement. Early social momentum is worth tracking. Not financial advice. #TagClaw',
+        '${tick} community heat up. Coordinated interest often leads liquidity. Not financial advice. #TagClaw',
+    ]
+    heat_tick: str | None = None
+    _fallback_heat_tick = str(wiki_trending_ticks[1]) if len(wiki_trending_ticks) > 1 else None
+    if hot_items:
+        first_hot = hot_items[0] if isinstance(hot_items[0], dict) else {}
+        _candidate_heat = first_hot.get('tick')
+        _primary_tick = str(wiki_trending_ticks[0]) if wiki_trending_ticks else ''
+        if _candidate_heat and str(_candidate_heat) != _primary_tick:
+            heat_tick = str(_candidate_heat)
+        else:
+            heat_tick = _fallback_heat_tick
+    else:
+        heat_tick = _fallback_heat_tick
+
+    if heat_tick:
+        _tmpl = random.choice(_heat_observation_templates)
+        drafts.append({
+            'id': f'trade-heat-{cycle_id}',
+            'type': 'post',
+            'tick': heat_tick,
+            'text': _tmpl.replace('${tick}', f'${heat_tick}'),
+            'priority': 7,
+            'source': 'synthesize_trade_drafts',
+            'draft_type': 'community_heat_observation',
+            'generated_at': now_str,
+        })
+
+    return drafts[:2]
+
+
+def build_social_trade_post_directive(runtime: Path) -> dict[str, Any] | None:
+    """Resolve a trader social-trade brief into a post_directive payload.
+
+    The brief lane is intentionally a fallback publisher: if the current social
+    cycle did not already select a post, main can inject this directive so the
+    brief reaches the normal execute_social_intent_v2 -> /tagclaw/post path.
+    """
+    brief = (
+        read_json(runtime / 'trader' / 'PENDING_BRIEF.claimed.json')
+        or read_json(runtime / 'trader' / 'PENDING_BRIEF.json')
+        or {}
+    )
+    if not isinstance(brief, dict) or brief.get('status') not in (None, 'ok', 'partial'):
+        return None
+    candidate = brief.get('post_candidate') if isinstance(brief.get('post_candidate'), dict) else {}
+    text = str(candidate.get('text') or '').strip()
+    tick = str(candidate.get('tick') or '').strip()
+    if text and tick:
+        return {
+            'text': text,
+            'tick': tick,
+            'reason': str(candidate.get('reason') or 'social-trade brief post'),
+            'source': str(candidate.get('source') or 'social-trade-brief'),
+            'draft_type': str(candidate.get('draft_type') or 'social_trade_brief'),
+            'target_key': str(candidate.get('target_key') or f'tagclaw:post-brief-{tick}'),
+            'brief_ref': 'runtime/trader/PENDING_BRIEF*.json',
+        }
+    thesis = str(brief.get('thesis') or '').strip()
+    cashtags = [str(x).strip() for x in (brief.get('cashtags') or []) if str(x).strip()]
+    if not thesis or not cashtags:
+        return None
+    tick = cashtags[0]
+    cashtag_text = ' '.join(f'${tag}' for tag in cashtags[:2])
+    thesis_short = thesis[:107].rstrip(' ,.;:') + '...' if len(thesis) > 110 else thesis
+    text = f"Social-trade brief live. Focus: {cashtag_text}. {thesis_short} #TagClaw #DeFi".strip()
+    return {
+        'text': text,
+        'tick': tick,
+        'reason': 'social-trade brief post',
+        'source': 'social-trade-brief',
+        'draft_type': 'social_trade_brief',
+        'target_key': f'tagclaw:post-brief-{tick}',
+        'brief_ref': 'runtime/trader/PENDING_BRIEF*.json',
+    }
 
 
 def compute_budget_allocation(
@@ -498,8 +947,8 @@ def compute_budget_allocation(
     op_available = max(0.0, float(op or 0.0))
     vp_available = max(0.0, float(vp or 0.0))
     if mode == 'super-active':
-        social_op_budget = 600.0
-        social_vp_budget = 30.0
+        social_op_budget = 1200.0
+        social_vp_budget = 150.0
     elif mode in {'mid-active', 'active'}:
         social_op_budget = 400.0 if mode == 'mid-active' else 250.0
         social_vp_budget = 18.0 if mode == 'mid-active' else 12.0
@@ -510,11 +959,13 @@ def compute_budget_allocation(
         social_op_budget = 200.0
         social_vp_budget = 8.0
     elif mode == 'vp-flush':
-        # vp-flush: 低OP + 高VP → 策展优先，但允许最低限度发帖
-        # VP预算=30（积极策展），OP预算=200（允许1帖）当OP充足时
-        # 之前 OP=0 导致 post_directive 永远无法执行
-        social_op_budget = 200.0 if op_available >= 400 else 0.0
-        social_vp_budget = 30.0
+        # vp-flush: 积极消耗 OP/VP，目标日耗 667 OP + 67 VP
+        # 给 bookmarker 所有可用的 OP（上限 800）和 VP（上限 100）
+        # 主原则：资源不用就浪费，不卡严格阈值
+        # 修复(2026-05-14): 之前当 op_available < 400 时给 400 OP 然后再被 min() 截断，
+        # 导致 post(200 OP) 永远无法执行。现在直接给 op_available，让 executor 自行判断。
+        social_op_budget = min(op_available, 800.0)
+        social_vp_budget = min(vp_available, 100.0)
     elif mode == 'vp-drain':
         # vp-drain: primarily VP-curate, but allow at least 1 post if OP >= 200
         # Previously hardcoded to 0.0 which blocked all posts — fixed 2026-04-06
@@ -584,10 +1035,18 @@ def _maybe_write_wiki_query(
     date_str: str,
     root: Path,
 ) -> None:
-    """D2: Write TAS decision summary to wiki/queries/ when signal is strong enough.
+    """Record TAS decision to telemetry. Kept the original name for callsite
+    stability; the function now writes a JSONL line to
+    ``runtime/main/tas-decisions-YYYY-MM.jsonl`` instead of polluting
+    ``wiki/queries/``.
 
-    Only fires when strategy_action != 'flat' AND |TAS delta| > 0.05.
-    Avoids noise from routine heartbeats with no meaningful signal.
+    Reason (2026-05-21 redesign): the wiki/queries lane is meant for
+    durable analytical answers per Karpathy's LLM-Wiki pattern (good
+    answers compound into the knowledge base). The hourly TAS heartbeat
+    flooded it with ~24 mechanically-generated decision logs per day, so
+    real synthesis was drowned out (247 files in queries/, 99% TAS noise;
+    2912 lines in wiki/log.md, 97.8% TAS noise). Telemetry-shaped data
+    belongs in ``runtime/main/``, not the wiki.
     """
     if strategy_action == 'flat':
         return
@@ -596,41 +1055,28 @@ def _maybe_write_wiki_query(
         if delta <= 0.05:
             return
 
-    # Build content summary
-    social_status = social_intent.get('status', 'unknown')
-    social_topic = social_intent.get('topic_focus') or social_intent.get('content_direction', '')
-    treasury_status = treasury_policy.get('status', 'unknown')
-    content = (
-        f"## TAS 对比结论\n\n"
-        f"- strategy_action: `{strategy_action}`\n"
-        f"- tas_total: {tas_total}\n"
-        f"- previous_tas: {previous_tas}\n"
-        f"- tas_delta: {round(tas_total - float(previous_tas), 4) if previous_tas is not None else 'N/A'}\n\n"
-        f"## 本轮 Social Intent\n\n"
-        f"- status: {social_status}\n"
-        f"- topic: {social_topic}\n\n"
-        f"## 本轮 Treasury Policy\n\n"
-        f"- status: {treasury_status}\n"
-    )
-
-    title = f"TAS Decision {date_str} — {strategy_action}"
-    script = root / 'scripts' / 'write_wiki_query.py'
-    if not script.exists():
-        return
-
-    import subprocess
+    now = datetime.now(timezone.utc)
+    record = {
+        'timestamp': now.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'date': date_str,
+        'strategy_action': strategy_action,
+        'tas_total': tas_total,
+        'previous_tas': previous_tas,
+        'tas_delta': round(tas_total - float(previous_tas), 4) if previous_tas is not None else None,
+        'social_intent': {
+            'status': social_intent.get('status', 'unknown'),
+            'topic_focus': social_intent.get('topic_focus') or social_intent.get('content_direction', ''),
+        },
+        'treasury_policy': {
+            'status': treasury_policy.get('status', 'unknown'),
+        },
+    }
+    out_dir = root / 'runtime' / 'main'
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f'tas-decisions-{now.strftime("%Y-%m")}.jsonl'
     try:
-        subprocess.run(
-            [
-                'python3', str(script),
-                '--title', title,
-                '--content', content,
-                '--source', 'main',
-                '--tags', 'tas,heartbeat,decision',
-            ],
-            timeout=15,
-            check=False,
-        )
+        with out_path.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
     except Exception:
         pass  # never interrupt main flow
 
@@ -649,7 +1095,6 @@ def main() -> int:
     bookmarker_social_drafts = read_json(RUNTIME / 'bookmarker' / 'social-drafts.json') or {}
     social_history = read_json(RUNTIME / 'shared' / 'social-history.json') or {}
     social_write_state = read_json(RUNTIME / 'shared' / 'social-write-state.json') or {}
-    dispatch_config = read_json(RUNTIME / 'shared' / 'dispatch-config.json') or {}
     reward_status = read_json(RUNTIME / 'trader' / 'reward-status.json') or {}
     execution_record = read_json(RUNTIME / 'trader' / 'execution-record.json') or {}
 
@@ -676,24 +1121,41 @@ def main() -> int:
     fallback_fields = provenance.get('fallback_fields') if isinstance(provenance.get('fallback_fields'), list) else []
     op = safe_float(summary.get('op')) if summary else safe_float(runtime_state.get('op'))
     vp = safe_float(summary.get('vp')) if summary else safe_float(runtime_state.get('vp'))
-    mode = compute_main_mode(op, vp)
+    # FIX-3: compute daily resource consumption to detect resource floor status
+    _daily_consumption = compute_daily_consumption(RUNTIME)
+    resource_floor_met = bool(_daily_consumption.get('resource_floor_met', True))
+    resource_floor_unmet = not resource_floor_met
+    mode = compute_main_mode(op, vp, resource_floor_unmet=resource_floor_unmet)
 
     x_trend_keywords = summary.get('x_trend_keywords') if isinstance(summary.get('x_trend_keywords'), list) else []
     _tas_social_doc = summary.get('tas_social') if isinstance(summary.get('tas_social'), dict) else {}
     _tas_trade_doc = summary.get('tas_trade') if isinstance(summary.get('tas_trade'), dict) else {}
+    _tas_xreco_doc = summary.get('tas_xreco') if isinstance(summary.get('tas_xreco'), dict) else {}
     tas_social = safe_float((_tas_social_doc or {}).get('value'))
     tas_trade = safe_float((_tas_trade_doc or {}).get('value'))
+    tas_xreco = safe_float((_tas_xreco_doc or {}).get('value'))
     _tas_trade_source_status = (_tas_trade_doc or {}).get('status', '')
+    _tas_xreco_source_status = (_tas_xreco_doc or {}).get('status', '')
     # If the trader itself reports a non-ok status, treat tas_trade as unavailable
     # for aggregation so degraded values don't poison tas_total.
     # P1 2026-04-10: include 'partial' — partial measurement quality must not
     # silently produce a misleading canonical TAS_trade contribution.
     if _tas_trade_source_status in ('degraded', 'blocked', 'stale', 'partial'):
         tas_trade = None
+    # TAS_XReco: null if missing data or insufficient pushes — fall back gracefully
+    if _tas_xreco_source_status in ('missing', 'insufficient_data', 'degraded', 'blocked'):
+        tas_xreco = None
     tas_economic = None  # retired
+    # TAS_XReco is now a sub-factor of TAS_social; TAS_total uses original 2-factor formula
     tas_values = [tas_social, tas_trade]
     available = [v for v in tas_values if v is not None]
-    tas_total = round(0.7 * (tas_social or 0) + 0.3 * (tas_trade or 0), 6) if available else None
+    # Formula: 0.7×TAS_social + 0.3×TAS_trade (TAS_XReco absorbed into TAS_social)
+    if available:
+        tas_total = round(0.7 * (tas_social or 0) + 0.3 * (tas_trade or 0), 6)
+        _tas_formula = '0.7 * TAS_social + 0.3 * TAS_trade'
+    else:
+        tas_total = None
+        _tas_formula = '0.7 * TAS_social + 0.3 * TAS_trade'
     tas_status = infer_tas_status(tas_values)
     previous_tas_total = safe_float(previous_tas_latest.get('tas_total'))
     main_strategy_loop = build_metric_strategy_loop(
@@ -704,13 +1166,24 @@ def main() -> int:
         normalize_status(previous_tas_latest.get('status'), default='stale'),
         previous_last_decision.get('strategy_action') or previous_last_decision.get('social_decision'),
         previous_last_decision.get('reason'),
+        resource_floor_unmet=resource_floor_unmet,
     )
+    # FIX-4: TAS_trade always included — it is the P0 optimization target
     target_components = [name for name, value in [('tas_social', tas_social), ('tas_trade', tas_trade)] if value is None or value < 1.0]
+    if 'tas_trade' not in target_components:
+        target_components.append('tas_trade')
     if not target_components:
         target_components = ['tas_social', 'tas_trade']
 
-    social_gate = (dispatch_config.get('social') or {}) if isinstance(dispatch_config, dict) else {}
-    treasury_gate = (dispatch_config.get('treasury') or {}) if isinstance(dispatch_config, dict) else {}
+    # FIX-6: synthesize trade drafts and inject into bookmarker draft pool
+    _trade_drafts = synthesize_trade_drafts(RUNTIME, wiki_trending_ticks, mode, cycle_id)
+    if _trade_drafts:
+        _existing_drafts = list(bookmarker_social_drafts.get('drafts') or [])
+        _existing_ids = {d.get('id') for d in _existing_drafts if isinstance(d, dict)}
+        _new_trade_drafts = [d for d in _trade_drafts if d.get('id') not in _existing_ids]
+        if _new_trade_drafts:
+            bookmarker_social_drafts['drafts'] = _existing_drafts + _new_trade_drafts
+            atomic_write_json(RUNTIME / 'bookmarker' / 'social-drafts.json', bookmarker_social_drafts)
 
     blockers: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -722,9 +1195,43 @@ def main() -> int:
     if op is None or vp is None:
         blockers.append({'code': 'op_vp_unavailable', 'message': 'main native runtime could not recover OP/VP', 'severity': 'error'})
         mode = 'blocked-runtime'
+    # FIX-3: log warning when daily resource floor is not met
+    if resource_floor_unmet:
+        _op_consumed = _daily_consumption.get('daily_op_consumed', 0)
+        _vp_consumed = _daily_consumption.get('daily_vp_consumed', 0)
+        warnings.append({
+            'code': 'resource_floor_unmet',
+            'message': (
+                f'Daily P0 floor not met: {_op_consumed:.0f}/{_daily_consumption.get("daily_op_target", 670):.0f} OP, '
+                f'{_vp_consumed:.0f}/{_daily_consumption.get("daily_vp_target", 67):.0f} VP. '
+                f'Mode override applied: strategy will be forced active.'
+            ),
+            'severity': 'warning',
+        })
 
     bookmarker_status = normalize_status(bookmarker_latest.get('status'), default='blocked')
     trader_status = normalize_status(trader_latest.get('status'), default='blocked')
+    claimable_usd = safe_float(summary.get('claimable_usd'))
+    dispatch_config = build_dispatch_config(
+        cycle_id=cycle_id,
+        strategy_id=strategy_id,
+        generated_at=generated_at,
+        mode=mode,
+        op=op,
+        vp=vp,
+        tas_total=tas_total,
+        tas_social=tas_social,
+        tas_trade=tas_trade,
+        tas_status=tas_status,
+        strategy_action=main_strategy_loop['strategy_action'],
+        planning_focus=main_strategy_loop['planning_focus'],
+        bookmarker_status=bookmarker_status,
+        trader_status=trader_status,
+        claimable_usd=claimable_usd,
+    )
+    atomic_write_json(RUNTIME / 'shared' / 'dispatch-config.json', dispatch_config)
+    social_gate = dispatch_config.get('social') or {}
+    treasury_gate = dispatch_config.get('treasury') or {}
 
     social_cooldown_hours = int(social_gate.get('cooldown_hours', 24) or 24)
     social_mix_order = list(social_gate.get('action_mix_order') or ['post', 'reply', 'curate', 'like'])
@@ -742,16 +1249,103 @@ def main() -> int:
     breaker_until = parse_dt(breaker.get('until'))
     breaker_open = bool(social_gate.get('breaker_enabled', True)) and breaker.get('state') == 'open' and breaker_until and breaker_until > issued_at_dt
 
+    _all_pass_rewrite = True
+    _rewrite_gate_failures = []
+    # LCS threshold: any contiguous substring of source text >= this many chars
+    # appearing in the draft body trips the gate, even if the draft's own
+    # rewrite flags claim success. This catches the "fake paraphrase" failure
+    # mode where a draft prepends framing but still embeds the source verbatim
+    # (SsNi6hjdmf class incidents).
+    # Phase 1: relaxed from 60→300 — only catches near-verbatim full copies,
+    # not legitimate paraphrases that happen to share a sentence-length substring.
+    _VERBATIM_LCS_THRESHOLD = 300
+
+    def _longest_common_substring_len(a: str, b: str) -> int:
+        if not a or not b:
+            return 0
+        # Heuristic check first: if any sliding window of length threshold from
+        # `b` appears in `a`, we already know the LCS is >= threshold. This is
+        # O(len(a)*len(b)/threshold) instead of building the full DP table.
+        thr = _VERBATIM_LCS_THRESHOLD
+        if len(b) >= thr:
+            step = max(1, thr // 4)
+            for i in range(0, len(b) - thr + 1, step):
+                if b[i:i + thr] in a:
+                    return thr
+        # Fall back to a bounded LCS scan capped at threshold.
+        m, n = len(a), len(b)
+        prev = [0] * (n + 1)
+        best = 0
+        for i in range(1, m + 1):
+            curr = [0] * (n + 1)
+            ai = a[i - 1]
+            for j in range(1, n + 1):
+                if ai == b[j - 1]:
+                    curr[j] = prev[j - 1] + 1
+                    if curr[j] > best:
+                        best = curr[j]
+                        if best >= thr:
+                            return best
+            prev = curr
+        return best
+
+    for _d in (bookmarker_social_drafts.get('drafts') or []):
+        if not isinstance(_d, dict) or _d.get('type') != 'post':
+            continue
+        if _d.get('source') == 'synthesize_trade_drafts':
+            continue  # trade commentary — no source to rewrite
+        _rg = _d.get('rewrite_gate_passed')
+        _dr = _d.get('_draft_rewritten')
+        # Phase 1: relaxed flag check — only block on explicit False, not on unknown/missing.
+        # The LCS reverse-check (300-char threshold) already catches genuine verbatim copies.
+        _flag_fail = _rg is False
+
+        # Verbatim reverse-check: regardless of what the flags claim, the body
+        # must not echo a long contiguous chunk of the source.
+        _verbatim_fail = False
+        _verbatim_len = 0
+        _body = str(_d.get('text') or '')
+        # Source signals: prefer full source_excerpt if present, else fall back
+        # to source_tweet_text / source_text fields that some drafts carry.
+        _source_candidates = [
+            _d.get('source_excerpt'),
+            _d.get('source_tweet_text'),
+            _d.get('source_text'),
+        ]
+        for _src in _source_candidates:
+            _src_s = str(_src or '').strip()
+            if not _src_s or len(_src_s) < 20:
+                continue
+            _verbatim_len = _longest_common_substring_len(_body, _src_s)
+            if _verbatim_len >= _VERBATIM_LCS_THRESHOLD:
+                _verbatim_fail = True
+                break
+
+        if _flag_fail or _verbatim_fail:
+            _all_pass_rewrite = False
+            _rewrite_gate_failures.append({
+                'draft_id': _d.get('id') or _d.get('draft_id') or '(unknown)',
+                'rewrite_gate_passed': _rg,
+                '_draft_rewritten': _dr,
+                'verbatim_lcs_len': _verbatim_len if _verbatim_fail else None,
+                'fail_reason': 'verbatim_source_overlap' if _verbatim_fail and not _flag_fail else ('flag_fail' if _flag_fail and not _verbatim_fail else 'flag_and_verbatim'),
+            })
+    if not _all_pass_rewrite:
+        print(f"[WARN][social_gate] drafts_pass_rewrite_gate FAILED — {len(_rewrite_gate_failures)} draft(s) blocked: {_rewrite_gate_failures}")
+
     social_gate_checks = {
         'lane_enabled': bool(social_gate.get('enabled', False)),
         'mode_ok': gate_allows_mode(mode, str(social_gate.get('min_mode', 'active'))),
-        'bookmarker_status_ok': bookmarker_status == str(social_gate.get('require_bookmarker_status', 'ok')),
+        'bookmarker_status_ok': bookmarker_status in _status_list(social_gate.get('require_bookmarker_status_in'), ['ok']),
         'has_candidates': bool((packet.get('bookmarker') or {}).get('candidate_count')) if social_gate.get('require_candidates', True) else True,
-        'has_drafts': bool((bookmarker_social_drafts.get('drafts') or [])) if social_gate.get('require_drafts', False) else True,
+        'has_drafts': bool((bookmarker_social_drafts.get('drafts') or [])) if social_gate.get('require_drafts', True) else True,
         'breaker_closed': not breaker_open,
         'no_main_blockers': not blockers,
+        'drafts_pass_rewrite_gate': _all_pass_rewrite,
     }
-    social_authorized = all(social_gate_checks.values())
+    social_gate_authorized = all(social_gate_checks.values())
+    social_authorized = social_gate_authorized
+    social_selection_outcome = 'gate_blocked'
     social_selection = analyze_social_action_selection(
         bookmarker_social_drafts,
         social_max_actions,
@@ -759,8 +1353,9 @@ def main() -> int:
         recent_noop_curate_targets,
         social_mix_order,
         social_max_per_type,
-    ) if social_authorized else {'actions': [], 'selection_reason': 'gate_blocked', 'suppressed': {}, 'draft_count': 0, 'selected_ids': []}
+    ) if social_gate_authorized else {'actions': [], 'selection_reason': 'gate_blocked', 'suppressed': {}, 'draft_count': 0, 'selected_ids': []}
     social_actions = social_selection['actions']
+    social_selection_outcome = str(social_selection.get('selection_reason') or ('selected_actions' if social_actions else 'gate_blocked'))
     if social_authorized and not social_actions:
         social_authorized = False
         reason = social_selection.get('selection_reason')
@@ -793,12 +1388,11 @@ def main() -> int:
 
     bookmarker_budget_slice = ((compute_budget_allocation(op, vp, mode, social_authorized, False, {}, len(warnings), len(blockers)).get('allocations') or {}).get('bookmarker') or {})
 
-    # Extract structured directives from social_actions for bookmarker execution plane.
-    # curate_targets: populated from curate/like actions regardless of authorization status,
-    # so bookmarker always has suggestions even when the gate is revoked.
+    # Phase 4: simplified action extraction — main no longer builds post_directive/reply_directive.
+    # Only curate_targets extracted as reference hints for bookmarker.
     curate_targets: list[dict[str, Any]] = []
-    post_directive: dict[str, Any] | None = None
-    reply_directive: dict[str, Any] | None = None
+    _content_topic = None
+    _content_reason = None
     for action in (social_actions if isinstance(social_actions, list) else []):
         if not isinstance(action, dict):
             continue
@@ -808,62 +1402,37 @@ def main() -> int:
             if tid:
                 curate_targets.append({
                     'tweet_id': str(tid),
-                    'suggested_vp': int(action.get('vp') or action.get('suggested_vp') or 3),
                     'reason': action.get('reason') or action.get('note') or f'{atype} from main cycle',
                 })
-        elif atype == 'post' and post_directive is None:
-            text = action.get('text') or ''
-            tick = action.get('tick') or 'TagClaw'
-            # If text is missing, deref the draft to get it
-            if not text:
-                draft_ref = action.get('draft_ref') or ''
-                if '#' in draft_ref:
-                    draft_id = draft_ref.split('#', 1)[1]
-                    bookmarker_drafts_obj = read_json(RUNTIME / 'bookmarker' / 'social-drafts.json') or {}
-                    for _d in (bookmarker_drafts_obj.get('drafts') or []):
-                        if isinstance(_d, dict) and _d.get('id') == draft_id:
-                            text = _d.get('text') or ''
-                            tick = _d.get('tick') or tick
-                            break
-            if text:
-                post_directive = {'tick': str(tick), 'text': str(text), 'reason': action.get('reason') or 'main cycle post', 'draft_ref': action.get('draft_ref')}
-                # P3 2026-04-11: Reward-aware tick override — prefer communities
-                # with real claimable reward evidence; deprioritize CLAW.
-                _rw_sel = select_reward_aware_tick(reward_status, wiki_trending_ticks, current_tick=str(tick))
-                original_tick = str(tick)
-                if _rw_sel['tick'] != original_tick:
-                    post_directive['tick'] = _rw_sel['tick']
-                    post_directive['tick_override_reason'] = _rw_sel['reason']
-                    post_directive['tick_original'] = original_tick
-                post_directive['tick_selector'] = {
-                    'chosen': _rw_sel['tick'],
-                    'score': _rw_sel['score'],
-                    'reason': _rw_sel['reason'],
-                    'top_scores': _rw_sel['scores'],
-                }
-                # Enrich post_directive with wiki topic insight
-                _wiki_topic, _wiki_insight, _wiki_reason = _get_top_wiki_topic()
-                if _wiki_topic:
-                    post_directive['wiki_topic'] = _wiki_topic
-                if _wiki_insight:
-                    post_directive['wiki_insight'] = _wiki_insight
-                if _wiki_reason:
-                    post_directive['wiki_reason'] = _wiki_reason
-        elif atype == 'reply' and reply_directive is None:
-            tid = action.get('tweetId') or action.get('tweet_id') or ''
-            text = action.get('text') or ''
-            if tid and text:
-                reply_directive = {'tweet_id': str(tid), 'text': str(text)}
+        elif atype == 'post' and _content_topic is None:
+            _content_topic = action.get('wiki_topic') or wiki_top_theme.get('name') if wiki_top_theme else None
+            _content_reason = action.get('reason') or (wiki_top_theme.get('agent_action') if wiki_top_theme else None)
 
-    # Wiki Brief Fallback: 若 social_actions 没有产生 post_directive，
-    # 且 wiki-brief 新鲜，用 wiki top theme 的 agent_action 作为 post 内容方向
-    if post_directive is None and wiki_top_theme:
-        _wiki_agent_action = wiki_top_theme.get('agent_action', '')
-        _wiki_theme_name = wiki_top_theme.get('name', '')
-        if _wiki_agent_action and _wiki_theme_name:
-            # 不直接发帖，而是写入 content_direction 供 bookmarker 参考
-            # post_directive 保持 None（不绕过 bookmarker 的发帖职责）
-            pass  # content_direction 在 social_intent 里设置
+    # FIX-RC3: when resource floor is unmet and no curate_targets were extracted from
+    # social_actions (drafts had no curate-type entries), inject fallback curate_targets
+    # from content_candidates.json so the executor has explicit targets instead of
+    # falling back to a potentially-empty feed scan.
+    if resource_floor_unmet and not curate_targets:
+        _cc = read_json(RUNTIME / 'bookmarker' / 'content-candidates.json') or {}
+        _cc_items = _cc.get('items') if isinstance(_cc.get('items'), list) else []
+        _existing_target_ids = {t['tweet_id'] for t in curate_targets}
+        for _item in _cc_items:
+            if len(curate_targets) >= 5:
+                break
+            if not isinstance(_item, dict):
+                continue
+            _pid = str(_item.get('post_id') or '').strip()
+            if not _pid or _pid in _existing_target_ids:
+                continue
+            # FIX-2026-05-25: skip targets already known to be noop'd to prevent recycling
+            _target_key = f'tagclaw:{_pid}'
+            if _target_key in (recent_noop_curate_targets or set()):
+                continue
+            curate_targets.append({
+                'tweet_id': _pid,
+                'reason': f'floor-unmet fallback curate from content_candidates (score={_item.get("score")})',
+            })
+            _existing_target_ids.add(_pid)
 
     # P2 2026-04-03: strategy experiment — run before building social_intent so
     # next_arms can override post_config and curator_config in the payload.
@@ -893,9 +1462,17 @@ def main() -> int:
         )
         _creator_reward_usd = safe_float(_bk_post_log.get('creator_reward_usd')) or 0.0
 
-        _tas_delta = round((tas_total or 0.0) - (previous_tas_total or 0.0), 4)
-        _prev_tas_social = safe_float(previous_tas_latest.get('tas_social')) or 0.0
-        _tas_social_delta = round((tas_social or 0.0) - _prev_tas_social, 4)
+        # No prior baseline → neutral delta. Previously `(prev or 0.0)` made a cold
+        # start read as a full-magnitude "improved", faking a reinforce verdict.
+        if previous_tas_total is None:
+            _tas_delta = 0.0
+        else:
+            _tas_delta = round((tas_total or 0.0) - previous_tas_total, 4)
+        _prev_tas_social = safe_float(previous_tas_latest.get('tas_social'))
+        if _prev_tas_social is None:
+            _tas_social_delta = 0.0
+        else:
+            _tas_social_delta = round((tas_social or 0.0) - _prev_tas_social, 4)
 
         _next_arms = _exp_mod.run_cycle(
             tas_delta=_tas_delta,
@@ -910,7 +1487,86 @@ def main() -> int:
     except Exception:
         _next_arms = {}
 
+    # ── Phase 2: Write social-strategy.json for bookmarker consumption ──
+    # Replaces legacy select_strategy bookmarker-guidance.json.
+    # Main writes high-level strategy direction only. Bookmarker reads this
+    # and decides execution details autonomously.
+    _tas_trend = main_strategy_loop.get('strategy_action', 'conservative_explore')
+    _mode = mode or 'conservative'
+
+    # Determine strategy_level from TAS trend + mode
+    if _mode in ('super-active', 'vp-flush'):
+        _social_level = 'aggressive'
+    elif _mode in ('mid-active', 'active', 'vp-drain'):
+        _social_level = 'normal'
+    else:
+        _social_level = 'cautious'
+    # TAS trend override: rising TAS can bump up; falling can bump down
+    if _tas_trend in ('reinforce_previous_strategy',) and _social_level != 'aggressive':
+        _social_level = 'normal'
+    elif _tas_trend in ('discard_previous_strategy',) and _social_level != 'cautious':
+        _social_level = 'cautious'
+
+    _social_strategy = {
+        'schema': 'main.social-strategy.v1',
+        'version': 'v1',
+        'generated_at': generated_at,
+        'cycle_id': cycle_id,
+        'run_id': run_id,
+        'strategy_level': _social_level,
+        'mode': _mode,
+        'strategy_action': main_strategy_loop.get('strategy_action'),
+        'resource_envelope': {
+            'max_actions': max(social_max_actions, 1) if resource_floor_unmet else social_max_actions,
+            'op_target': bookmarker_budget_slice.get('op', 0),
+            'vp_target': bookmarker_budget_slice.get('vp', 0),
+            'min_actions_override': bool(resource_floor_unmet),
+        },
+        'planning_focus': main_strategy_loop.get('planning_focus'),
+        'target_components': target_components,
+        'experiment_verdict_a': str(_next_arms.get('verdict_a', 'none')) if _next_arms else None,
+        'experiment_verdict_b': str(_next_arms.get('verdict_b', 'none')) if _next_arms else None,
+    }
+    atomic_write_json(RUNTIME / 'main' / 'social-strategy.json', _social_strategy)
+
+    # ── Phase 3: Write treasury-strategy.json for trader consumption ──
+    # Derived from same mode + TAS trend as social strategy, but with trader-specific levels.
+    if _mode in ('super-active', 'mid-active'):
+        _trade_level = 'aggressive'
+    elif _mode in ('active', 'vp-flush'):
+        _trade_level = 'normal'
+    else:
+        _trade_level = 'cautious'
+    # TAS_trade trend override
+    _trade_trend = main_strategy_loop.get('strategy_action', 'conservative_explore')
+    if _trade_trend in ('reinforce_previous_strategy',) and _trade_level != 'aggressive':
+        _trade_level = 'normal'
+    elif _trade_trend in ('discard_previous_strategy',) and _trade_level != 'cautious':
+        _trade_level = 'cautious'
+
+    _claimable = safe_float(reward_status.get('claimable_usd')) if reward_status else 0.0
+    _trade_strategy = {
+        'schema': 'main.treasury-strategy.v1',
+        'version': 'v1',
+        'generated_at': generated_at,
+        'cycle_id': cycle_id,
+        'run_id': run_id,
+        'strategy_level': _trade_level,
+        'mode': _mode,
+        'resource_envelope': {
+            'claim_threshold_usd': max(0.5, 2.0 - [0.0, 1.0, 1.5][['cautious', 'normal', 'aggressive'].index(_trade_level)] if _trade_level in ('cautious', 'normal', 'aggressive') else 0.0),
+            'auto_trade_enabled': _trade_level in ('aggressive', 'normal'),
+            'max_budget_usd': {'aggressive': 5.0, 'normal': 2.0, 'cautious': 0.0}.get(_trade_level, 0.0),
+            'allow_claim': (_claimable or 0.0) >= ({'aggressive': 0.5, 'normal': 1.0, 'cautious': 2.0}.get(_trade_level, 2.0)),
+        },
+        'planning_focus': main_strategy_loop.get('planning_focus'),
+    }
+    atomic_write_json(RUNTIME / 'main' / 'treasury-strategy.json', _trade_strategy)
+
     social_decision = 'authorize' if social_authorized else 'hold'
+    social_trade_post_directive = None
+    if social_authorized and not any(str((action or {}).get('type') or '') == 'post' for action in social_actions):
+        social_trade_post_directive = build_social_trade_post_directive(RUNTIME)
     social_intent = {
         'version': 'v2',
         'intent_kind': 'social-intent',
@@ -932,28 +1588,38 @@ def main() -> int:
         },
         'payload': {
             'authorized': social_authorized,
+            'gate_authorized': social_gate_authorized,
+            'selection_outcome': social_selection_outcome,
             'mode': mode,
             'actions': social_actions,
             'curate_targets': curate_targets,
-            **({'post_directive': post_directive} if post_directive else {}),
-            **({'reply_directive': reply_directive} if reply_directive else {}),
+            **({'post_directive': social_trade_post_directive} if social_trade_post_directive else {}),
+            'content_direction': _content_topic or (wiki_top_theme.get('agent_action') if wiki_top_theme else None),
+            'content_reason': _content_reason,
             'max_total_actions': social_max_actions if social_authorized else 0,
             'budget_slice': bookmarker_budget_slice,
             **({'x_trend_keywords': x_trend_keywords} if x_trend_keywords else {}),
             'wiki_top_theme': wiki_top_theme.get('name') if wiki_top_theme else None,
             'wiki_content_direction': wiki_top_theme.get('agent_action') if wiki_top_theme else None,
             'post_config': {
-                # P2: engagement_mode overridden by strategy experiment arm when available
-                'engagement_mode': ((_next_arms.get('track_b') or {}).get('engagement_mode')) or 'reply_to_top_agents',
-                'target_agents': ((_next_arms.get('track_b') or {}).get('target_agents')) or ['foxclaw', 'clawdiai', 'alita'],
-                'max_replies_per_cycle': 2,
-                'reply_after_post': True,
+                # Phase 1: simplified — main only gives high-level envelope
+                'resource_mode': mode,
+                'strategy_action': main_strategy_loop.get('strategy_action'),
+                'max_actions': social_max_actions if social_authorized else 0,
+                'budget_slice': bookmarker_budget_slice,
+                # P2 (2026-06-06): wire the bandit's Track-B arm into the payload so
+                # engagement_mode/target_agents actually drive bookmarker behavior.
+                # Consumer: execute_social_intent_v2.py reads post_config.engagement_mode.
+                # Previously severed (arm chosen but never written) → fake learning.
+                'engagement_mode': (_next_arms.get('track_b') or {}).get('engagement_mode', 'none'),
+                'target_agents': (_next_arms.get('track_b') or {}).get('target_agents', []),
             },
             'curator_config': {
-                # P2: vp_strategy and target_selection from Track A arm
-                'vp_strategy': ((_next_arms.get('track_a') or {}).get('vp_strategy')) or 'balanced',
-                'credit_strategy': ((_next_arms.get('track_a') or {}).get('credit_strategy')) or 'hold',
-                'target_selection': ((_next_arms.get('track_a') or {}).get('target_selection')) or 'any',
+                # Phase 1: simplified — no more experiment arm parameters
+                'resource_mode': mode,
+                'strategy_action': main_strategy_loop.get('strategy_action'),
+                'vp_budget': bookmarker_budget_slice.get('vp'),
+                'op_budget': bookmarker_budget_slice.get('op'),
             },
         },
         'meta': {
@@ -964,9 +1630,15 @@ def main() -> int:
             'target_components': target_components,
             'previous_social_intent_status': previous_social_intent.get('status'),
             'gate_checks': social_gate_checks,
+            'authorization': {
+                'gate_authorized': social_gate_authorized,
+                'selection_outcome': social_selection_outcome,
+                'final_authorized': social_authorized,
+            },
             'selection_reason': social_selection.get('selection_reason'),
             'selection_suppressed': social_selection.get('suppressed'),
             'selected_draft_ids': social_selection.get('selected_ids'),
+            'social_trade_post_directive_enabled': bool(social_trade_post_directive),
             'cooldown_hours': social_cooldown_hours,
             'action_mix_order': social_mix_order,
             'max_per_type': social_max_per_type,
@@ -975,8 +1647,7 @@ def main() -> int:
             'breaker_state': breaker.get('state'),
             'breaker_until': breaker.get('until'),
             'breaker_last_failure_reason': breaker.get('last_failure_reason'),
-            # P3: reward-aware tick selector trace
-            'tick_selector': post_directive.get('tick_selector') if isinstance(post_directive, dict) else None,
+            'tick_selector': None,
         },
         # Wiki-driven fields
         'wiki_brief_available': wiki_brief is not None,
@@ -992,20 +1663,22 @@ def main() -> int:
 
     treasury_ttl_minutes = int(treasury_gate.get('policy_ttl_minutes', 30) or 30)
     treasury_expires_at = (issued_at_dt + timedelta(minutes=treasury_ttl_minutes)).isoformat(timespec='seconds')
-    claimable_usd = safe_float(summary.get('claimable_usd'))
     recent_operations = summary.get('recent_operations') if isinstance(summary.get('recent_operations'), list) else []
     last_failed_operation = summary.get('last_failed_operation') if isinstance(summary.get('last_failed_operation'), dict) else None
     pending_or_unconfirmed_orders = summary.get('pending_or_unconfirmed_orders') if isinstance(summary.get('pending_or_unconfirmed_orders'), list) else []
     trading_config = treasury_gate.get('trading') or {}
-    allow_trading_gate = bool(treasury_gate.get('allow_trading', False))
+    allow_claim_gate = bool(treasury_gate.get('allow_claim', False))
+    allow_trading_gate = bool(treasury_gate.get('allow_trade', False))
     claim_threshold_ok = (claimable_usd is not None and claimable_usd >= float(treasury_gate.get('min_claimable_usd', 2.0)))
     treasury_gate_checks = {
         'lane_enabled': bool(treasury_gate.get('enabled', False)),
         'trader_status_ok': trader_status in (treasury_gate.get('require_trader_status_in') or ['ok', 'partial']),
-        'claim_or_trade_eligible': claim_threshold_ok or allow_trading_gate,
+        'claim_or_trade_eligible': allow_claim_gate or allow_trading_gate,
         'no_main_blockers': not blockers,
     }
-    treasury_allowed = all(treasury_gate_checks.values())
+    treasury_gate_authorized = all(treasury_gate_checks.values())
+    treasury_allowed = treasury_gate_authorized
+    treasury_selection_outcome = 'trade_allowed' if (treasury_allowed and allow_trading_gate) else ('claim_allowed' if (treasury_allowed and allow_claim_gate) else 'gate_blocked')
     budget_allocation = {
         'version': 'v1',
         'allocation_kind': 'budget-allocation',
@@ -1074,9 +1747,10 @@ def main() -> int:
         'payload': {
             'execution_allowed': treasury_allowed,
             'mode': 'conservative' if treasury_allowed else 'pause',
-            'claims_allowed': treasury_allowed and bool(treasury_gate.get('allow_claims', True)),
+            'gate_authorized': treasury_gate_authorized,
+            'claims_allowed': treasury_allowed and allow_claim_gate,
             'trading_allowed': treasury_allowed and allow_trading_gate,
-            'rebalance_allowed': treasury_allowed and bool(treasury_gate.get('allow_rebalance', False)),
+            'rebalance_allowed': treasury_allowed and ('rebalance' in (trading_config.get('allowed_actions') or [])),
             'max_budget_usd': float(trading_config.get('max_budget_usd', 0)),
             'max_position_change_pct': float(trading_config.get('max_position_change_pct', 0)),
             'max_trades_per_cycle': int(trading_config.get('max_trades_per_cycle', 1)),
@@ -1105,6 +1779,11 @@ def main() -> int:
             'target_components': target_components,
             'previous_treasury_policy_status': previous_treasury_policy.get('status'),
             'gate_checks': treasury_gate_checks,
+            'authorization': {
+                'gate_authorized': treasury_gate_authorized,
+                'selection_outcome': treasury_selection_outcome,
+                'final_authorized': treasury_allowed,
+            },
             'claimable_usd': claimable_usd,
             'last_execution_status': execution_record.get('status'),
             'execution_count_today': summary.get('execution_count_today'),
@@ -1113,6 +1792,16 @@ def main() -> int:
             'pending_or_unconfirmed_orders': pending_or_unconfirmed_orders,
         },
     }
+
+    dispatch_summary = build_dispatch_summary(
+        dispatch_config,
+        social_gate_authorized=social_gate_authorized,
+        social_selection_outcome=social_selection_outcome,
+        social_final_authorized=social_authorized,
+        treasury_gate_authorized=treasury_gate_authorized,
+        treasury_selection_outcome=treasury_selection_outcome,
+        treasury_final_authorized=treasury_allowed,
+    )
 
     for name, ok in social_gate_checks.items():
         if not ok:
@@ -1140,11 +1829,11 @@ def main() -> int:
         'planning_focus': main_strategy_loop['planning_focus'],
         'hypothesis': build_strategy_hypothesis(target_components, mode, tas_status),
         'target_metrics': ['TAS'] + [name.upper() if name == 'tas' else name for name in target_components],
-        'assigned_agents': ['main'] + ([ 'bookmarker' ] if social_authorized or 'tas_social' in target_components else []) + ([ 'trader' ] if treasury_allowed or 'tas_trade' in target_components else []) + ([ 'claude_dispatch' ] if warnings or blockers else []),
+        'assigned_agents': ['main'] + (['bookmarker'] if social_authorized or 'tas_social' in target_components else []) + (['trader'] if treasury_allowed or 'tas_trade' in target_components else []) + (['claude_dispatch'] if warnings or blockers else []),
         'expected_uplift': {
             'tas': round(0.12 if social_authorized or treasury_allowed else 0.04, 4),
             'tas_social': round(0.18 if 'tas_social' in target_components else 0.05, 4),
-            'tas_trade': round(0.12 if 'tas_trade' in target_components else 0.03, 4),
+            'tas_trade': round(0.15 if 'tas_trade' in target_components else 0.03, 4),  # FIX-4: elevated uplift — TAS_trade always targeted
         },
         'confidence': strategy_confidence,
         'previous_strategy_id': previous_strategy_plan.get('strategy_id'),
@@ -1183,9 +1872,10 @@ def main() -> int:
         'updated_at': generated_at,
         'tas_social': tas_social,
         'tas_trade': tas_trade,
+        'tas_xreco': tas_xreco,
         'tas_economic': None,  # retired 2026-03-25, kept for backward compat
         'tas_total': tas_total,
-        'formula': '0.7 * TAS_social + 0.3 * TAS_trade',
+        'formula': _tas_formula,
         'status': tas_status,
         'comparison': main_strategy_loop,
         'strategy_action': main_strategy_loop['strategy_action'],
@@ -1193,7 +1883,7 @@ def main() -> int:
         'target_components': target_components,
         'strategy_ref': 'runtime/main/strategy-plan.json',
         'budget_ref': 'runtime/shared/budget-allocation.json',
-        'notes': 'TAS_economic retired; formula updated to 0.7×social + 0.3×trade',
+        'notes': 'TAS_economic retired; TAS_XReco absorbed into TAS_social as sub-factor; formula: 0.7×social + 0.3×trade',
     }
 
     runtime_health = {
@@ -1242,8 +1932,9 @@ def main() -> int:
             'tas': {
                 'social': tas_social,
                 'trade': tas_trade,
+                'xreco': tas_xreco,
                 'total': tas_total,
-                'formula': '0.7×social + 0.3×trade',
+                'formula': _tas_formula,
                 'status': tas_status,
             },
             'strategy_loop': main_strategy_loop,
@@ -1262,7 +1953,9 @@ def main() -> int:
             'claim_recommended': claim_threshold_ok,
             'reason': last_decision['reason'],
             'dispatch_complete': social_authorized or treasury_allowed,
+            'dispatch': dispatch_summary,
         },
+        'dispatch': dispatch_summary,
         'blockers': blockers,
         'warnings': warnings,
         'next_recommended_action': 'main is control-plane only; run bookmarker social worker or trader treasury worker when respective guidance/policy is active',
@@ -1285,6 +1978,7 @@ def main() -> int:
     }
 
     atomic_write_json(RUNTIME / 'main' / 'strategy-plan.json', strategy_plan)
+    atomic_write_json(RUNTIME / 'main' / 'daily-consumption.json', _daily_consumption)  # FIX-3
     atomic_write_json(RUNTIME / 'shared' / 'budget-allocation.json', budget_allocation)
     atomic_append_jsonl(RUNTIME / 'shared' / 'strategy-ledger.jsonl', {
         'cycle_id': cycle_id,
@@ -1300,11 +1994,18 @@ def main() -> int:
     atomic_write_json(RUNTIME / 'main' / 'last-decision.json', last_decision)
     atomic_write_json(RUNTIME / 'main' / 'tas-latest.json', tas_latest)
     try:
-        _append_tas_history(RUNTIME, cycle_id, tas_total, tas_social, tas_trade, tas_status)
+        _append_tas_history(RUNTIME, cycle_id, tas_total, tas_social, tas_trade, tas_status, tas_xreco=tas_xreco)
     except Exception:
         pass  # graceful degrade — never interrupt main flow
     atomic_write_json(RUNTIME / 'main' / 'runtime-health.json', runtime_health)
     atomic_write_json(RUNTIME / 'main' / 'latest.json', latest)
+    update_runtime_status(
+        main_status=latest['status'],
+        generated_at=generated_at,
+        dispatch_summary=dispatch_summary,
+        social_lane_state=str(((social_intent.get('meta') or {}).get('authorization') or {}).get('selection_outcome') or social_decision),
+        treasury_lane_state=str(((treasury_policy.get('meta') or {}).get('authorization') or {}).get('selection_outcome') or ('allow' if treasury_allowed else 'pause')),
+    )
 
     # ── D2: Query writeback — high-signal decisions → wiki/queries/ ──────────
     _maybe_write_wiki_query(
@@ -1317,19 +2018,11 @@ def main() -> int:
         root=ROOT,
     )
 
-    # Generate guidance files using select_strategy (autoresearch hill-climbing)
-    try:
-        import importlib.util as _ilu
-        _spec = _ilu.spec_from_file_location('select_strategy', ROOT / 'scripts' / 'select_strategy.py')
-        _mod = _ilu.module_from_spec(_spec)
-        _spec.loader.exec_module(_mod)
-        _guidance = _mod.select_strategy(apply=True)
-        _exp_mode = (
-            f"bk={_guidance['bookmarker']['mode']}/"
-            f"tr={_guidance['trader']['mode']}"
-        )
-    except Exception as _e:
-        _exp_mode = f'error: {_e}'
+    # Phase 2 deprecation: select_strategy.py guidance files removed.
+    # strategy_experiment.py + social-strategy.json now cover strategy direction.
+    # select_strategy --stats remains available for manual diagnostic use.
+    _guidance = {}
+    _exp_mode = 'phase2/deprecated'
 
     print(json.dumps([
         {'agent': 'main', 'status': latest['status'],
