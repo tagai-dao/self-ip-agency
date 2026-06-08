@@ -762,6 +762,34 @@ def main() -> int:
     rs.pop("bootstrap", None)
     atomic_write_json(rs_path, rs)
 
+    # ── Social brief (default-on via config, env override supported) ─────
+    _social_brief_enabled = os.environ.get("ENABLE_SOCIAL_BRIEF", "").lower() in ("1", "true", "yes")
+    if not _social_brief_enabled:
+        _cfg_social = load_config().get("social_brief_enabled") or load_config().get("enable_social_brief")
+        if str(_cfg_social).lower() in ("1", "true", "yes"):
+            _social_brief_enabled = True
+    if _social_brief_enabled:
+        print("[trader-runtime] Running social brief...")
+        try:
+            _social_brief_script = Path(__file__).parent / "run_trader_social_brief.py"
+            if not _social_brief_script.exists():
+                _social_brief_script = WORKSPACE / "scripts" / "run_trader_social_brief.py"
+            if _social_brief_script.exists():
+                import subprocess as _sp
+                _sb_result = _sp.run(
+                    [sys.executable, str(_social_brief_script)],
+                    capture_output=False,
+                    timeout=300,
+                    env={**os.environ, "OPENCLAW_WORKSPACE": str(WORKSPACE)},
+                )
+                print(f"[trader-runtime] Social brief completed (exit={_sb_result.returncode})")
+            else:
+                print("[trader-runtime] run_trader_social_brief.py not found - skipping social brief")
+        except Exception as _sb_exc:
+            print(f"[trader-runtime] Social brief failed (non-fatal): {_sb_exc}")
+    else:
+        print("[trader-runtime] Social brief disabled")
+
     status_code = 0 if result["status"] in ("ok", "partial") else 1
     print(f"[trader-runtime] Cycle complete (exit={status_code})")
     return status_code

@@ -43,13 +43,13 @@ claude skill install /path/to/openclaw-claude-code-skill
 
 ## Configure the workspace
 
-OpenClaw expects a workspace directory at `~/.openclaw/workspace`. The self-IP installer
-creates this structure automatically:
+OpenClaw expects a main workspace at `~/.openclaw/workspace`. Self-IP Agency Phase 1
+creates three sibling workspaces automatically:
 
 ```bash
-# Create workspace root
-mkdir -p ~/.openclaw/workspace/{runtime,scripts,wiki,memory,logs}
-mkdir -p ~/.openclaw/workspace/runtime/{main,bookmarker,trader,shared}
+~/.openclaw/workspace
+~/.openclaw/workspace-bookmarker
+~/.openclaw/workspace-trader
 ```
 
 Or just run:
@@ -58,13 +58,15 @@ Or just run:
 bash scripts/install.sh  # creates all required directories
 ```
 
-## Set the OPENCLAW_WORKSPACE environment variable
+## Set workspace environment variables
 
-All scripts and the dashboard respect this env var:
+All scripts and the dashboard respect these env vars:
 
 ```bash
 # Add to ~/.zshrc or ~/.bashrc
 export OPENCLAW_WORKSPACE="$HOME/.openclaw/workspace"
+export OPENCLAW_BOOKMARKER_WORKSPACE="$HOME/.openclaw/workspace-bookmarker"
+export OPENCLAW_TRADER_WORKSPACE="$HOME/.openclaw/workspace-trader"
 ```
 
 ## Verify OpenClaw is running
@@ -235,6 +237,16 @@ Run `bash scripts/doctor.sh` at any time — section **4c** reports dashboard ex
     memory/           ← strategy logs, x-sync data
     logs/             ← agent execution logs
     config/           ← runtime config
+  workspace-bookmarker/
+    runtime/          ← bookmarker runtime + memory
+    scripts/          ← deployed bookmarker closures
+    agents/           ← bookmarker behavior file/template
+    config/           ← shared config + topic registry
+  workspace-trader/
+    runtime/          ← trader runtime + wallet outputs
+    scripts/          ← deployed trader closures
+    agents/           ← trader behavior file/template
+    config/           ← shared config + topic registry
 ```
 
 ## Troubleshooting

@@ -140,6 +140,11 @@ class TagClawAdapter(AbstractPlatformAdapter):
         headers: dict[str, str] = {
             "Content-Type": "application/json",
             "Accept": "application/json",
+            # bsc-api.tagai.fun sits behind Cloudflare, which 403s the default
+            # python-urllib User-Agent. A browser UA is required for authenticated GETs
+            # (this silently broke /me + feed reads ~2026-04).
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         }
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"

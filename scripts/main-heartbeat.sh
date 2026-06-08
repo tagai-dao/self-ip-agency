@@ -130,6 +130,74 @@ raise SystemExit(1)
 build_input_packet() {
   log_info "Building main input packet..."
 
+  local xreco_script=""
+  for candidate in \
+    "$SCRIPT_DIR/build_x_reco_artifacts_v1.py" \
+    "$WORKSPACE/scripts/build_x_reco_artifacts_v1.py" \
+    "${REPO_DIR:+$REPO_DIR/scripts/build_x_reco_artifacts_v1.py}"; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      xreco_script="$candidate"
+      break
+    fi
+  done
+
+  if [ -n "$xreco_script" ]; then
+    if [ "$DRY_RUN" = "true" ]; then
+      log_info "[DRY RUN] Would refresh: python3 $xreco_script"
+    else
+      python3 "$xreco_script" 2>&1 || {
+        log_warn "build_x_reco_artifacts_v1.py failed - continuing without X-Reco refresh"
+      }
+    fi
+  fi
+
+  local brief_script=""
+  for candidate in \
+    "$SCRIPT_DIR/build_social_trade_brief_v1.py" \
+    "$WORKSPACE/scripts/build_social_trade_brief_v1.py" \
+    "${REPO_DIR:+$REPO_DIR/scripts/build_social_trade_brief_v1.py}"; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      brief_script="$candidate"
+      break
+    fi
+  done
+
+  if [ -n "$brief_script" ]; then
+    if [ "$DRY_RUN" = "true" ]; then
+      log_info "[DRY RUN] Would refresh: python3 $brief_script"
+    else
+      python3 "$brief_script" 2>&1 || {
+        log_warn "build_social_trade_brief_v1.py failed — continuing without social-trade brief refresh"
+      }
+    fi
+  fi
+
+  local content_script=""
+  for candidate in \
+    "$SCRIPT_DIR/content_intelligence_v1.py" \
+    "$WORKSPACE/scripts/content_intelligence_v1.py" \
+    "${REPO_DIR:+$REPO_DIR/scripts/content_intelligence_v1.py}"; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      content_script="$candidate"
+      break
+    fi
+  done
+
+  if [ -n "$content_script" ]; then
+    if [ "$DRY_RUN" = "true" ]; then
+      log_info "[DRY RUN] Would refresh: python3 $content_script"
+    else
+      python3 "$content_script" 2>&1 || {
+        log_warn "content_intelligence_v1.py failed — continuing without shared content intelligence refresh"
+      }
+    fi
+  fi
+
+  # The full social-trade brief -> TagAI tweet import lane runs from the trader
+  # workspace via run_trader_social_brief.py. Do not invoke the legacy
+  # main-workspace community-import queue here; it does not preserve the
+  # original tweet payload contract.
+
   # Find the script in SCRIPT_DIR (co-located), workspace, or repo
   local script=""
   for candidate in \

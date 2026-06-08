@@ -37,6 +37,7 @@ import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
+from agency_paths import BOOKMARKER_WS
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -277,6 +278,124 @@ def ingest_bookmarker_actions(records: list[dict[str, Any]]) -> None:
         ))
 
 
+def ingest_strategy_experiment(records: list[dict[str, Any]]) -> None:
+    """Bandit arm outcomes → decision-index. Closes the AutoResearch↔wiki loop:
+    wiki_priors.decision_outcome_weights reads these back (action encodes the arm
+    VALUE, e.g. `engagement_mode=reply_to_top_agents`) to bias future selection
+    toward arm values that previously moved TAS up. Index-only (high-frequency)."""
+    exp = _read_json(SHARED / "strategy-experiment.json")
+    if not isinstance(exp, dict):
+        return
+    tracks = (("track_a", "trader", "tas_delta", "credit_strategy"),
+              ("track_b", "bookmarker", "tas_social_delta", "engagement_mode"),
+              ("track_b", "bookmarker", "tas_social_delta", "content_angle"))
+    for tkey, agent, dkey, lever in tracks:
+        for h in ((exp.get(tkey) or {}).get("arm_history") or []):
+            if not isinstance(h, dict):
+                continue
+            val = (h.get("arm") or {}).get(lever)
+            if val is None:
+                continue
+            ts = h.get("cycle_id") or ""
+            try:
+                delta = float(h.get(dkey))
+            except (TypeError, ValueError):
+                delta = None
+            if delta is None:
+                outcome = "pending"
+            elif delta > 0.003:
+                outcome = "ok"
+            elif delta < -0.003:
+                outcome = "failed"
+            else:
+                outcome = "skipped"
+            records.append(_record(
+                agent=agent, decided_at=ts, kind="arm-experiment",
+                action=f"{lever}={val}",
+                rationale=f"verdict={h.get('verdict','?')} {dkey}={delta}",
+                outcome=outcome,
+                source_ref="runtime/shared/strategy-experiment.json",
+                salt=f"{tkey}{ts}{val}",
+                significant=False,
+            ))
+
+
+def ingest_app_feedback(records: list[dict[str, Any]]) -> None:
+    """#5 (2026-06-08): unify every app's selection-reward into ONE decision ledger.
+
+    Each of the five apps does the same thing — select content to act on — and each now
+    has a reward signal (X-Reco overlap, translation usefulness, TagAI import reliability;
+    posting's content_angle is already covered by ingest_strategy_experiment). This pulls
+    those per-app rewards into the decision-index as `app-feedback` rows so there is one
+    queryable, durable record of how each app is doing over time — the substrate for the
+    "one evolution engine, per-app arms" vision. wiki_priors / future arms read these back.
+
+    Index-only (one row per app per build). All sources read-only & guarded.
+    NOTE: each app already evolves via its own hill-climb adapter (adapt_reco_weights_v1,
+    translation_usefulness_eval_v1); we deliberately do NOT also force them into the
+    strategy_experiment bandit — at current signal levels that adds complexity with no
+    payoff (same scope-honesty as the TAS P3/P4 note)."""
+    bm_ws = (BOOKMARKER_WS)
+
+    def _row(agent, app, metric_name, value, target, direction, src, ts):
+        # normalize date-only timestamps (e.g. "2026-06-08") to a tz-aware ISO so the
+        # downstream window filter (naive>=aware would raise) stays happy.
+        ts = str(ts or "").strip()
+        if len(ts) == 10 and ts.count("-") == 2:
+            ts = ts + "T00:00:00Z"
+        if value is None:
+            outcome = "pending"
+        elif value >= target:
+            outcome = "ok"
+        elif value > 0:
+            outcome = "pending"   # earning the reward but below target → improving
+        else:
+            outcome = "failed"    # zero reward (e.g. overlap 0.0%) → the loop isn't catching
+        records.append(_record(
+            agent=agent, decided_at=ts, kind="app-feedback",
+            action=f"app={app} {metric_name}={value}",
+            rationale=f"target={target} adapt={direction or 'n/a'}",
+            outcome=outcome,
+            metric_context={"app": app, "metric": metric_name, "value": value, "target": target},
+            source_ref=src,
+            salt=f"{app}{ts}{value}",
+            significant=False,
+        ))
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # ② X-Reco digest — overlap with 0xNought's bookmarks
+    ev = _read_json(WORKSPACE / "runtime" / "bookmarker" / "x-reco-eval-latest.json")
+    if isinstance(ev, dict):
+        ga = ev.get("gap_analysis") or {}
+        v3 = _read_json(WORKSPACE / "config" / "x_reco_factors_v3_auto.json") or {}
+        hist = v3.get("_weight_multiplier_history") or []
+        direction = (hist[-1].get("direction") if hist else None)
+        _row("bookmarker", "x_reco_digest", "overlap_rate",
+             ga.get("overlap_rate"), 0.15, direction,
+             "runtime/bookmarker/x-reco-eval-latest.json",
+             ev.get("report_date") or now_iso)
+
+    # ⑤ translation — usefulness of what was translated (cross-workspace)
+    te = _read_json(bm_ws / "memory" / "translation-eval-latest.json")
+    if isinstance(te, dict):
+        _row("bookmarker", "en_cn_translation", "useful_rate",
+             te.get("useful_rate"), te.get("target", 0.6), te.get("adapt_direction"),
+             "workspace-bookmarker/memory/translation-eval-latest.json",
+             te.get("generated_at") or now_iso)
+
+    # ④ TagAI import — reliability (ok / total) of the latest import run
+    imports = sorted((WORKSPACE / "runtime" / "trader").glob("tagai-import-results-*.json"),
+                     key=lambda p: p.name, reverse=True)
+    if imports:
+        d = _read_json(imports[0]) or {}
+        total = int(d.get("total") or 0)
+        ok = int(d.get("ok") or 0)
+        rate = (ok / total) if total > 0 else 1.0  # 0-tweet runs are not failures
+        _row("trader", "tagai_import", "import_ok_rate", round(rate, 4), 1.0, None,
+             path_ref(imports[0], WORKSPACE), d.get("imported_at") or now_iso)
+
+
 # ── Significant .md record rendering ──
 
 def render_md(rec: dict[str, Any]) -> str:
@@ -363,7 +482,8 @@ def main() -> int:
 
     records: list[dict[str, Any]] = []
     for fn in (ingest_main_strategy, ingest_main_tas, ingest_main_last_decision,
-               ingest_trader_executions, ingest_bookmarker_actions):
+               ingest_trader_executions, ingest_bookmarker_actions,
+               ingest_strategy_experiment, ingest_app_feedback):
         try:
             fn(records)
         except Exception as exc:  # one bad source must not sink the build

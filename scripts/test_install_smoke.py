@@ -134,7 +134,60 @@ def test_no_stale_bootstrap_call() -> None:
             f"'bootstrap_guided_x_sync' not referenced (found {occurrences})")
 
 
-# ── 6. install.sh --dry-run smoke ────────────────────────────────────────────
+# ── 6. query tool wiring ─────────────────────────────────────────────────────
+
+def test_query_tool_present() -> None:
+    """The main input packet references a real query_wiki_facts_v1.py entrypoint."""
+    print("\n[wiki query tool wiring]")
+    packet_src = (REPO_ROOT / "scripts" / "build_main_input_packet.py").read_text()
+    tool_path = REPO_ROOT / "scripts" / "query_wiki_facts_v1.py"
+    _assert("scripts/query_wiki_facts_v1.py" in packet_src,
+            "build_main_input_packet.py references query_wiki_facts_v1.py")
+    _assert(tool_path.exists(),
+            "query_wiki_facts_v1.py exists")
+
+
+# ── 7. x-reco wiring ─────────────────────────────────────────────────────────
+
+def test_xreco_refresh_wired() -> None:
+    """main-heartbeat should refresh the Phase-2 X-Reco artifacts when available."""
+    print("\n[x-reco refresh wiring]")
+    heartbeat_src = (REPO_ROOT / "scripts" / "main-heartbeat.sh").read_text()
+    xreco_tool = REPO_ROOT / "scripts" / "build_x_reco_artifacts_v1.py"
+    _assert("build_x_reco_artifacts_v1.py" in heartbeat_src,
+            "main-heartbeat.sh references build_x_reco_artifacts_v1.py")
+    _assert(xreco_tool.exists(),
+            "build_x_reco_artifacts_v1.py exists")
+
+
+# ── 8. TagAI brief-import wiring ─────────────────────────────────────────────
+
+def test_tagai_brief_import_wired() -> None:
+    """Trader runtime should ship the full social-brief -> TagAI tweet import lane."""
+    print("\n[tagai brief-import wiring]")
+    runtime_src = (REPO_ROOT / "scripts" / "run_trader_runtime.py").read_text()
+    manifest_src = (REPO_ROOT / "config" / "workspace-scripts.json").read_text()
+    _assert("run_trader_social_brief.py" in runtime_src,
+            "run_trader_runtime.py references run_trader_social_brief.py")
+    _assert("run_trader_social_brief.py" in manifest_src,
+            "workspace-scripts.json deploys run_trader_social_brief.py to trader workspace")
+    _assert("lib/tagai_brief_import.py" in manifest_src,
+            "workspace-scripts.json deploys tagai_brief_import helper to trader workspace")
+
+
+# ── 9. social-trade brief post wiring ────────────────────────────────────────
+
+def test_social_trade_brief_post_wired() -> None:
+    """run_main_runtime should wire the trader social-trade brief into post_directive fallback."""
+    print("\n[social-trade brief post wiring]")
+    runtime_src = (REPO_ROOT / "scripts" / "run_main_runtime.py").read_text()
+    _assert("build_social_trade_post_directive" in runtime_src,
+            "run_main_runtime.py builds social-trade post directives")
+    _assert("social_trade_post_directive" in runtime_src,
+            "run_main_runtime.py injects social_trade_post_directive into social intent")
+
+
+# ── 10. install.sh --dry-run smoke ───────────────────────────────────────────
 
 def test_install_dry_run() -> None:
     """--dry-run should exit 0 without side effects."""
@@ -164,6 +217,10 @@ if __name__ == "__main__":
     test_install_function_callchain()
     test_seed_heredocs_quoted()
     test_no_stale_bootstrap_call()
+    test_query_tool_present()
+    test_xreco_refresh_wired()
+    test_tagai_brief_import_wired()
+    test_social_trade_brief_post_wired()
     test_install_dry_run()
 
     print("\n" + "=" * 60)

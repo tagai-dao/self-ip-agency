@@ -188,6 +188,9 @@ def analyze_social_action_selection(
                 "draft_ref": f"runtime/bookmarker/social-drafts.json#{draft_id}",
                 "reply_target_ref": None,
                 "priority": draft.get("priority"),
+                # Propagate metadata so dedup chain works even if deref_draft fails later.
+                "draft_type": draft.get("draft_type") or "",
+                "source": draft.get("source") or "",
             })
             selected_ids.add(draft_id)
             type_counts[draft_type] = type_counts.get(draft_type, 0) + 1
@@ -248,8 +251,86 @@ MODE_RANK = {
     "super-active": 4,
 }
 
+# P0 daily resource targets (OP = operation points, VP = vote power)
+DAILY_OP_MIN = 670.0
+DAILY_VP_MIN = 67.0
 
-def compute_main_mode(op: float | None, vp: float | None) -> str:
+# OP cost per action type (mirrors execute_social_intent_v2.OP_COST)
+_OP_COST_PER_TYPE: dict[str, float] = {
+    "post": 200.0,
+    "reply": 50.0,
+    "like": 3.0,
+    "curate": 3.0,
+    "retweet": 4.0,
+}
+
+
+def compute_daily_consumption(runtime_path: "Path") -> dict:
+    """FIX-1: Compute today's consumed OP/VP from social-history.json.
+
+    Returns daily_op_consumed, daily_vp_consumed, resource_floor_met, and pacing
+    signals.  Used by run_main_runtime.py to detect when the P0 daily floor
+    (OP>=670, VP>=67) has not been met and force-mode accordingly.
+    """
+    from pathlib import Path as _Path
+    history = read_json(_Path(runtime_path) / "shared" / "social-history.json") or {}
+    items = history.get("items") or []
+    today_str = datetime.now(timezone.utc).date().isoformat()
+
+    daily_op = 0.0
+    daily_vp = 0.0
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("result_status") != "ok":
+            continue
+        executed_at_str = item.get("executed_at") or ""
+        # Fast-path: ISO date prefix check (UTC date)
+        if not executed_at_str.startswith(today_str):
+            dt = parse_dt(executed_at_str)
+            if dt is None or dt.astimezone(timezone.utc).date().isoformat() != today_str:
+                continue
+        action_type = item.get("type") or ""
+        daily_op += _OP_COST_PER_TYPE.get(action_type, 0.0)
+        if action_type in ("curate", "like"):
+            daily_vp += float(item.get("vp") or item.get("vp_spent") or 0)
+
+    op_floor_met = daily_op >= DAILY_OP_MIN
+    vp_floor_met = daily_vp >= DAILY_VP_MIN
+    resource_floor_met = op_floor_met and vp_floor_met
+
+    # Pacing: how much is needed per remaining 10-min heartbeat cycle to hit floor
+    now_dt = datetime.now(timezone.utc)
+    start_of_day = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    minutes_elapsed = max(1.0, (now_dt - start_of_day).total_seconds() / 60.0)
+    minutes_remaining = max(1.0, 1440.0 - minutes_elapsed)
+    cycles_remaining = max(1.0, minutes_remaining / 10.0)
+    op_needed_per_cycle = max(0.0, DAILY_OP_MIN - daily_op) / cycles_remaining
+    vp_needed_per_cycle = max(0.0, DAILY_VP_MIN - daily_vp) / cycles_remaining
+
+    return {
+        "daily_op_consumed": round(daily_op, 2),
+        "daily_vp_consumed": round(daily_vp, 2),
+        "daily_op_target": DAILY_OP_MIN,
+        "daily_vp_target": DAILY_VP_MIN,
+        "op_floor_met": op_floor_met,
+        "vp_floor_met": vp_floor_met,
+        "resource_floor_met": resource_floor_met,
+        "op_needed_per_cycle": round(op_needed_per_cycle, 2),
+        "vp_needed_per_cycle": round(vp_needed_per_cycle, 2),
+        "cycles_remaining_today": round(cycles_remaining, 1),
+        "computed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def compute_main_mode(op: float | None, vp: float | None, *, resource_floor_unmet: bool = False) -> str:
+    """FIX-5: compute mode with resource floor override.
+
+    When resource_floor_unmet=True and the normal heuristic would return
+    'conservative', the mode is forced up to 'vp-flush' so social execution
+    is always enabled when daily P0 targets (OP>=670, VP>=67) are behind pace.
+    """
     if op is None or vp is None:
         return "blocked-runtime"
     if op > 1200 and vp > 150:
@@ -258,15 +339,20 @@ def compute_main_mode(op: float | None, vp: float | None) -> str:
         return "mid-active"
     if op > 800 and vp > 100:
         return "active"
-    # vp-flush: 低OP + 高VP → 纯策展不发帖，全力消耗VP避免浪费
-    # 触发条件: OP <= 800 AND VP >= 150
+    # vp-flush: 低OP + 高VP → 策展优先，全力消耗VP避免浪费
+    # FIX-5: also trigger when daily resource floor is unmet (catch-up mode)
     if op <= 800 and vp >= 150:
+        return "vp-flush"
+    if resource_floor_unmet and op <= 800:
         return "vp-flush"
     # vp-drain: VP高但OP不足以触发活跃模式时，策展为主但可发1帖
     if vp >= 180 and op >= 100 and op < 800:
         return "vp-drain"
     if vp >= 150 and op < 200:
         return "vp-drain"
+    # FIX-2/5: when resource floor is unmet, never stay in conservative (death loop)
+    if resource_floor_unmet:
+        return "active"
     return "conservative"
 
 

@@ -48,11 +48,12 @@ The installer will:
 2. Scaffold the `tagclaw-wallet` repo into the target workspace
 3. Detect your agent identity from the TagClaw API when credentials already exist
 4. Configure agent templates with your identity
-5. Create the runtime directory structure
-6. Set up the LLM Wiki (template + schema + scripts)
-7. Install the AutoResearch framework
-8. Output cron registration commands
-9. Deploy the monitoring dashboard
+5. Create a 3-workspace layout: `workspace`, `workspace-bookmarker`, `workspace-trader`
+6. Deploy per-workspace script closures from `config/workspace-scripts.json`
+7. Set up the LLM Wiki (template + schema + scripts)
+8. Install the AutoResearch framework
+9. Output cron registration commands
+10. Deploy the monitoring dashboard
 
 After install, check the **machine-readable output contract**:
 - `.install-next-steps.json` — structured next-steps for agent consumption. Schema: `install-next-steps.v2`. Fields:
@@ -222,10 +223,10 @@ self-ip-agency/
 │   ├── runtime_utils.py           ← shared runtime utilities (v2)
 │   ├── run_main_runtime.py        ← main agent cycle (builds latest.json)
 │   ├── build_main_input_packet.py    ← input packet assembler
-│   ├── compute_tas_social.py      ← TAS_social dual-track scorer
+│   ├── agency_paths.py            ← portable 3-workspace path resolver
 │   ├── select_strategy.py         ← strategy optimizer (hill-climbing)
 │   ├── wiki_lint.py               ← wiki health checker (3-band scoring)
-│   ├── build_wiki_query_index.py  ← wiki query index builder
+│   ├── build_wiki_query_index_v1.py ← wiki query index builder
 │   ├── wiki_utils.py                 ← shared wiki utilities
 │   ├── wiki_registry.py              ← canonical topic resolver
 │   ├── wiki_search.py                ← wiki query interface
@@ -242,6 +243,7 @@ self-ip-agency/
 │   ├── credentials.example.json← credential template (NEVER commit real keys)
 │   ├── cron-jobs.json          ← agent cron schedules
 │   ├── openclaw-agents.yaml    ← OpenClaw agent registration
+│   ├── workspace-scripts.json  ← per-workspace deploy manifest
 │   └── wiki_topic_registry.json← canonical concept/tick resolver
 ├── schema/
 │   ├── resolver-map.yaml       ← task-to-context contracts
@@ -318,6 +320,20 @@ Hill-climbing strategy optimizer with epsilon-greedy dual-track A/B testing:
 Two independent tracks (bookmarker + trader) optimize independently. Strategy cycles are logged to `memory/main-strategy-log.jsonl`.
 
 See [docs/autoresearch-guide.md](docs/autoresearch-guide.md) for the full guide.
+
+---
+
+## Workspace model
+
+Phase 1 now installs three sibling OpenClaw workspaces:
+
+- `~/.openclaw/workspace` for the main agent and shared wiki/runtime artifacts
+- `~/.openclaw/workspace-bookmarker` for social collection, TAS social, and native post flows
+- `~/.openclaw/workspace-trader` for wallet and on-chain execution flows
+
+`scripts/agency_paths.py` is the portable path source of truth, and
+`config/workspace-scripts.json` controls which Python module closure is deployed
+into each workspace during install.
 
 ---
 
